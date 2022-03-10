@@ -7,20 +7,21 @@ PROGRAM linear
     ! ===============================================================
     USE filereader !<loading in weights, biases
     USE activation_functions !<getting activation functions
+    USE model_layers
     ! ===============================================================
 
     
     IMPLICIT NONE
 
 
-    INTERFACE
-        FUNCTION linear_layer(inp, weights, bias) result(output)
-            real :: output(size(weights, dim=1))
-            real, intent(in) :: weights(:,:)
-            real, intent(in) :: inp(:)
-            real, intent(in) :: bias(:)
-        END FUNCTION linear_layer
-    END INTERFACE
+    ! INTERFACE
+    !     FUNCTION linear_layer(inp, weights, bias) result(output)
+    !         real :: output(size(weights, dim=1))
+    !         real, intent(in) :: weights(:,:)
+    !         real, intent(in) :: inp(:)
+    !         real, intent(in) :: bias(:)
+    !     END FUNCTION linear_layer
+    ! END INTERFACE
     
     REAL :: inp(2)
     REAL, ALLOCATABLE :: out(:)
@@ -48,9 +49,3 @@ PROGRAM linear
 END PROGRAM linear
 
 !=======================================================================================
-
-
-
-
-
-end

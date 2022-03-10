@@ -8,7 +8,7 @@ torch.save(model.state_dict(),"nntester2.pt")
 X = torch.ones(1,2)
 a = time.time()
 logits = model(X)
-print("Time taken: {0}", time.time()-a)
+print(f"Time taken: {time.time()-a}")
 print(logits)
 listToParse = []
 for l in model.state_dict():
@@ -35,14 +35,3 @@ with open('weights_biases.txt', 'w') as f:
     for shape, mat in listToParse:
         f.write(stringer(mat,len(shape)))
         f.write('\n')
-
-# tensor([[0.4274]], grad_fn=<ReluBackward0>)
-# tensor([[ 0.1412, -0.0940],
-#         [-0.1593, -0.5962]])
-# tensor([-0.0208,  0.2000])
-# tensor([[-0.1282,  0.6175],
-#         [-0.4850,  0.2070],
-#         [-0.2155,  0.2263]])
-# tensor([-0.0142,  0.4174,  0.3953])
-# tensor([[0.2594, 0.1329, 0.5510]])
-# tensor([-0.1094])
