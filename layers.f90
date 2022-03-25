@@ -25,55 +25,23 @@ contains
         real, intent(in), DIMENSION(:,:) :: Wih !==(4m,n)
         real, intent(in), DIMENSION(:) :: Bhh !==(4m,1)
         real, intent(in), DIMENSION(:) :: Bih !==(4m,1)
-        real, intent(out), DIMENSION(size(hid1)) :: hiddenOut
-        real, intent(out), DIMENSION(size(cell1)) :: cellOut
+        real, ALLOCATABLE, DIMENSION(:), intent(out) :: hiddenOut
+        real, ALLOCATABLE, DIMENSION(:), intent(out) :: cellOut
 
         real, DIMENSION(size(Whh, dim=1)) :: gates_out
-        real, DIMENSION(4, size(Whh, dim=1)/4) :: chunks
-        ! real, DIMENSION(size(Whh, dim=1)/4) :: ingate
-        ! real, DIMENSION(size(Whh, dim=1)/4) :: forget
-        ! real, DIMENSION(size(Whh, dim=1)/4) :: cell
-        ! real, DIMENSION(size(Whh, dim=1)/4) :: out
+        real, DIMENSION(4,size(hid1)) :: chunks !4, size(Whh, dim=1)/4
+        ALLOCATE(hiddenOut(size(hid1)))
+        ALLOCATE(cellOut(size(cell1)))
 
-
-        integer :: chunk
-        integer :: i
-
-        chunk = size(Whh, dim=1) / 4
         gates_out = linear_layer(input, Wih, Bih) + linear_layer(hid1, Whh, Bhh) !==(4m,1)
-        CALL get_chunks(gates_out, chunks)
+        chunks = RESHAPE(gates_out, (/ 4, size(gates_out)/4 /))        
+
         chunks(1, :) = sigmoid(chunks(1, :))
         chunks(2, :) = sigmoid(chunks(2, :))
-        chunks(3, :) = tanh(chunks(3, :))
+        chunks(3, :) = tanhh(chunks(3, :))
         chunks(4, :) = sigmoid(chunks(4, :))
-
+        
+        hiddenOut = chunks(4, :) * tanhh((chunks(2, :) * cell1) + (chunks(1, :) * chunks(3, :)))
         cellOut = (chunks(2, :) * cell1) + (chunks(1, :) * chunks(3, :))
-        hiddenOut = chunks(4, :) * tanh(cellOut)
-
-
-
-    
-    
     end subroutine
-
-    subroutine get_chunks(largeChunk, chunks)
-        implicit none
-
-        real, intent(in) :: largeChunk(:)
-        real, intent(out), DIMENSION(4, size(largeChunk)/4) :: chunks
-        integer :: chunk
-        integer :: i
-        chunk = size(largeChunk)/4
-        DO i = 0, size(largeChunk)-chunk, chunk
-            chunks(i/chunk, :) = largeChunk(i:i+chunk)
-        END DO
-
-
-
-    end subroutine
-
-
-
-
-
 end module model_layers

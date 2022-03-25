@@ -11,7 +11,18 @@ class LSTM(nn.Module):
     def forward(self, inp, hidden):
         return self.lstm(inp, hidden)
 
-model = LSTM(5,10,1)
-for x in model.state_dict():
-    print(x, ' ', model.state_dict()[x].shape)
-print(model.forward(torch.randn(1,1,5)))
+# batch_size = 1
+# seq_len = 1
+# hidden_dim = 10
+# input_dim = 5
+# n_layers = 1
+# model = LSTM(input_dim,hidden_dim,n_layers)
+# for x in model.state_dict():
+#     print(x, ' ', model.state_dict()[x].shape)
+# inp = torch.ones(batch_size, seq_len, input_dim)
+# hidden_state = torch.ones(n_layers, batch_size, hidden_dim)
+# cell_state = torch.ones(n_layers, batch_size, hidden_dim)
+# hidden = (hidden_state, cell_state)
+# a,hidden = model(inp,hidden)
+# print(a)
+# print(a.view(-1,a.size(2)).shape) 

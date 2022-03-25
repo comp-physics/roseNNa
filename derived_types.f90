@@ -17,6 +17,13 @@ module derived_types
         procedure(func), POINTER, NOPASS :: fn_ptr => null ()
     ENDTYPE linLayer
 
+    TYPE lstmLayer
+        REAL, ALLOCATABLE, DIMENSION(:,:) :: whh
+        REAL, ALLOCATABLE, DIMENSION(:,:) :: wih
+        REAL, ALLOCATABLE, DIMENSION(:) :: bhh
+        REAL, ALLOCATABLE, DIMENSION(:) :: bih
+    ENDTYPE lstmLayer
+
     
 
     

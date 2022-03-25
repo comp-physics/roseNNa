@@ -1,13 +1,26 @@
 import torch
 import torch.nn as nn
+from lstm_linear import NN
 from nntester import NeuralNetwork
 import time
 
-model = NeuralNetwork()
-torch.save(model.state_dict(),"nntester2.pt")
-X = torch.ones(1,2)
+# model = NeuralNetwork()
+model = NN()
+torch.save(model.state_dict(),"nntester3.pt")
+# torch.save(model.state_dict(),"nntester2.pt")
+batch_size = 1
+seq_len = 1
+hidden_dim = 2
+input_dim = 5
+n_layers = 1
+inp = torch.ones(batch_size, seq_len, input_dim)
+hidden_state = torch.ones(n_layers, batch_size, hidden_dim)
+cell_state = torch.ones(n_layers, batch_size, hidden_dim)
+hidden = (hidden_state, cell_state)
+# X = torch.ones(1,2)
 a = time.time()
-logits = model(X)
+# logits = model(X)
+logits = model(inp, hidden)
 print(f"Time taken: {time.time()-a}")
 print(logits)
 listToParse = []
@@ -31,7 +44,7 @@ def stringer(mat, dim):
     return s.strip()
 
 
-with open('weights_biases.txt', 'w') as f:
+with open('weights_biases2.txt', 'w') as f:
     for shape, mat in listToParse:
         f.write(stringer(mat,len(shape)))
         f.write('\n')

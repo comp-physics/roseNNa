@@ -1,4 +1,5 @@
 *
+!openNP.fpp
 !*.f90
 !*.py
 !Makefile

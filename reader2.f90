@@ -26,7 +26,7 @@ module FILEREADER
 
         INTEGER :: numLayers
         INTEGER :: i
-
+        CHARACTER(LEN = 10) :: layerName
         open(10, file = "model.txt")
         open(11, file = "weights_biases.txt")
 
@@ -34,6 +34,7 @@ module FILEREADER
         ALLOCATE(layers(numLayers))
         
         DO i = 1, numLayers
+            read(10, *) layerName
             read(10, *) w_dim1, w_dim2
             ALLOCATE(weights(w_dim1,w_dim2))
             read(11, *) weights

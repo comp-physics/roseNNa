@@ -1,4 +1,4 @@
-program readTester
+module readTester
 
     USE derived_types
     USE activation_functions
@@ -6,8 +6,8 @@ program readTester
     implicit none
 
 
-    TYPE(linLayer), ALLOCATABLE, DIMENSION(:) :: layers
-
+    TYPE(linLayer), ALLOCATABLE, DIMENSION(:) :: linLayers
+    TYPE(lstmLayer), ALLOCATABLE, DIMENSION(:) :: lstmLayers
     REAL, ALLOCATABLE, DIMENSION(:,:) :: weights
     INTEGER :: w_dim1
     INTEGER :: w_dim2
@@ -16,41 +16,97 @@ program readTester
 
     INTEGER :: activation_func
 
+    CHARACTER(LEN = 10) :: layerName
+
     INTEGER :: numLayers
     INTEGER :: i
 
-    open(10, file = "model.txt")
-    open(11, file = "weights_biases.txt")
-
-    read(10, *) numLayers
-    ALLOCATE(layers(numLayers))
+    contains
     
-    DO i = 1, numLayers
-        read(10, *) w_dim1, w_dim2
+    subroutine initialize()
+        ALLOCATE(lstmLayers(0))
+        ALLOCATE(linLayers(0))
+        open(10, file = "model2.txt")
+        open(11, file = "weights_biases2.txt")
+
+        read(10, *) numLayers
+        
+        DO i = 1, numLayers
+            read(10, *) layerName
+            if (layerName .eq.  "lstm") then
+                CALL read_lstm(10, 11)
+            else if (layerName .eq. "linear") then
+                CALL read_linear(10, 11)
+            end if
+
+            
+        END DO
+    end subroutine
+    subroutine read_lstm(file1, file2)
+        INTEGER, INTENT(IN) :: file1
+        INTEGER, INTENT(IN) :: file2
+        TYPE(lstmLayer), ALLOCATABLE, DIMENSION(:) :: lstm
+        ALLOCATE(lstm(1))
+        read(file1, *) w_dim1, w_dim2
         ALLOCATE(weights(w_dim1,w_dim2))
-        read(11, *) weights
+        read(file2, *) weights
+        lstm(1)%wih = weights
+        DEALLOCATE(weights)
+        
+        
+        read(file1, *) w_dim1, w_dim2
+        ALLOCATE(weights(w_dim1,w_dim2))
+        read(file2, *) weights
+        lstm(1)%whh = weights
+        DEALLOCATE(weights)
+        
+
+        read(file1, *) w_dim1
+        ALLOCATE(biases(w_dim1))
+        read(file2, *) biases
+        lstm(1)%bih = biases
+        DEALLOCATE(biases)
+
+        read(file1, *) w_dim1
+        ALLOCATE(biases(w_dim1))
+        read(file2, *) biases
+        lstm(1)%bhh = biases
+        DEALLOCATE(biases)
+        lstmLayers = [lstmLayers, lstm]
+        print *, "reacched here"
+        DEALLOCATE(lstm)
+    end subroutine
+
+    subroutine read_linear(file1, file2)
+        INTEGER, INTENT(IN) :: file1
+        INTEGER, INTENT(IN) :: file2
+        TYPE(linLayer), ALLOCATABLE,DIMENSION(:) :: lin
+        ALLOCATE(lin(1))
+        read(file1, *) w_dim1, w_dim2
+        ALLOCATE(weights(w_dim1,w_dim2))
+        read(file2, *) weights
 
         ALLOCATE(biases(w_dim1))
-        read(11, *) biases
+        read(file2, *) biases
 
-        read(10, *) activation_func
+        read(file1, *) activation_func
 
         if (activation_func == 0) then
-            layers(i)%fn_ptr => relu
+            lin(1)%fn_ptr => relu
         else if (activation_func == 1) then
-            layers(i)%fn_ptr => sigmoid
+            lin(1)%fn_ptr => sigmoid
         end if
 
-        layers(i)%weights = weights
-        layers(i)%biases = biases
+        lin(1)%weights = weights
+        lin(1)%biases = biases
 
         DEALLOCATE(weights)
         DEALLOCATE(biases)
-    END DO
-
-    print *, SHAPE(layers(2)%fn_ptr)
+        linLayers = [linLayers, lin]
+        DEALLOCATE(lin)
+    end subroutine
 
 
         
-end program readTester
+end module
 

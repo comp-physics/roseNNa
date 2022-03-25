@@ -21,10 +21,10 @@ contains
         end where
     END FUNCTION relu
 
-    FUNCTION tanh(x) result(output)
+    FUNCTION tanhh(x) result(output)
         real, intent(in) :: x(:)
         real :: output(size(x))
         output = 2*sigmoid(2*x)-1
-    END FUNCTION tanh
+    END FUNCTION tanhh
     
 end module activation_functions
