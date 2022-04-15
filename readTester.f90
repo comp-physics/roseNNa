@@ -24,15 +24,19 @@ module readTester
     contains
     
     subroutine initialize()
+        INTEGER :: Reason
         ALLOCATE(lstmLayers(0))
         ALLOCATE(linLayers(0))
-        open(10, file = "model2.txt")
-        open(11, file = "weights_biases2.txt")
+        open(10, file = "model3.txt")
+        open(11, file = "weights_biases3.txt")
 
         read(10, *) numLayers
         
-        DO i = 1, numLayers
-            read(10, *) layerName
+        readloop: DO i = 1, 10
+            read(10, *, IOSTAT=Reason) layerName
+            if (Reason < 0) then
+                exit readloop
+            end if
             if (layerName .eq.  "lstm") then
                 CALL read_lstm(10, 11)
             else if (layerName .eq. "linear") then
@@ -40,7 +44,8 @@ module readTester
             end if
 
             
-        END DO
+        END DO readloop
+
     end subroutine
     subroutine read_lstm(file1, file2)
         INTEGER, INTENT(IN) :: file1
@@ -73,7 +78,6 @@ module readTester
         lstm(1)%bhh = biases
         DEALLOCATE(biases)
         lstmLayers = [lstmLayers, lstm]
-        print *, "reacched here"
         DEALLOCATE(lstm)
     end subroutine
 

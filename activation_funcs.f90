@@ -9,6 +9,13 @@ contains
         
         output = 1 / (1 + exp(-1 * x))
     END FUNCTION sigmoid
+
+    FUNCTION sigmoid2d(x) result(output)
+        real, intent(in) :: x(:,:)
+        real :: output(size(x,1), size(x,2))
+        
+        output = 1 / (1 + exp(-1 * x))
+    END FUNCTION sigmoid2d
     
     FUNCTION relu(x) result(output)
         real, intent(in) :: x(:)
@@ -24,7 +31,13 @@ contains
     FUNCTION tanhh(x) result(output)
         real, intent(in) :: x(:)
         real :: output(size(x))
-        output = 2*sigmoid(2*x)-1
+        output = (exp(x)-exp(-1*x))/(exp(x)+exp(-1*x))
     END FUNCTION tanhh
+
+    FUNCTION tanhh2d(x) result(output)
+        real, intent(in) :: x(:,:)
+        real :: output(size(x,1),size(x,2))
+        output = (exp(x)-exp(-1*x))/(exp(x)+exp(-1*x))
+    END FUNCTION tanhh2d
     
 end module activation_functions
