@@ -9,12 +9,15 @@ from nntester import NeuralNetwork
 model = NN()
 #model input creation
 # model.load_state_dict(torch.load("nntester2.pt"))
-model.load_state_dict(torch.load("nntester3.pt"))
+model.load_state_dict(torch.load("nntester4.pt"))
 
 activation_functions = {'ReLU()':0,'Sigmoid()':1}
 layer_order = []
 def write_lstm(f, lstm):
     for index, layer in enumerate(lstm.state_dict()):
+        if index%4 == 0: #current fix if lstm is stacked, another solution is to pass another parameter to the function to indicate how many lstms are stacked
+            f.write('lstm')
+            f.write('\n')
         try:
             f.write('{0} {1}'.format(lstm.state_dict()[layer].shape[0],lstm.state_dict()[layer].shape[1]))
         except:
@@ -32,8 +35,7 @@ def nested_children(f,m):
             f.write('{1} {0}'.format(m.in_features,m.out_features))
         elif isinstance(m,nn.LSTM):
             layer_order.append('lstm')
-            f.write('lstm')
-            f.write('\n')
+            
             write_lstm(f,m)
         elif isinstance(m,nn.Flatten):
             f.write('Flatten')
@@ -50,7 +52,7 @@ def nested_children(f,m):
         for name, child in children.items():
             nested_children(f,child)
 
-with open('model2.txt','w') as f:
+with open('model3.txt','w') as f:
     sum = 0
     for key in model.named_children():
         if isinstance(key[1], nn.Sequential):

@@ -9,6 +9,9 @@ class LSTM(nn.Module):
         self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
 
     def forward(self, inp, hidden):
+        # for d in self.lstm.state_dict():
+        #     print(self.lstm.state_dict()[d], self.lstm.state_dict()[d].shape)
+        # print(self.lstm(inp, hidden))
         return self.lstm(inp, hidden)
 
 # batch_size = 1
