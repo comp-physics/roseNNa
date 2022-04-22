@@ -8,9 +8,13 @@ module readTester
 
     TYPE(linLayer), ALLOCATABLE, DIMENSION(:) :: linLayers
     TYPE(lstmLayer), ALLOCATABLE, DIMENSION(:) :: lstmLayers
+    TYPE(convLayer), ALLOCATABLE, DIMENSION(:) :: convLayers
     REAL, ALLOCATABLE, DIMENSION(:,:) :: weights
+    REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
     INTEGER :: w_dim1
     INTEGER :: w_dim2
+    INTEGER :: w_dim3
+    INTEGER :: w_dim4
 
     REAL, ALLOCATABLE, DIMENSION(:) :: biases
 
@@ -27,6 +31,7 @@ module readTester
         INTEGER :: Reason
         ALLOCATE(lstmLayers(0))
         ALLOCATE(linLayers(0))
+        ALLOCATE(convLayers(0))
         open(10, file = "model3.txt")
         open(11, file = "weights_biases3.txt")
 
@@ -41,12 +46,40 @@ module readTester
                 CALL read_lstm(10, 11)
             else if (layerName .eq. "linear") then
                 CALL read_linear(10, 11)
+            else if (layerName .eq. "conv") then
+                CALL read_conv(10, 11)
             end if
 
             
         END DO readloop
 
     end subroutine
+
+    subroutine read_conv(file1, file2)
+        INTEGER, INTENT(IN) :: file1
+        INTEGER, INTENT(IN) :: file2
+        TYPE(convLayer), ALLOCATABLE, DIMENSION(:) :: conv
+        ALLOCATE(conv(1))
+        read(file1, *) w_dim1, w_dim2, w_dim3, w_dim4
+        ALLOCATE(largeWeights(w_dim1, w_dim2, w_dim3, w_dim4))
+        read(file2, *) largeWeights
+        conv(1)%weights = largeWeights
+        DEALLOCATE(largeWeights)
+        
+
+        
+        read(file1, *) w_dim1
+        ALLOCATE(biases(w_dim1))
+        read(file2, *) biases
+        conv(1)%biases = biases
+        DEALLOCATE(biases)
+
+        
+        convLayers = [convLayers, conv]
+
+        DEALLOCATE(conv)
+    end subroutine
+
     subroutine read_lstm(file1, file2)
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
@@ -90,6 +123,7 @@ module readTester
         ALLOCATE(weights(w_dim1,w_dim2))
         read(file2, *) weights
 
+        read(file1, *) w_dim1
         ALLOCATE(biases(w_dim1))
         read(file2, *) biases
 

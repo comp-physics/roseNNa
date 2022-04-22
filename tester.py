@@ -31,14 +31,19 @@ from nnLSTM import LSTM
 # print(logits[1])
 
 m = nn.Conv2d(2,3,3,stride=1)
-a = nn.MaxPool2d(2)
+# a = nn.MaxPool2d(2)
 print((m.state_dict()["weight"]))
+print((m.state_dict()["weight"].shape))
+print("*"*20)
+print(torch.transpose(m.state_dict()["weight"],0,1))
+print(torch.transpose(m.state_dict()["weight"],1,3).shape)
 input = torch.ones(1,2,6,6)
 print("*"*20)
 print(m(input))
+print(m(input).shape)
 print("*"*20)
 
-print(a(input))
+# print(a(input))
 
 # # print("Logits: ")
 # # print(logits.shape)
