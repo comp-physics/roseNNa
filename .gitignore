@@ -4,3 +4,5 @@
 !*.py
 !Makefile
 !*.txt
+reading.f90
+test.txt

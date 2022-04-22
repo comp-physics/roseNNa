@@ -1,20 +1,22 @@
 module model_layers
 
     USE activation_functions
+    USE derived_types
 
     implicit none
 
 contains
-    FUNCTION linear_layer(inp, weights, bias) result(output)
+    subroutine linear_layer(inp, lin) 
         IMPLICIT NONE
-
-        real, intent(in) :: weights(:,:)
-        real, intent(in) :: inp(:)
-        real, intent(in) :: bias(:)
-        real :: output(size(weights, dim=1))
-
-        output = matmul(weights,inp) + bias
-    END FUNCTION linear_layer
+        real, ALLOCATABLE, intent(inout) :: inp(:,:)
+        TYPE(linLayer), INTENT(IN) :: lin
+        ! real, intent(inout) :: output(:,:)
+        real, DIMENSION(size(inp,1)) :: inpReshape
+        INTEGER :: outShape
+        outShape = size(lin%weights, 1)
+        inpReshape = RESHAPE(inp, SHAPE(inpReshape))
+        inp = RESHAPE(lin%fn_ptr(matmul(lin%weights,inpReshape) + lin%biases), (/outShape, 1/))
+    end subroutine 
 
     subroutine lstm_cell(input, hid1, cell1, Whh, Wih, Bih, Bhh, hiddenOut, cellOut)
         implicit none
@@ -80,15 +82,17 @@ contains
             cell1 = cellOut
         END DO
     end subroutine
-    FUNCTION conv(inp, convWeights, in_channels, out_channels, kernel_size, stride) result(out)
+
+    subroutine conv(inp, convWeights, bias, in_channels, out_channels, kernel_size, stride, out)
         implicit none
         REAL, INTENT(IN), DIMENSION(:,:,:) :: inp !==(numImages,imageD1,imageD2)
-        REAL, INTENT(IN), DIMENSION(:,:,:,:) :: convWeights !==(numConvRows,numConvCols,ConvRowDim,ConvColDim)
+        REAL, INTENT(IN), ALLOCATABLE, DIMENSION(:,:,:,:) :: convWeights !==(numConvRows,numConvCols,ConvRowDim,ConvColDim)
+        REAL, INTENT(IN), ALLOCATABLE, DIMENSION(:) :: bias
         INTEGER, INTENT(IN) :: in_channels !==numImages
         INTEGER, INTENT(IN) :: out_channels !==numConvCols
         INTEGER, INTENT(IN) :: kernel_size !==(ConvRowDim,ConvColDim)
         INTEGER, INTENT(IN) :: stride
-        REAL, DIMENSION(out_channels, size(inp,dim=2)-kernel_size + 1, size(inp,dim=2)-kernel_size+1) :: out
+        REAL, ALLOCATABLE, DIMENSION(:,:,:), INTENT(OUT) :: out
         
         INTEGER :: outer
         INTEGER :: overImage
@@ -96,7 +100,7 @@ contains
         INTEGER :: outRowDim
         INTEGER :: outColDim
         REAL :: sumini = 0
-
+        ALLOCATE(out(out_channels, size(inp,dim=2)-kernel_size + 1, size(inp,dim=2)-kernel_size+1))
         outRowDim = size(inp,dim=2)-kernel_size + 1
         outColDim = size(inp,dim=2)-kernel_size + 1
 
@@ -105,28 +109,28 @@ contains
                 DO inner = 0, in_channels-1 !==applying kernel to each input image
                     sumini = sumini + SUM(inp(inner+1,(overImage/outRowDim + 1):(overImage/outRowDim+kernel_size) &
                                       ,(MODULO(overImage,outColDim) + 1):(MODULO(overImage,outColDim)+kernel_size)) &
-                          * convWeights(inner,outer,:,:))
+                          * convWeights(outer+1,inner+1,:,:)) !==depending on the way convWeights is laid out change position of outer/inner
                 END DO
-                out(outer+1,overImage/outRowDim,MODULO(overImage,outColDim)) = sumini
+                out(outer+1,overImage/outRowDim + 1,MODULO(overImage,outColDim)+1) = sumini + bias(outer+1)
                 sumini = 0;
             END DO
         END DO
 
-    END FUNCTION conv
+    END subroutine
 
 
-    FUNCTION max_pool(inp, kernel_size, stride) result(out)
+    subroutine max_pool(inp, kernel_size, stride, out)
         implicit none
         REAL, INTENT(IN), DIMENSION(:,:,:) :: inp !==(numImages,imageD1,imageD2)
         INTEGER, INTENT(IN) :: kernel_size !==(ConvRowDim,ConvColDim)
         INTEGER, INTENT(IN) :: stride
-        REAL, DIMENSION(size(inp,dim=1), size(inp,dim=2)/kernel_size, size(inp,dim=3)/kernel_size) :: out
+        REAL, ALLOCATABLE, DIMENSION(:,:,:) :: out
         
         INTEGER :: overImage
         INTEGER :: inner
         INTEGER :: outRowDim
         INTEGER :: outColDim
-
+        ALLOCATE(out(size(inp,dim=1), size(inp,dim=2)/kernel_size, size(inp,dim=3)/kernel_size))
         outRowDim = size(inp,dim=2)/kernel_size
         outColDim = size(inp,dim=3)/kernel_size
 
@@ -139,7 +143,7 @@ contains
             END DO
         END DO
 
-    END FUNCTION max_pool
+    end subroutine
 
 
     

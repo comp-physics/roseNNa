@@ -24,21 +24,29 @@ def write_lstm(f, lstm):
             f.write('{0}'.format(lstm.state_dict()[layer].shape[0]))
         if index != len(lstm.state_dict()) - 1:
             f.write('\n')
+def write_layer(f, layer, name):
+    f.write(name)
+    f.write('\n')
+    for index, typeLayer in enumerate(layer.state_dict()):
+        line = ''
+        for num in list(layer.state_dict()[typeLayer].shape):
+            line += str(num) + " "
+        f.write(line.strip())
+        if index != len(layer.state_dict()) - 1:
+            f.write('\n')
 def nested_children(f,m):
     children = dict(m.named_children())
     output = {}
     if children == {}:
         if isinstance(m,nn.Linear):
-            f.write('linear')
             layer_order.append('linear')
-            f.write('\n')
-            f.write('{1} {0}'.format(m.in_features,m.out_features))
+            write_layer(f, m, 'linear')
         elif isinstance(m,nn.LSTM):
             layer_order.append('lstm')
-            
             write_lstm(f,m)
-        elif isinstance(m,nn.Flatten):
-            f.write('Flatten')
+        elif isinstance(m,nn.Conv2d):
+            layer_order.append('conv')
+            write_layer(f, m, 'conv')
         elif isinstance(m,nn.ReLU):
             f.write(str(activation_functions[str(m)]))
         elif isinstance(m,nn.Sigmoid):
@@ -62,5 +70,6 @@ with open('model3.txt','w') as f:
     f.write(str(sum))
     f.write('\n')
     nested_children(f,model)
-    with open('test.npy', 'wb') as f2:
-        np.save(f2, np.array(layer_order))
+    print("Layer order: ", layer_order)
+    # with open('test.npy', 'wb') as f2:
+    #     np.save(f2, np.array(layer_order))

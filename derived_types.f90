@@ -24,6 +24,11 @@ module derived_types
         REAL, ALLOCATABLE, DIMENSION(:) :: bih
     ENDTYPE lstmLayer
 
+    TYPE convLayer
+        REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: weights
+        REAL, ALLOCATABLE, DIMENSION(:) :: biases
+    ENDTYPE convLayer
+
     
 
     
