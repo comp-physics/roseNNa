@@ -27,7 +27,13 @@ module derived_types
     TYPE convLayer
         REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: weights
         REAL, ALLOCATABLE, DIMENSION(:) :: biases
+        !==stride
     ENDTYPE convLayer
+
+    TYPE maxpoolLayer
+        INTEGER :: kernel_size
+        INTEGER :: stride
+    ENDTYPE maxpoolLayer
 
     
 

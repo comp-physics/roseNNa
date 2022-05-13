@@ -47,6 +47,12 @@ def nested_children(f,m):
         elif isinstance(m,nn.Conv2d):
             layer_order.append('conv')
             write_layer(f, m, 'conv')
+        elif isinstance(m,nn.MaxPool2d):
+            layer_order.append("maxpool")
+            write_layer(f, m, 'maxpool')
+            #put this in function later
+            f.write(str(m.kernel_size) + ' ')
+            f.write(str(m.stride))
         elif isinstance(m,nn.ReLU):
             f.write(str(activation_functions[str(m)]))
         elif isinstance(m,nn.Sigmoid):

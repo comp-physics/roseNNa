@@ -10,21 +10,21 @@ model = NN()
 torch.save(model.state_dict(),"nntester4.pt")
 
 # torch.save(model.state_dict(),"nntester2.pt")
-# batch_size = 1
-# seq_len = 1
-# hidden_dim = 2
-# input_dim = 5
-# n_layers = 1
-# inp = torch.ones(batch_size, seq_len, input_dim)
+batch_size = 1
+seq_len = 2
+hidden_dim = 2
+input_dim = 5
+n_layers = 1
+inp = torch.ones(batch_size, seq_len, input_dim)
 # inp = torch.ones(1,2)
-inp = torch.ones(1,2,3,3)
-# hidden_state = torch.ones(n_layers, batch_size, hidden_dim)
-# cell_state = torch.ones(n_layers, batch_size, hidden_dim)
-# hidden = (hidden_state, cell_state)
+# inp = torch.ones(1,2,3,3)
+hidden_state = torch.ones(n_layers, batch_size, hidden_dim)
+cell_state = torch.ones(n_layers, batch_size, hidden_dim)
+hidden = (hidden_state, cell_state)
 # X = torch.ones(1,2)
 a = time.time()
 # logits = model(X)
-logits = model(inp) #hidden
+logits = model(inp, hidden) #hidden
 
 # torch.onnx.export(model,               # model being run
 #                   (inp, hidden),                         # model input (or a tuple for multiple inputs)
@@ -37,16 +37,14 @@ logits = model(inp) #hidden
 #                   )
 print(f"Time taken: {time.time()-a}")
 print(logits)
+print("*"*30)
 listToParse = []
 for l in model.state_dict():
     print(model.state_dict()[l])
-    # try:
-    #     listToParse.append((list(model.state_dict()[l].shape),torch.transpose(model.state_dict()[l],0,1).tolist()))
-    # except:
-    #     listToParse.append((list(model.state_dict()[l].shape),model.state_dict()[l].tolist()))
     reaList = model.state_dict()[l]
     shape = list(model.state_dict()[l].shape)
     combs = []
+    #for F90, we must find transpose all combinations of dimensions
     for x in range(len(shape)):
         combs.append(x)
     for dim1,dim2 in itertools.combinations(combs,2):
