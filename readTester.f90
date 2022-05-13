@@ -9,6 +9,8 @@ module readTester
     TYPE(linLayer), ALLOCATABLE, DIMENSION(:) :: linLayers
     TYPE(lstmLayer), ALLOCATABLE, DIMENSION(:) :: lstmLayers
     TYPE(convLayer), ALLOCATABLE, DIMENSION(:) :: convLayers
+    TYPE(maxpoolLayer), ALLOCATABLE, DIMENSION(:) :: maxpoolLayers
+    CHARACTER(len = 20), ALLOCATABLE, DIMENSION(:) :: architecture
     REAL, ALLOCATABLE, DIMENSION(:,:) :: weights
     REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
     INTEGER :: w_dim1
@@ -29,9 +31,12 @@ module readTester
     
     subroutine initialize()
         INTEGER :: Reason
+        CHARACTER(len = 20), ALLOCATABLE, DIMENSION(:) :: name
         ALLOCATE(lstmLayers(0))
         ALLOCATE(linLayers(0))
         ALLOCATE(convLayers(0))
+        ALLOCATE(maxpoolLayers(0))
+        ALLOCATE(architecture(0))
         open(10, file = "model3.txt")
         open(11, file = "weights_biases3.txt")
 
@@ -42,19 +47,35 @@ module readTester
             if (Reason < 0) then
                 exit readloop
             end if
+            ALLOCATE(name(1))
+            name(1) = layerName
             if (layerName .eq.  "lstm") then
                 CALL read_lstm(10, 11)
             else if (layerName .eq. "linear") then
                 CALL read_linear(10, 11)
             else if (layerName .eq. "conv") then
                 CALL read_conv(10, 11)
+            else if (layerName .eq. "maxpool") then
+                CALL read_maxpool(10, 11)
             end if
+            architecture = [architecture, name]
+            DEALLOCATE(name)
 
             
         END DO readloop
 
     end subroutine
-
+    subroutine read_maxpool(file1, file2)
+        INTEGER, INTENT(IN) :: file1
+        INTEGER, INTENT(IN) :: file2
+        TYPE(maxpoolLayer), ALLOCATABLE, DIMENSION(:) :: maxpool
+        ALLOCATE(maxpool(1))
+        read(file1, *) w_dim1, w_dim2
+        maxpool(1)%kernel_size = w_dim1
+        maxpool(1)%stride = w_dim2
+        maxpoolLayers = [maxpoolLayers, maxpool]
+        DEALLOCATE(maxpool)
+    end subroutine
     subroutine read_conv(file1, file2)
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2

@@ -1,17 +1,10 @@
-
-CALL lstm_cell(inp1, hid1, cell1, lstmLayers(1)%whh, lstmLayers(1)%wih, lstmLayers(1)%bih, lstmLayers(1)%bhh, out, cellout)
-
-
-out = linear_layer(out, layers(1)%weights, layers(1)%biases)
-out = layers(1)%fn_ptr(out)
-
-out = linear_layer(out, layers(2)%weights, layers(2)%biases)
-out = layers(2)%fn_ptr(out)
-
-out = linear_layer(out, layers(3)%weights, layers(3)%biases)
-out = layers(3)%fn_ptr(out)
-
-out = linear_layer(out, layers(4)%weights, layers(4)%biases)
-out = layers(4)%fn_ptr(out)
-
+CALL conv(inp, convLayers(1)%weights, convLayers(1)%biases)
+CALL max_pool(inp,maxpoolLayers(1))
+CALL conv(inp, convLayers(2)%weights, convLayers(2)%biases)
+CALL max_pool(inp,maxpoolLayers(2))
+CALL linear_layer(inp, linLayers(1))
+CALL linear_layer(inp, linLayers(2))
+CALL linear_layer(inp, linLayers(3))
+CALL linear_layer(inp, linLayers(4))
+CALL lstm(inp, hid1, cell1, lstmLayers(1)%whh, lstmLayers(1)%wih, lstmLayers(1)%bih, lstmLayers(1)%bhh)
 
