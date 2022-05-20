@@ -28,6 +28,17 @@ contains
         end where
     END FUNCTION relu
 
+    FUNCTION relu2d(x) result(output)
+        real, intent(in) :: x(:,:)
+        real :: output(size(x,1), size(x,2))
+        
+        where (x < 0)
+            output = 0
+        elsewhere
+            output = x
+        end where
+    END FUNCTION relu2d
+
     FUNCTION tanhh(x) result(output)
         real, intent(in) :: x(:)
         real :: output(size(x))

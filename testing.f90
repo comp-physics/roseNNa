@@ -1,0 +1,9 @@
+
+REAL, ALLOCATABLE, DIMENSION(:,:,:) :: input
+REAL, ALLOCATABLE, DIMENSION(:,:,:) :: hidden_state
+REAL, ALLOCATABLE, DIMENSION(:,:,:) :: cell_state
+REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: output0
+REAL, ALLOCATABLE, DIMENSION(:,:,:) :: output1
+REAL, ALLOCATABLE, DIMENSION(:,:) :: output2
+
+

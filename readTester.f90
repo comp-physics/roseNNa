@@ -10,8 +10,9 @@ module readTester
     TYPE(lstmLayer), ALLOCATABLE, DIMENSION(:) :: lstmLayers
     TYPE(convLayer), ALLOCATABLE, DIMENSION(:) :: convLayers
     TYPE(maxpoolLayer), ALLOCATABLE, DIMENSION(:) :: maxpoolLayers
-    CHARACTER(len = 20), ALLOCATABLE, DIMENSION(:) :: architecture
+    CHARACTER(len = 20) :: activation_func
     REAL, ALLOCATABLE, DIMENSION(:,:) :: weights
+    REAL, ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
     REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
     INTEGER :: w_dim1
     INTEGER :: w_dim2
@@ -20,7 +21,7 @@ module readTester
 
     REAL, ALLOCATABLE, DIMENSION(:) :: biases
 
-    INTEGER :: activation_func
+    ! INTEGER :: activation_func
 
     CHARACTER(LEN = 10) :: layerName
 
@@ -36,9 +37,8 @@ module readTester
         ALLOCATE(linLayers(0))
         ALLOCATE(convLayers(0))
         ALLOCATE(maxpoolLayers(0))
-        ALLOCATE(architecture(0))
-        open(10, file = "model3.txt")
-        open(11, file = "weights_biases3.txt")
+        open(10, file = "onnxModel.txt")
+        open(11, file = "onnxWeights.txt")
 
         read(10, *) numLayers
         
@@ -47,19 +47,22 @@ module readTester
             if (Reason < 0) then
                 exit readloop
             end if
-            ALLOCATE(name(1))
-            name(1) = layerName
-            if (layerName .eq.  "lstm") then
+            if (layerName .eq.  "LSTM") then
                 CALL read_lstm(10, 11)
-            else if (layerName .eq. "linear") then
+            else if (layerName .eq. "Gemm") then
                 CALL read_linear(10, 11)
             else if (layerName .eq. "conv") then
                 CALL read_conv(10, 11)
             else if (layerName .eq. "maxpool") then
                 CALL read_maxpool(10, 11)
+            else if (layerName .eq. "Reshape") then
+                CYCLE
+            else if (layerName .eq. "Transpose") then
+                cycle
+            else if (layerName .eq. "Squeeze") then
+                cycle
             end if
-            architecture = [architecture, name]
-            DEALLOCATE(name)
+
 
             
         END DO readloop
@@ -70,9 +73,9 @@ module readTester
         INTEGER, INTENT(IN) :: file2
         TYPE(maxpoolLayer), ALLOCATABLE, DIMENSION(:) :: maxpool
         ALLOCATE(maxpool(1))
-        read(file1, *) w_dim1, w_dim2
+        read(file1, *) w_dim1 !==w_dim2
         maxpool(1)%kernel_size = w_dim1
-        maxpool(1)%stride = w_dim2
+        ! maxpool(1)%stride = w_dim2
         maxpoolLayers = [maxpoolLayers, maxpool]
         DEALLOCATE(maxpool)
     end subroutine
@@ -106,18 +109,17 @@ module readTester
         INTEGER, INTENT(IN) :: file2
         TYPE(lstmLayer), ALLOCATABLE, DIMENSION(:) :: lstm
         ALLOCATE(lstm(1))
-        read(file1, *) w_dim1, w_dim2
-        ALLOCATE(weights(w_dim1,w_dim2))
-        read(file2, *) weights
-        lstm(1)%wih = weights
-        DEALLOCATE(weights)
+        read(file1, *) w_dim1, w_dim2, w_dim3
+        ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
+        read(file2, *) midWeights
+        lstm(1)%wih = midWeights
+        DEALLOCATE(midWeights)
         
-        
-        read(file1, *) w_dim1, w_dim2
-        ALLOCATE(weights(w_dim1,w_dim2))
-        read(file2, *) weights
-        lstm(1)%whh = weights
-        DEALLOCATE(weights)
+        read(file1, *) w_dim1, w_dim2, w_dim3
+        ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
+        read(file2, *) midWeights
+        lstm(1)%whh = midWeights
+        DEALLOCATE(midWeights)
         
 
         read(file1, *) w_dim1
@@ -139,6 +141,7 @@ module readTester
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(linLayer), ALLOCATABLE,DIMENSION(:) :: lin
+
         ALLOCATE(lin(1))
         read(file1, *) w_dim1, w_dim2
         ALLOCATE(weights(w_dim1,w_dim2))
@@ -150,10 +153,10 @@ module readTester
 
         read(file1, *) activation_func
 
-        if (activation_func == 0) then
-            lin(1)%fn_ptr => relu
-        else if (activation_func == 1) then
-            lin(1)%fn_ptr => sigmoid
+        if (activation_func .eq. "Relu") then
+            lin(1)%fn_ptr => relu2d
+        else if (activation_func .eq. "Sigmoid") then
+            lin(1)%fn_ptr => sigmoid2d
         end if
 
         lin(1)%weights = weights
