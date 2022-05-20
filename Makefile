@@ -1,6 +1,6 @@
 FC=gfortran
-FFLAGS=-O3 -Wall -Wextra -fcheck=bounds
-SRC=activation_funcs.f90 layers.f90 derived_types.f90 readTester.f90 linearV3.f90
+FFLAGS=-O3 -Wall -Wextra -fcheck=all -fbacktrace
+SRC=activation_funcs.f90 layers.f90 derived_types.f90 readTester.f90 linearV3copy.f90
 SRCPY=nntester.py parserProd.py modelParser.py
 OBJ=${SRC:.f90=.o}
 

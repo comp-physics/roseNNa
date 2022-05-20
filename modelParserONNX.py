@@ -1,22 +1,82 @@
+from tkinter.tix import Tree
 import torch
 import torch.nn as nn
 import numpy as np
 import torch.onnx
 import onnx
+import itertools 
+from onnx import numpy_helper
+import math
 
-onnxModel = onnx.load('nn_lstm.onnx')
+onnxModel = onnx.load('maxpool.onnx')
+onnxModel_weights = onnx.load('maxpool_weights.onnx')
 nodes = onnxModel.graph.node
-
+value_info = onnx.shape_inference.infer_shapes(onnxModel).graph.value_info
 ioMap = {}
 initializer = {}
+initializerWeights = {}
+intermediateShapes = {}
+inputs = []
 for inp in onnxModel.graph.input:
     ioMap[inp.name] = inp.name
+    inputs.append([inp.name,len(inp.type.tensor_type.shape.dim)])
+
+for inter in value_info:
+    intermediateShapes[inter.name] = [d.dim_value for d in inter.type.tensor_type.shape.dim]
 
 for weights in onnxModel.graph.initializer:
     initializer[weights.name] = weights.dims
-#list of tuples: (layer_name, input_list[], parameters)
+    initializerWeights[weights.name] = numpy_helper.to_array(weights)
+
 modelArch = []
 extra = "0"
+
+def stranspose(arr):
+    shape = arr.shape
+    combs = [x for x in range(len(shape))]
+    for dim1, dim2 in itertools.combinations(combs,2):
+        dim = combs.copy()
+        dim[dim1] = dim2
+        dim[dim2] = dim1
+        arr = np.transpose(arr, dim)
+    return stringer(arr.flatten().tolist())
+
+def stringer(mat):
+    s = ""
+    for elem in mat:
+        s += str(elem) + " "
+    return s.strip()
+
+def reshapeParser(reshape, trueShape):
+    contains = False
+    ind = 0
+    for index, dim in enumerate(reshape):
+        if dim==-1:
+            ind = index
+            contains = True
+            break
+    if not contains:
+        return reshape
+    else:
+        res = np.prod(reshape)*-1
+        true = np.prod(trueShape)
+        missing_dim = int(true/res)
+        reshape[ind] = missing_dim
+        return reshape
+    
+#ONNX parser
+#onnxModel.txt => holds model structure
+#onnxWeights.txt => holds model's weights in corresponding order
+
+#ioMap => dictionary that maps (outputs) -> (inputs)
+#initializer => holds weights dims
+
+#modelArch => (layer_name, input_list[], parameters) to call respective subroutines in fypp
+with open('onnxWeights.txt', 'w') as f2:
+    for w in onnxModel_weights.graph.initializer:
+        f2.write(stranspose(numpy_helper.to_array(w)))
+        f2.write("\n")
+
 
 with open('onnxModel.txt','w') as f:
     f.write(str(len(nodes)))
@@ -25,54 +85,103 @@ with open('onnxModel.txt','w') as f:
         layer = node.op_type
         f.write(layer)
         f.write("\n")
-        if layer == "Transpose":
-            modelArch.append(("Transpose",[ioMap[node.input[0]]], node.attribute[0].ints))
-            f.write(str(len(node.attribute[0].ints)))
-            f.write("\n")
+        if layer == "Transpose": #for this, make sure order is set to tuple[2] and shape is set accordingly
+            modelArch.append(("Transpose",[ioMap[node.input[0]]], [list(map(lambda x: x+1,node.attribute[0].ints))])) #"order"
+
             ioMap[node.output[0]] = ioMap[node.input[0]]
-        elif layer == "LSTM":
-            modelArch.append(("LSTM", [ioMap[node.input[0]], node.input[-2], node.input[-1]], None)) #input = ["input", "hidden_state", "cell_state"]
+
+        elif layer == "LSTM": #changes shape
+            modelArch.append(("LSTM", [ioMap[node.input[0]], ioMap[node.input[-2]], ioMap[node.input[-1]]], ["output"+extra], None)) #input = ["input", "hidden_state", "cell_state"]
+            inputs.append(["output"+extra,len(intermediateShapes[node.output[0]])])
             for inp in node.input[1:3]: #represents ONNX's locations of weights
                 for dim in initializer[inp]:
                     f.write(str(dim)+" ")
                 f.write("\n")
+                # f2.write(stranspose(initializerWeights[inp]))
+                # f2.write("\n")
+            split = np.split(initializerWeights[node.input[3]],2,1)
             for x in range(2):
                 f.write(str(int(initializer[node.input[3]][1]/2)))
                 f.write("\n")
+                # f2.write(stringer(split[x].flatten().tolist()))
+                # f2.write("\n")
             ioMap[node.output[0]] = "output" + extra
             extra = str(int(extra)+1)
-            ioMap[node.output[1]] = node.input[-2]
-            ioMap[node.output[2]] = node.input[-1]
-            #PUT OUTPUTS IN IOMAP, but based on my output in f90, for example for lstm, the output hidden state and output cell state are stored in the first two parameters of the function. the cumulative outputs will probably be some external thing
+            ioMap[node.output[1]] = ioMap[node.input[-2]]
+            ioMap[node.output[2]] = ioMap[node.input[-1]]
+
+            #write weights to f2
         elif layer == "Gemm":
             modelArch.append(("Gemm", [ioMap[node.input[0]]], None))
+
             for inp in node.input[1:3]:
                 for dim in initializer[inp]:
                     f.write(str(dim)+ " ") 
                 f.write("\n")
+                # f2.write(stranspose(initializerWeights[inp]))
+                # f2.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
-        elif layer == "Squeeze":
-            modelArch.append(("Squeeze", [ioMap[node.input[0]]], node.attribute[0].ints))
+
+        #check notion summer start
+        elif layer == "Squeeze": #changes shape
+            #note for squeeze and for reshape:
+            #look at onnx.shape_inference.infer_shapes(onnxModel).graph.value_info. make a map of {"name":dimensions}.
+            #then when you arrive at squeeze, look at map[node.input[0]]'s shape and encode that information into the input
+            #the input should look like this: {"output" + extra: shape/num_dimensions}
+            modelArch.append(("Squeeze", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [node.attribute[0].ints])) #axes to be squeezed
+            inputs.append(["output"+extra, len(intermediateShapes[node.output[0]])])
             ioMap[node.output[0]] = "output" + extra
             extra = str(int(extra)+1)
-        elif layer == "Reshape":
-            modelArch.append(("Reshape", [ioMap[node.input[0]]], initializer[node.input[-1]]))
+
+
+        #check notion summer start
+        elif layer == "Reshape": #changes shape
+            modelArch.append(("Reshape", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [reshapeParser(initializerWeights[node.input[-1]].tolist(), intermediateShapes[node.input[0]])])) #new shape
+            inputs.append(["output"+extra, len(intermediateShapes[node.output[0]])])
             ioMap[node.output[0]] = "output" + extra
             extra = str(int(extra)+1)
-        # elif layer == "Conv":
-        #     #do something
-        # elif layer == "MaxPool":
-        #     #do something
+
+        elif layer == "Conv":
+            modelArch.append(("Conv", [ioMap[node.input[0]]], [node.attribute[0].ints, node.attribute[2].ints, node.attribute[3].ints, node.attribute[4].ints])) #(dilations, kernel_shape, pads, strides)
+
+            for inp in node.input[1:3]:
+                for dim in initializer[inp]:
+                    f.write(str(dim)+ " ")
+                f.write("\n")
+                # f2.write(stranspose(initializerWeights[inp]))
+                # f2.write("\n")
+            ioMap[node.output[0]] = ioMap[node.input[0]]
+
+        elif layer == "MaxPool":
+            modelArch.append(("MaxPool", [ioMap[node.input[0]]], [node.attribute[0].i, node.attribute[2].ints, node.attribute[3].ints])) #(ceil_mode, pads, strides)
+            # f2.write(str(node.attribute[1].ints))
+            # f2.write("\n")
+            ioMap[node.output[0]] = ioMap[node.input[0]]
+
         elif layer == "Relu":
             modelArch.append(("Relu", [ioMap[node.input[0]]], None))
+
             ioMap[node.output[0]] = ioMap[node.input[0]]
+
         elif layer == "Sigmoid":
             modelArch.append(("Sigmoid", [ioMap[node.input[0]]], None))
+
             ioMap[node.output[0]] = ioMap[node.input[0]]
+
         elif layer == "Tanh":
             modelArch.append(("Tanh", [ioMap[node.input[0]]], None))
+
             ioMap[node.output[0]] = ioMap[node.input[0]]
-    for a in modelArch:
-        print(a)
+        else:
+            continue
+    print(modelArch)
+    print("*"*50)
+    print(ioMap)
+    print("*"*50)
+    print(inputs)
+
+
+#: set tup = ('Squeeze', ('output0', 4), ['output1'], [[1]])
+#${tup[2][0]}$ = RESHAPE(${tup[1][0]}$,(/#{for num in range(tup[1][1])}##{if num not in tup[3][0]}#SIZE(${tup[1][0]}$, dim = ${num+1}$)#{if num < (tup[1][1]-1)}#, #{endif}##{endif}##{endfor}#/))
 
 

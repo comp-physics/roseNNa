@@ -6,8 +6,8 @@ module derived_types
 
     abstract interface
         function func (z) result(output)
-            real, intent(in) :: z(:)
-            real :: output(size(z))
+            real, intent(in) :: z(:,:)
+            real :: output(size(z,1), size(z,2))
         end function func
     end interface
     
@@ -18,8 +18,8 @@ module derived_types
     ENDTYPE linLayer
 
     TYPE lstmLayer
-        REAL, ALLOCATABLE, DIMENSION(:,:) :: whh
-        REAL, ALLOCATABLE, DIMENSION(:,:) :: wih
+        REAL, ALLOCATABLE, DIMENSION(:,:,:) :: whh
+        REAL, ALLOCATABLE, DIMENSION(:,:,:) :: wih
         REAL, ALLOCATABLE, DIMENSION(:) :: bhh
         REAL, ALLOCATABLE, DIMENSION(:) :: bih
     ENDTYPE lstmLayer
@@ -32,7 +32,6 @@ module derived_types
 
     TYPE maxpoolLayer
         INTEGER :: kernel_size
-        INTEGER :: stride
     ENDTYPE maxpoolLayer
 
     

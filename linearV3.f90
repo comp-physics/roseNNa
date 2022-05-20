@@ -48,7 +48,7 @@ PROGRAM linear
 
 
     !===============================================THIS BLOCK COMES FROM FYPP OUTPUT "openNP.fpp"=======================================================
-    CALL max_pool(inp3,maxpoolLayers(1))
+    ! CALL max_pool(inp3,maxpoolLayers(1))
     ! CALL conv(inp2, convLayers(1)%weights, convLayers(1)%biases, 2, 3, 3, 1)
     ! CALL lstm(inp1, hid1, cell1, lstmLayers(1)%whh, lstmLayers(1)%wih, lstmLayers(1)%bih, lstmLayers(1)%bhh, out, cellout)
     ! CALL linear_layer(out, linLayers(1))
@@ -61,10 +61,7 @@ PROGRAM linear
     !===================================================================================================================================================
     call CPU_TIME(T2)
     print *, "-------------"
-    print *, inp3(1,:,1)
-    print *, SHAPE(inp3)
-    print *, architecture
-    ! print *, out2(2,1,1)
+    print *, lstmLayers(1)%whh(1,1,:)
     print *, "TIME TAKEN:", T2-T1    
 
 END PROGRAM linear
