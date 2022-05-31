@@ -1,26 +1,27 @@
 FC=gfortran
 FFLAGS=-O3 -Wall -Wextra -fcheck=all -fbacktrace
-SRC=activation_funcs.f90 layers.f90 derived_types.f90 readTester.f90 linearV3copy.f90
+SRC=activation_funcs.f90 derived_types.f90 layers.f90 readTester.f90 linearV3copy.fpp user.f90
 SRCPY=nntester.py parserProd.py modelParser.py
 OBJ=${SRC:.f90=.o}
+OBJ2=${OBJ:.fpp=.o}
 
-output: $(OBJ)
-	$(FC) $(FFLAGS) -o $@ $(OBJ)
+
+output: $(OBJ2)
+	$(FC) $(FFLAGS) -o $@ $(OBJ2)
 
 
 %.o: %.f90
 	$(FC) $(FFLAGS) -o $@ -c $<
 
-run: $(SRCPY)
-	python3 nntester.py
-	python3 parserProd.py
-	python3 modelParser.py
+.PRECIOUS : %.f90
+%.f90: %.fpp variables.fpp
+	fypp $< $*.f90
 
-all:
-	python3 lstm_linear.py
-	python3 parserProd.py
-	python3 modelParser.py
+test: ex1 output
 	./output
+
+ex1: modelParserONNX.py
+	python3 modelParserONNX.py $(case)
 
 clean:
 	rm *.o *.mod output

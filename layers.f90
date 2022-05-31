@@ -88,7 +88,7 @@ contains
         output = reshape(output,(/SIZE(output,dim=1),SIZE(output,dim=2), SIZE(output,dim=4),SIZE(output,dim=3)/), order = [1,2,4,3]) !==(timesteps,num_directions,batch_size,m)
     end subroutine
 
-    subroutine conv(inp, convWeights, bias, dilations, pads, strides) !=
+    subroutine conv(inp, convWeights, bias, dilations, pads, strides)
         implicit none
         REAL, INTENT(INOUT), ALLOCATABLE, DIMENSION(:,:,:) :: inp !==(numImages,imageD1,imageD2)
         REAL, INTENT(IN), ALLOCATABLE, DIMENSION(:,:,:,:) :: convWeights !==(numConvRows,numConvCols,ConvRowDim,ConvColDim)
