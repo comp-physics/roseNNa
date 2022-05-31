@@ -1,4 +1,3 @@
-from tkinter.tix import Tree
 import torch
 import torch.nn as nn
 import numpy as np
@@ -7,16 +6,20 @@ import onnx
 import itertools 
 from onnx import numpy_helper
 import math
+import sys
 
-onnxModel = onnx.load('maxpool.onnx')
-onnxModel_weights = onnx.load('maxpool_weights.onnx')
+
+file = sys.argv[1]
+
+onnxModel = onnx.load('goldenFiles/'+file+'/'+file+'.onnx')
+onnxModel_weights = onnx.load('goldenFiles/'+file+'/'+file+'_weights.onnx')
 nodes = onnxModel.graph.node
 value_info = onnx.shape_inference.infer_shapes(onnxModel).graph.value_info
 ioMap = {}
 initializer = {}
 initializerWeights = {}
 intermediateShapes = {}
-inputs = []
+inputs = [] # need to export
 for inp in onnxModel.graph.input:
     ioMap[inp.name] = inp.name
     inputs.append([inp.name,len(inp.type.tensor_type.shape.dim)])
@@ -28,7 +31,12 @@ for weights in onnxModel.graph.initializer:
     initializer[weights.name] = weights.dims
     initializerWeights[weights.name] = numpy_helper.to_array(weights)
 
-modelArch = []
+out = {}
+for x in onnxModel.graph.output:
+    out[x.name] = [d.dim_value for d in x.type.tensor_type.shape.dim]
+outputs = {} #what outputs corresponds to, need to export
+outShape = [] #what shape to instantiate the output name to, need to export
+modelArch = [] #need to export
 extra = "0"
 
 def stranspose(arr):
@@ -85,6 +93,9 @@ with open('onnxModel.txt','w') as f:
         layer = node.op_type
         f.write(layer)
         f.write("\n")
+        for index,x in enumerate(node.output):
+            if x in out:
+                outShape.append([x,len(out[x])])
         if layer == "Transpose": #for this, make sure order is set to tuple[2] and shape is set accordingly
             modelArch.append(("Transpose",[ioMap[node.input[0]]], [list(map(lambda x: x+1,node.attribute[0].ints))])) #"order"
 
@@ -174,13 +185,30 @@ with open('onnxModel.txt','w') as f:
             ioMap[node.output[0]] = ioMap[node.input[0]]
         else:
             continue
+    for x in list(ioMap.keys()):
+        if x in out:
+            outputs[x] = ioMap[x]
     print(modelArch)
     print("*"*50)
     print(ioMap)
     print("*"*50)
     print(inputs)
+    print("*"*50)
+    print(outShape)
+    print("*"*50)
+    print(outputs)
 
 
+
+with open("variables.fpp",'w') as f:
+    f.write(f"""#:set architecture = {modelArch}""")
+    f.write("\n")
+    f.write(f"""#:set inputs = {inputs}""")
+    f.write("\n")
+    f.write(f"""#:set outShape = {outShape}""")
+    f.write("\n")
+    f.write(f"""#:set outputs = {outputs}""")
+    f.write("\n")
 #: set tup = ('Squeeze', ('output0', 4), ['output1'], [[1]])
 #${tup[2][0]}$ = RESHAPE(${tup[1][0]}$,(/#{for num in range(tup[1][1])}##{if num not in tup[3][0]}#SIZE(${tup[1][0]}$, dim = ${num+1}$)#{if num < (tup[1][1]-1)}#, #{endif}##{endif}##{endfor}#/))
 
