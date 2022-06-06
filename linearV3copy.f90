@@ -15,13 +15,13 @@ module model
     IMPLICIT NONE
     contains
     !===============================================THIS BLOCK COMES FROM FYPP OUTPUT "openNP.fpp"=======================================================
-        SUBROUTINE use_model(input, hidden_state, cell_state, output0, output1, output)
+        SUBROUTINE use_model(input, hidden_state, cell_state, output)
             IMPLICIT NONE
             REAL, ALLOCATABLE, INTENT(INOUT), DIMENSION(:,:,:) :: input
             REAL, ALLOCATABLE, INTENT(INOUT), DIMENSION(:,:,:) :: hidden_state
             REAL, ALLOCATABLE, INTENT(INOUT), DIMENSION(:,:,:) :: cell_state
-            REAL, ALLOCATABLE, INTENT(INOUT), DIMENSION(:,:,:,:) :: output0
-            REAL, ALLOCATABLE, INTENT(INOUT), DIMENSION(:,:,:) :: output1
+            REAL, ALLOCATABLE,  DIMENSION(:,:,:,:) :: output0
+            REAL, ALLOCATABLE,  DIMENSION(:,:,:) :: output1
             REAL, ALLOCATABLE, INTENT(OUT), DIMENSION(:,:,:) :: output
             REAL :: T1, T2
             CALL CPU_TIME(T1)

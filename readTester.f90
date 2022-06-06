@@ -157,6 +157,8 @@ module readTester
             lin(1)%fn_ptr => relu2d
         else if (activation_func .eq. "Sigmoid") then
             lin(1)%fn_ptr => sigmoid2d
+        else if (activation_func .eq. "Tanh") then
+            lin(1)%fn_ptr => tanhh2d
         end if
 
         lin(1)%weights = weights

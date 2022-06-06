@@ -26,21 +26,33 @@ class NN(nn.Module):
 model = NN()
 inp = torch.ones(1,2)
 
+with open("inputs.fpp",'w') as f1:
+    inputs = inp.flatten().tolist()
+    inpShapeDict = {'inputs': list(inp.shape)}
+    inpDict = {'inputs':inputs}
+    f1.write(f"""#:set inpShape = {inpShapeDict}""")
+    f1.write("\n")
+    f1.write(f"""#:set arrs = {inpDict}""")
+    f1.write("\n")
+    f1.write("a")
+
 def stringer(mat):
     s = ""
     for elem in mat:
         s += str(elem) + " "
     return s.strip()
 logits = model(inp)
-with open("gemm_big.txt", "w") as f:
-    f.write(stringer(list(logits.shape)))
-    f.write("\n")
-    f.write(stringer(logits.flatten().tolist()))
+
+filePath = "/Users/ajaybati/Documents/researchcompphys/goldenFiles/gemm_big/"
+with open(filePath+"gemm_big.txt", "w") as f2:
+    f2.write(stringer(list(logits.shape)))
+    f2.write("\n")
+    f2.write(stringer(logits.flatten().tolist()))
 print(logits.flatten().tolist())
 
 torch.onnx.export(model,               # model being run
                   inp,                         # model input (or a tuple for multiple inputs)
-                  "gemm_big.onnx",   # where to save the model (can be a file or file-like object)
+                  filePath+"gemm_big.onnx",   # where to save the model (can be a file or file-like object)
                   export_params=True,        # store the trained parameter weights inside the model file
                   opset_version=10,          # the ONNX version to export the model to
                   do_constant_folding=True,  # whether to execute constant folding for optimization
@@ -50,7 +62,7 @@ torch.onnx.export(model,               # model being run
 
 torch.onnx.export(model,               # model being run
                   inp,                         # model input (or a tuple for multiple inputs)
-                  "gemm_big_weights.onnx",   # where to save the model (can be a file or file-like object)
+                  filePath+"gemm_big_weights.onnx",   # where to save the model (can be a file or file-like object)
                   export_params=True,        # store the trained parameter weights inside the model file
                   opset_version=10,          # the ONNX version to export the model to
                   do_constant_folding=False,  # whether to execute constant folding for optimization
