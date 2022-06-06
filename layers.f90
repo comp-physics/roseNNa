@@ -7,13 +7,18 @@ module model_layers
 
 contains
     !=== for Gemm operations ======
-    subroutine linear_layer(inp, lin) 
+    subroutine linear_layer(inp, lin, transInp) 
         IMPLICIT NONE
+        INTEGER, INTENT(IN) :: transInp
         real, ALLOCATABLE, intent(inout) :: inp(:,:) !===input is 2d usually (k,n), where n is usually 1
         TYPE(linLayer), INTENT(IN) :: lin !===stores the weights (m,k) and biases (m,1)
-        real, DIMENSION(size(lin%weights,1),size(inp,2)) :: bias_broadcast !==(m,n)
-        bias_broadcast = SPREAD(lin%biases, 2, size(inp,2))
-        inp = lin%fn_ptr(matmul(lin%weights,inp) + bias_broadcast)
+        real, DIMENSION(size(lin%weights,1),size(inp,transInp+1)) :: bias_broadcast !==(m,n)
+        bias_broadcast = SPREAD(lin%biases, 2, size(inp,transInp+1))
+        if (transInp == 1) THEN
+            inp = lin%fn_ptr(matmul(inp,TRANSPOSE(lin%weights)) + TRANSPOSE(bias_broadcast))
+        ELSE
+            inp = lin%fn_ptr(matmul(lin%weights,inp) + bias_broadcast)
+        END IF
     end subroutine 
 
     subroutine lstm_cell(input, hid1, cell1, Whh, Wih, Bih, Bhh)

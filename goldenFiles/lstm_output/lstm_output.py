@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import sys
-sys.path.append("..")
+sys.path.append("/Users/ajaybati/Documents/researchcompphys/goldenFiles/")
 from nnLSTM import LSTM
 import os
 class NN(nn.Module):
@@ -44,13 +44,27 @@ hidden_state = torch.ones(n_layers, batch_size, hidden_dim)
 cell_state = torch.ones(n_layers, batch_size, hidden_dim)
 hidden = (hidden_state, cell_state)
 
+with open("inputs.fpp",'w') as f:
+    inputs = inp.flatten().tolist()
+    h = hidden_state.flatten().tolist()
+    c = cell_state.flatten().tolist()
+    inpShapeDict = {'inputs': list(inp.shape), 'hidden_state': list(hidden_state.shape), 'cell_state': list(cell_state.shape)}
+    inpDict = {'inputs': inputs, 'hidden_state': h, 'cell_state': c}
+    f.write(f"""#:set inpShape = {inpShapeDict}""")
+    f.write("\n")
+    f.write(f"""#:set arrs = {inpDict}""")
+    f.write("\n")
+    f.write("a")
+
 def stringer(mat):
     s = ""
     for elem in mat:
         s += str(elem) + " "
     return s.strip()
 logits = model(inp, hidden)
-with open("lstm_output.txt", "w") as f:
+filePath = "/Users/ajaybati/Documents/researchcompphys/goldenFiles/lstm_output/"
+
+with open(filePath+"lstm_output.txt", "w") as f:
     f.write(stringer(list(logits.shape)))
     f.write("\n")
     f.write(stringer(logits.flatten().tolist()))
@@ -58,7 +72,7 @@ print(logits.flatten().tolist())
 
 torch.onnx.export(model,               # model being run
                   (inp, hidden),                         # model input (or a tuple for multiple inputs)
-                  "lstm_output.onnx",   # where to save the model (can be a file or file-like object)
+                  filePath+"lstm_output.onnx",   # where to save the model (can be a file or file-like object)
                   export_params=True,        # store the trained parameter weights inside the model file
                   opset_version=10,          # the ONNX version to export the model to
                   do_constant_folding=True,  # whether to execute constant folding for optimization
@@ -68,7 +82,7 @@ torch.onnx.export(model,               # model being run
 
 torch.onnx.export(model,               # model being run
                   (inp, hidden),                         # model input (or a tuple for multiple inputs)
-                  "lstm_output_weights.onnx",   # where to save the model (can be a file or file-like object)
+                  filePath+"lstm_output_weights.onnx",   # where to save the model (can be a file or file-like object)
                   export_params=True,        # store the trained parameter weights inside the model file
                   opset_version=10,          # the ONNX version to export the model to
                   do_constant_folding=False,  # whether to execute constant folding for optimization

@@ -123,7 +123,7 @@ with open('onnxModel.txt','w') as f:
 
             #write weights to f2
         elif layer == "Gemm":
-            modelArch.append(("Gemm", [ioMap[node.input[0]]], None))
+            modelArch.append(("Gemm", [ioMap[node.input[0]],node.attribute[2].i], None))
 
             for inp in node.input[1:3]:
                 for dim in initializer[inp]:
@@ -188,15 +188,16 @@ with open('onnxModel.txt','w') as f:
     for x in list(ioMap.keys()):
         if x in out:
             outputs[x] = ioMap[x]
-    print(modelArch)
-    print("*"*50)
-    print(ioMap)
-    print("*"*50)
-    print(inputs)
-    print("*"*50)
-    print(outShape)
-    print("*"*50)
-    print(outputs)
+    # print(modelArch)
+    # print("*"*50)
+    # print(ioMap)
+    # print("*"*50)
+    # print(inputs)
+    # print("*"*50)
+    # print(outShape)
+    # print("*"*50)
+    # print(outputs)
+    trueInputs = [[x.name, len(x.type.tensor_type.shape.dim)] for x in onnxModel.graph.input]
 
 
 
@@ -204,6 +205,8 @@ with open("variables.fpp",'w') as f:
     f.write(f"""#:set architecture = {modelArch}""")
     f.write("\n")
     f.write(f"""#:set inputs = {inputs}""")
+    f.write("\n")
+    f.write(f"""#:set trueInputs = {trueInputs}""")
     f.write("\n")
     f.write(f"""#:set outShape = {outShape}""")
     f.write("\n")
