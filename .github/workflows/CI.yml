@@ -44,11 +44,11 @@ jobs:
 
       - name: Installing Python dependencies (via pip3)
         uses: conda-incubator/setup-miniconda@v2
-          with:
-            activate-environment: torch
-            environment-file: environment.yml
-            python-version: 3.8
-            auto-activate-base: true
+        with:
+          activate-environment: torch
+          environment-file: environment.yml
+          python-version: 3.8
+          auto-activate-base: true
 
       - name: Running Test Cases
         run: |
