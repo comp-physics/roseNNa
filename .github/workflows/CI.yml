@@ -34,7 +34,7 @@ jobs:
       # Runs a set of commands using the runners shell
       - name: Installing Core Dependencies (brew)
         run: |
-          brew install wget make python@3 make cmake coreutils
+          brew install wget make python@3.7 make cmake coreutils
           brew install gcc@11
       
       - name: Installing Python dependencies (via pip3)
