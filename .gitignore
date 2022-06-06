@@ -6,5 +6,6 @@
 !Makefile
 !*.txt
 !*.sh
+!*.yml
 reading.f90
 test.txt
