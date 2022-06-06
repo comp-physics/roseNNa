@@ -7,7 +7,6 @@ cachetools==4.2.4
 certifi==2021.5.30
 charset-normalizer==2.0.12
 clang==5.0
-dataclasses @ file:///tmp/build/80754af9/dataclasses_1614363715916/work
 decorator==5.1.1
 entrypoints==0.4
 flatbuffers @ file:///home/conda/feedstock_root/build_artifacts/python-flatbuffers_1620718971772/work
