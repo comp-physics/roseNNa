@@ -34,13 +34,22 @@ jobs:
       # Runs a set of commands using the runners shell
       - name: Installing Core Dependencies (brew)
         run: |
-          brew install wget make python@3.7 make cmake coreutils
+          brew install wget make make cmake coreutils
           brew install gcc@11
-      
+
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v2
+        with:
+            python-version: 3.8
+
       - name: Installing Python dependencies (via pip3)
-        run: |
-          pip3 install -r requirements.txt
-      
+        - uses: conda-incubator/setup-miniconda@v2
+          with:
+            activate-environment: torch
+            environment-file: environment.yml
+            python-version: 3.8
+            auto-activate-base: true
+
       - name: Running Test Cases
         run: |
           ./run.sh
