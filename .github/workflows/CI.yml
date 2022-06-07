@@ -37,11 +37,11 @@ jobs:
           brew install wget make make cmake coreutils
           brew install gcc@11
 
-      - name: Installing Python dependencies (via pip3)
+      - name: Installing Python dependencies
         uses: conda-incubator/setup-miniconda@v2
         with:
           activate-environment: torch
-          environment-file: torch.yml
+          environment-file: torch2.yml
           python-version: 3.6
           auto-activate-base: false
 
