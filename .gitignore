@@ -1,6 +1,7 @@
 *
 !*/
 !openNP.fpp
+!userTesting.fpp
 !*.f90
 !*.py
 !Makefile
