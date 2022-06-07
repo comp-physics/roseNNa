@@ -54,7 +54,6 @@ dependencies:
   - openssl=1.1.1o=hfe4f2af_0
   - pillow=8.3.1=py36ha4cf6ea_0
   - pip=21.2.2=py36hecd8cb5_0
-  - python=3.6.13=h88f2d9e_0
   - python-flatbuffers=2.0=pyhd8ed1ab_0
   - python_abi=3.6=2_cp36m
   - pytorch=1.10.2=py3.6_0
