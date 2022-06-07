@@ -15,9 +15,9 @@ program name
     cell_state = RESHAPE(    (/1.0, 1.0/),    (/1, 1, 2/), order =     [3 , 2 , 1 ])
     CALL initialize()
     print *, "Model Reconstruction Success!"
+    open(1, file = "goldenFiles/test.txt")
     CALL use_model(inputs, hidden_state, cell_state, output)
     print *, output
-    open(1, file = "goldenFiles/test.txt")
     WRITE(1, *) SHAPE(output)
     output = RESHAPE(output,(/SIZE(output, dim = 3), SIZE(output, dim = 2), SIZE(output, dim = 1)/), order = [3, 2, 1])
     WRITE(1, *) PACK(output,.true.)

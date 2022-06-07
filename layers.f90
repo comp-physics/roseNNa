@@ -14,7 +14,7 @@ contains
         TYPE(linLayer), INTENT(IN) :: lin !===stores the weights (m,k) and biases (m,1)
         real, DIMENSION(size(lin%weights,1),size(inp,transInp+1)) :: bias_broadcast !==(m,n)
         bias_broadcast = SPREAD(lin%biases, 2, size(inp,transInp+1))
-        if (transInp == 1) THEN
+        if (transInp == 0) THEN
             inp = lin%fn_ptr(matmul(inp,TRANSPOSE(lin%weights)) + TRANSPOSE(bias_broadcast))
         ELSE
             inp = lin%fn_ptr(matmul(lin%weights,inp) + bias_broadcast)

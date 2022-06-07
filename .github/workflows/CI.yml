@@ -41,7 +41,7 @@ jobs:
         uses: conda-incubator/setup-miniconda@v2
         with:
           activate-environment: torch
-          environment-file: torch2.yml
+          environment-file: torch3.yml
           python-version: 3.6
           auto-activate-base: false
 
