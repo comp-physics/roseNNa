@@ -42,8 +42,8 @@ jobs:
         with:
           activate-environment: torch
           environment-file: torch.yml
-          python-version: 3.8
-          auto-activate-base: true
+          python-version: 3.6
+          auto-activate-base: false
 
       - name: Running Test Cases
         run: |
