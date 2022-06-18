@@ -2,6 +2,7 @@
 !*/
 !openNP.fpp
 !userTesting.fpp
+!linearV3copy.fpp
 !*.f90
 !*.py
 !Makefile
