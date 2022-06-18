@@ -43,7 +43,10 @@ jobs:
           python-version: 3.8
       - name: Install dependencies
         run: |
-          $CONDA/bin/conda env update --file torch3.yml --name torch
+          python -m pip3 install --upgrade pip
+          pip3 install torch
+          pip3 install onnx
+          pip3 install numpy
 
       - name: Running Test Cases
         run: |
