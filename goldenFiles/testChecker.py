@@ -14,8 +14,8 @@ with open("goldenFiles/test.txt") as f, open("goldenFiles/"+file+"/"+file+".txt"
             if abs(p-f) > 10**-6:
                 out = False
                 break
-    except:
-        pass
+    except Exception as e:
+        print(str(e))
     finally:
         outCompRun = True
         outputFailPath = "/Users/ajaybati/Documents/researchcompphys/outputCase.txt"
