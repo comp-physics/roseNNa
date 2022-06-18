@@ -43,7 +43,7 @@ jobs:
           python-version: 3.8
       - name: Install dependencies
         run: |
-          python -m pip3 install --upgrade pip3
+          pip3 -v
           pip3 install torch
           pip3 install onnx
           pip3 install numpy
