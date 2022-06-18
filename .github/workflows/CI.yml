@@ -38,7 +38,9 @@ jobs:
           brew install gcc@11
 
       - name: Checking F90 version
-        run: gfortran --version
+        run: |
+          ln -s /usr/local/bin/gfortran-10 /usr/local/bin/gfortran
+          gfortran --version
 
       - name: Set up Python 3.8
         uses: actions/setup-python@v2
