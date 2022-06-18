@@ -37,6 +37,9 @@ jobs:
           brew install wget make make cmake coreutils
           brew install gcc@11
 
+      - name: Checking F90 version
+        run: gfortran --version
+
       - name: Set up Python 3.8
         uses: actions/setup-python@v2
         with:
