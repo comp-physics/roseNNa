@@ -10,4 +10,5 @@
 !*.yml
 reading.f90
 userTesting.f90
+linearV3copy.f90
 test.txt
