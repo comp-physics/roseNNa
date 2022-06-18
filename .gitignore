@@ -9,4 +9,5 @@
 !*.sh
 !*.yml
 reading.f90
+userTesting.f90
 test.txt
