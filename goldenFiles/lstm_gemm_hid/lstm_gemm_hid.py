@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 import sys
-sys.path.append("/Users/ajaybati/Documents/researchcompphys/goldenFiles/")
-from nnLSTM import LSTM
 import os
+sys.path.insert(1, "goldenFiles/")
+from nnLSTM import LSTM
 class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
@@ -56,7 +56,7 @@ def stringer(mat):
         s += str(elem) + " "
     return s.strip()
 logits = model(inp, hidden)
-filePath = "/Users/ajaybati/Documents/researchcompphys/goldenFiles/lstm_gemm_hid/"
+filePath = "goldenFiles/lstm_gemm_hid/"
 
 with open(filePath+"lstm_gemm_hid.txt", "w") as f:
     f.write(stringer(list(logits.shape)))
