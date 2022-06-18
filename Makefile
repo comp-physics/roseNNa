@@ -6,7 +6,7 @@ OBJ=${SRC:.f90=.o}
 OBJ2=${OBJ:.fpp=.o}
 COMP=${SRCBASE:.f90=.o}
 
-output: $(OBJ2) $(COMP)
+output: $(COMP) $(OBJ2)
 	$(FC) $(FFLAGS) -o $@ $(COMP) $(OBJ2)
 
 
