@@ -37,13 +37,13 @@ jobs:
           brew install wget make make cmake coreutils
           brew install gcc@11
 
-    - name: Set up Python 3.8
-      uses: actions/setup-python@v2
-      with:
-        python-version: 3.8
-    - name: Install dependencies
-      run: |
-        $CONDA/bin/conda env update --file torch3.yml --name torch
+      - name: Set up Python 3.8
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.8
+      - name: Install dependencies
+        run: |
+          $CONDA/bin/conda env update --file torch3.yml --name torch
 
       - name: Running Test Cases
         run: |
