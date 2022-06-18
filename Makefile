@@ -4,7 +4,6 @@ SRC=activation_funcs.f90 derived_types.f90 layers.f90 readTester.f90 linearV3cop
 SRCPY=nntester.py parserProd.py modelParser.py
 OBJ=${SRC:.f90=.o}
 OBJ2=${OBJ:.fpp=.o}
-tests = lstm_gemm lstm_cell
 
 output: $(OBJ2)
 	$(FC) $(FFLAGS) -o $@ $(OBJ2)
@@ -13,7 +12,6 @@ output: $(OBJ2)
 %.o: %.f90
 	$(FC) $(FFLAGS) -o $@ -c $<
 
-.PRECIOUS : %.f90
 %.f90: %.fpp variables.fpp
 	fypp $< $*.f90
 
