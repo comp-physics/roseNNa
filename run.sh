@@ -2,6 +2,7 @@ npass=0
 nfail=0
 testnum=1
 skip="__pycache__"
+make compile
 for d in goldenFiles/*/ ; do
     name=$(basename "$d")
     if [[ "$name" != "$skip" ]]; then

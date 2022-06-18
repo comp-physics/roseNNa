@@ -1,9 +1,9 @@
 4
-Transpose
-LSTM
-1 8 5 
-1 8 2 
-8
-8
-Squeeze
-Transpose
+Gemm
+2 2 
+2 
+Relu
+Gemm
+3 2 
+3 
+Sigmoid
