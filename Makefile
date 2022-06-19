@@ -19,8 +19,8 @@ test: ex1 output
 
 
 ex1: modelParserONNX.py
-	python3 -Wi goldenFiles/$(case)/$(case).py
-	python3 -Wi modelParserONNX.py $(case)
+	python3 goldenFiles/$(case)/$(case).py
+	python3 modelParserONNX.py $(case)
 
 compile: $(COMP)
 
