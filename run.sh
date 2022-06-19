@@ -1,7 +1,8 @@
 npass=0
 nfail=0
 testnum=1
-skip="gemm_big"
+skip="__pycache__"
+make clean
 make compile
 for d in goldenFiles/*/ ; do
     name=$(basename "$d")
