@@ -113,7 +113,7 @@ contains
         INTEGER :: outColDim
         REAL :: sumini = 0
         in_channels = SIZE(inp, dim=2)
-        out_channels = SIZE(convWeights, dim=2)
+        out_channels = SIZE(convWeights, dim=1)
         kernel_size = SIZE(convWeights, dim=3)
         ALLOCATE(out(1,out_channels, size(inp,dim=3)-kernel_size + 1, size(inp,dim=3)-kernel_size+1))
         outRowDim = size(inp,dim=3)-kernel_size + 1
