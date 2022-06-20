@@ -1,5 +1,5 @@
-#:set architecture = [('Gemm', ['input', 1], None), ('Relu', ['input'], None), ('Gemm', ['input', 1], None), ('Sigmoid', ['input'], None), ('Gemm', ['input', 1], None), ('Relu', ['input'], None), ('Gemm', ['input', 1], None), ('Tanh', ['input'], None), ('Gemm', ['input', 1], None), ('Sigmoid', ['input'], None)]
-#:set inputs = [['input', 2]]
-#:set trueInputs = [['input', 2]]
-#:set outShape = [['output', 2]]
-#:set outputs = {'output': 'input'}
+#:set architecture = [('Transpose', ['input'], [[2, 1, 3]]), ('LSTM', ['input', 'hidden_state', 'cell_state'], ['output0'], None), ('Squeeze', ('output0', 4), ['output1'], [[1]]), ('Transpose', ['output1'], [[2, 1, 3]])]
+#:set inputs = [['input', 3], ['hidden_state', 3], ['cell_state', 3], ['output0', 4], ['output1', 3]]
+#:set trueInputs = [['input', 3], ['hidden_state', 3], ['cell_state', 3]]
+#:set outShape = [['output', 3]]
+#:set outputs = {'output': 'output1'}

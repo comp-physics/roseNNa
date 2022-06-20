@@ -2,13 +2,12 @@ npass=0
 nfail=0
 testnum=1
 skip="__pycache__"
-make clean
-make compile
+make compile >/dev/null 2>&1
 for d in goldenFiles/*/ ; do
     name=$(basename "$d")
     if [[ "$name" != "$skip" ]]; then
         echo "---------------- TEST #$testnum $name -------------------"
-        make test case="$name"
+        make test case="$name" >/dev/null 2>&1
         output=$(python3 -Wi goldenFiles/testChecker.py "$name")
         if [[ $? -eq 0 ]]; then
             ((++npass))

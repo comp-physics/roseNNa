@@ -7,7 +7,7 @@ module model_layers
 
 contains
     !=== for Gemm operations ======
-    subroutine linear_layer(inp, lin, transInp) 
+    subroutine linear_layer(inp, lin, transInp)
         IMPLICIT NONE
         INTEGER, INTENT(IN) :: transInp
         real, ALLOCATABLE, intent(inout) :: inp(:,:) !===input is 2d usually (k,n), where n is usually 1
@@ -19,7 +19,7 @@ contains
         ELSE
             inp = lin%fn_ptr(matmul(lin%weights,inp) + bias_broadcast)
         END IF
-    end subroutine 
+    end subroutine
 
     subroutine lstm_cell(input, hid1, cell1, Whh, Wih, Bih, Bhh)
         implicit none
@@ -42,18 +42,18 @@ contains
         ALLOCATE(cellOut(size(cell1),size(input,2)))
 
         !======= applying bhh and bih to each column of input =====
-        Bhh_broadcast = SPREAD(Bhh, 2, size(input,2)) 
+        Bhh_broadcast = SPREAD(Bhh, 2, size(input,2))
         Bih_broadcast = SPREAD(Bih, 2, size(input,2))
 
         gates_out = MATMUL(Wih, input) + Bih_broadcast + MATMUL(Whh, hid1) + Bhh_broadcast !==(4m,batch_size) BROADCAST BIAS
-        
+
         chunks = RESHAPE(gates_out, (/size(gates_out,1)/4, 4, size(input,2)/))
 
         chunks(:, 1, :) = sigmoid2d(chunks(:, 1, :))
         chunks(:, 2, :) = sigmoid2d(chunks(:, 2, :))
         chunks(:, 3, :) = tanhh2d(chunks(:, 3, :))
         chunks(:, 4, :) = sigmoid2d(chunks(:, 4, :))
-        
+
         cellOut = (chunks(:, 2, :) * cell1) + (chunks(:, 1, :) * chunks(:, 3, :))
         hiddenOut = chunks(:, 4, :) * tanhh2d(cellOut)
         hid1 = hiddenOut
@@ -71,13 +71,13 @@ contains
         real, intent(in), ALLOCATABLE, DIMENSION(:) :: Bih !==(4m,1)
         real, INTENT(OUT), ALLOCATABLE, DIMENSION(:,:,:,:) :: output !==(timesteps,num_directions,m,batch_size)
         ! INTEGER, INTENT(IN) :: nlayers, NEED TO ADD NLAYERS FUNCTIONALITY (no need for now since onnx apparently doesn't support it)
-        INTEGER :: timesteps 
+        INTEGER :: timesteps
         INTEGER :: i
         real, ALLOCATABLE, DIMENSION(:,:) :: hid1changed
         real, ALLOCATABLE, DIMENSION(:,:) :: cell1changed
         timesteps = size(input,1)
         input = reshape(input, (/SIZE(input,dim=1),SIZE(input,dim=3), SIZE(input,dim=2)/), order = [1,3,2])
-        hid1 = reshape(hid1, (/SIZE(hid1,dim=1),SIZE(hid1,dim=3), SIZE(hid1,dim=2)/), order = [1,3,2]) 
+        hid1 = reshape(hid1, (/SIZE(hid1,dim=1),SIZE(hid1,dim=3), SIZE(hid1,dim=2)/), order = [1,3,2])
         cell1 = reshape(cell1, (/SIZE(cell1,dim=1),SIZE(cell1,dim=3), SIZE(cell1,dim=2)/), order = [1,3,2])
         ALLOCATE(output(timesteps,size(hid1,dim=1),size(hid1,dim=2),size(hid1,dim=3)))
         hid1changed = hid1(1,:,:)
@@ -105,7 +105,7 @@ contains
         INTEGER :: out_channels !==numConvCols SHOULD BE INTENT(IN)
         INTEGER :: kernel_size !==(ConvRowDim,ConvColDim) SHOULD BE INTENT(IN)
         REAL, ALLOCATABLE, DIMENSION(:,:,:) :: out
-        
+
         INTEGER :: outer
         INTEGER :: overImage
         INTEGER :: inner
@@ -146,7 +146,7 @@ contains
         !==INTEGER, INTENT(IN) :: stride IMPLEMENT THIS
         REAL, ALLOCATABLE, DIMENSION(:,:,:) :: out
         INTEGER :: kernel_size
-        
+
         INTEGER :: overImage
         INTEGER :: inner
         INTEGER :: outRowDim
@@ -170,5 +170,5 @@ contains
     end subroutine
 
 
-    
+
 end module model_layers
