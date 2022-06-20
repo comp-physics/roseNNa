@@ -2,7 +2,7 @@
 !*/
 !openNP.fpp
 !userTesting.fpp
-!linearV3copy.fpp
+!modelCreator.fpp
 !variables.fpp
 !*.f90
 !*.py
