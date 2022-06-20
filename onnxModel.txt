@@ -1,9 +1,4 @@
-4
-Transpose
-LSTM
-1 8 5 
-1 8 2 
-8
-8
-Squeeze
-Transpose
+1
+Conv
+3 2 3 3 
+3 

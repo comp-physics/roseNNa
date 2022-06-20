@@ -24,8 +24,9 @@ with open("goldenFiles/test.txt") as f, open("goldenFiles/"+file+"/"+file+".txt"
         if outCompRun:
             if out:
                 print("Outputs match! Pass!")
-            else:
+            else: #shapes do not match
                 print("Outputs do not match! Fail!")
+                print(f"Correct shape is {shapeP}. But, F90 outputted {shapeF}")
                 sys.exit(1)
         else:
             print("Error occurred while executing! Failed! Here is the output: ")
