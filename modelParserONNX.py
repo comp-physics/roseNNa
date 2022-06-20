@@ -165,8 +165,8 @@ with open('onnxModel.txt','w') as f:
 
         elif layer == "MaxPool":
             modelArch.append(("MaxPool", [ioMap[node.input[0]]], [node.attribute[0].i, node.attribute[2].ints, node.attribute[3].ints])) #(ceil_mode, pads, strides)
-            # f2.write(str(node.attribute[1].ints))
-            # f2.write("\n")
+            f.write(str(node.attribute[1].ints[0]))
+            f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "Relu":

@@ -18,6 +18,9 @@ output: $(COMP) $(OBJ2)
 test: ex1 output
 	./output 2> outputCase.txt
 
+testing: ex1 output
+	./output 2> outputCase.txt
+	python3 -Wi goldenFiles/testChecker.py $(case)
 
 ex1: modelParserONNX.py
 	python3 goldenFiles/$(case)/$(case).py

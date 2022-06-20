@@ -95,7 +95,7 @@ contains
 
     subroutine conv(inp, convWeights, bias, dilations, pads, strides)
         implicit none
-        REAL, INTENT(INOUT), ALLOCATABLE, DIMENSION(:,:,:) :: inp !==(numImages,imageD1,imageD2)
+        REAL, INTENT(INOUT), ALLOCATABLE, DIMENSION(:,:,:,:) :: inp !==(numImages,imageD1,imageD2)
         REAL, INTENT(IN), ALLOCATABLE, DIMENSION(:,:,:,:) :: convWeights !==(numConvRows,numConvCols,ConvRowDim,ConvColDim)
         REAL, INTENT(IN), ALLOCATABLE, DIMENSION(:) :: bias
         INTEGER, INTENT(IN), DIMENSION(:) :: dilations
@@ -104,7 +104,7 @@ contains
         INTEGER :: in_channels !==numImages SHOULD BE INTENT(IN)
         INTEGER :: out_channels !==numConvCols SHOULD BE INTENT(IN)
         INTEGER :: kernel_size !==(ConvRowDim,ConvColDim) SHOULD BE INTENT(IN)
-        REAL, ALLOCATABLE, DIMENSION(:,:,:) :: out
+        REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: out
 
         INTEGER :: outer
         INTEGER :: overImage
@@ -112,21 +112,21 @@ contains
         INTEGER :: outRowDim
         INTEGER :: outColDim
         REAL :: sumini = 0
-        in_channels = SIZE(inp, dim=1)
+        in_channels = SIZE(inp, dim=2)
         out_channels = SIZE(convWeights, dim=2)
         kernel_size = SIZE(convWeights, dim=3)
-        ALLOCATE(out(out_channels, size(inp,dim=2)-kernel_size + 1, size(inp,dim=2)-kernel_size+1))
-        outRowDim = size(inp,dim=2)-kernel_size + 1
-        outColDim = size(inp,dim=2)-kernel_size + 1
+        ALLOCATE(out(1,out_channels, size(inp,dim=3)-kernel_size + 1, size(inp,dim=3)-kernel_size+1))
+        outRowDim = size(inp,dim=3)-kernel_size + 1
+        outColDim = size(inp,dim=3)-kernel_size + 1
 
         DO outer = 0, out_channels-1 !==iterating through each output image
             DO overImage = 0, (outRowDim*outColDim)-1 !==iterating kernel through the whole image
                 DO inner = 0, in_channels-1 !==applying kernel to each input image
-                    sumini = sumini + SUM(inp(inner+1,(overImage/outRowDim + 1):(overImage/outRowDim+kernel_size) &
+                    sumini = sumini + SUM(inp(1,inner+1,(overImage/outRowDim + 1):(overImage/outRowDim+kernel_size) &
                                       ,(MODULO(overImage,outColDim) + 1):(MODULO(overImage,outColDim)+kernel_size)) &
                           * convWeights(outer+1,inner+1,:,:)) !==depending on the way convWeights is laid out change position of outer/inner, currently it is row based (input images are applied to 1st row then 2nd row, etc.)
                 END DO
-                out(outer+1,overImage/outRowDim + 1,MODULO(overImage,outColDim)+1) = sumini + bias(outer+1)
+                out(1,outer+1,overImage/outRowDim + 1,MODULO(overImage,outColDim)+1) = sumini + bias(outer+1)
                 sumini = 0;
             END DO
         END DO

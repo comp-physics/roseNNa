@@ -51,9 +51,9 @@ module readTester
                 CALL read_lstm(10, 11)
             else if (layerName .eq. "Gemm") then
                 CALL read_linear(10, 11)
-            else if (layerName .eq. "conv") then
+            else if (layerName .eq. "Conv") then
                 CALL read_conv(10, 11)
-            else if (layerName .eq. "maxpool") then
+            else if (layerName .eq. "MaxPool") then
                 CALL read_maxpool(10, 11)
             else if (layerName .eq. "Reshape") then
                 CYCLE
