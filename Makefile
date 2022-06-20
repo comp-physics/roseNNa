@@ -1,6 +1,6 @@
 FC=gfortran
 FFLAGS=-O3 -Wall -Wextra -fcheck=all -fbacktrace
-SRC=linearV3copy.fpp userTesting.fpp
+SRC=modelCreator.fpp userTesting.fpp
 SRCBASE=activation_funcs.f90 derived_types.f90 layers.f90 readTester.f90
 OBJ2=${SRC:.fpp=.o}
 COMP=${SRCBASE:.f90=.o}
@@ -8,6 +8,7 @@ COMP=${SRCBASE:.f90=.o}
 output: $(COMP) $(OBJ2)
 	$(FC) $(FFLAGS) -o $@ $(COMP) $(OBJ2)
 
+.PRECIOUS : %.f90
 %.f90: %.fpp variables.fpp
 	fypp $< $*.f90
 
