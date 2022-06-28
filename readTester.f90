@@ -10,6 +10,7 @@ module readTester
     TYPE(lstmLayer), ALLOCATABLE, DIMENSION(:) :: lstmLayers
     TYPE(convLayer), ALLOCATABLE, DIMENSION(:) :: convLayers
     TYPE(maxpoolLayer), ALLOCATABLE, DIMENSION(:) :: maxpoolLayers
+    TYPE(avgpoolLayer), ALLOCATABLE, DIMENSION(:) :: avgpoolLayers
     CHARACTER(len = 20) :: activation_func
     REAL, ALLOCATABLE, DIMENSION(:,:) :: weights
     REAL, ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
@@ -23,7 +24,7 @@ module readTester
 
     ! INTEGER :: activation_func
 
-    CHARACTER(LEN = 10) :: layerName
+    CHARACTER(LEN = 100) :: layerName
 
     INTEGER :: numLayers
     INTEGER :: i
@@ -32,11 +33,12 @@ module readTester
     
     subroutine initialize()
         INTEGER :: Reason
-        CHARACTER(len = 20), ALLOCATABLE, DIMENSION(:) :: name
+        CHARACTER(len = 10), ALLOCATABLE, DIMENSION(:) :: name
         ALLOCATE(lstmLayers(0))
         ALLOCATE(linLayers(0))
         ALLOCATE(convLayers(0))
         ALLOCATE(maxpoolLayers(0))
+        ALLOCATE(avgpoolLayers(0))
         open(10, file = "onnxModel.txt")
         open(11, file = "onnxWeights.txt")
 
@@ -55,11 +57,15 @@ module readTester
                 CALL read_conv(10, 11)
             else if (layerName .eq. "MaxPool") then
                 CALL read_maxpool(10, 11)
+            else if (layerName .eq. "AveragePool") then
+                CALL read_avgpool(10, 11)
             else if (layerName .eq. "Reshape") then
                 CYCLE
             else if (layerName .eq. "Transpose") then
                 cycle
             else if (layerName .eq. "Squeeze") then
+                cycle
+            else if (layerName .eq. "Pad") then
                 cycle
             end if
 
@@ -68,14 +74,24 @@ module readTester
         END DO readloop
 
     end subroutine
+    subroutine read_avgpool(file1, file2)
+        INTEGER, INTENT(IN) :: file1
+        INTEGER, INTENT(IN) :: file2
+        TYPE(avgpoolLayer), ALLOCATABLE, DIMENSION(:) :: avgpool
+        ALLOCATE(avgpool(1))
+        read(file1, *) w_dim1
+        avgpool(1)%kernel_size = w_dim1
+        avgpoolLayers = [avgpoolLayers, avgpool]
+        DEALLOCATE(avgpool)
+    end subroutine
+
     subroutine read_maxpool(file1, file2)
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(maxpoolLayer), ALLOCATABLE, DIMENSION(:) :: maxpool
         ALLOCATE(maxpool(1))
-        read(file1, *) w_dim1 !==w_dim2
+        read(file1, *) w_dim1
         maxpool(1)%kernel_size = w_dim1
-        ! maxpool(1)%stride = w_dim2
         maxpoolLayers = [maxpoolLayers, maxpool]
         DEALLOCATE(maxpool)
     end subroutine

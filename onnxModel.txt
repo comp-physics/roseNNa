@@ -1,3 +1,4 @@
-1
-MaxPool
+2
+Pad
+AveragePool
 3

@@ -23,7 +23,7 @@ module model
             CALL CPU_TIME(T1)
             
             !========MaxPool Layer============
-            CALL max_pool(input,maxpoolLayers(1), 0,         (/0, 0, 0, 0/),         (/1, 1/))
+            CALL avgpool(input,avgpoolLayers(1), 0,         (/0, 0, 0, 0/),         (/3, 3/))
 
             call CPU_TIME(T2)
             print *, "-------------"

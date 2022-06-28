@@ -34,6 +34,10 @@ module derived_types
         INTEGER :: kernel_size
     ENDTYPE maxpoolLayer
 
+    TYPE avgpoolLayer
+        INTEGER :: kernel_size
+    ENDTYPE avgpoolLayer
+
     
 
     

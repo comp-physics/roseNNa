@@ -62,6 +62,11 @@ module model
             !========MaxPool Layer============
             CALL max_pool(${tup[1][0]}$,maxpoolLayers(${layer_dict[tup[0]]}$), ${tup[2][0]}$, ${genArray(tup[2][1])}$, ${genArray(tup[2][2])}$)
 
+            #!Average Pooling Layer
+            #: elif tup[0] == 'AveragePool'
+            !========MaxPool Layer============
+            CALL avgpool(${tup[1][0]}$,avgpoolLayers(${layer_dict[tup[0]]}$), ${tup[2][0]}$, ${genArray(tup[2][1])}$, ${genArray(tup[2][2])}$)
+
             #!Transpose
             #: elif tup[0] == 'Transpose'
             !========Transpose============

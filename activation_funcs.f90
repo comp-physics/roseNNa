@@ -39,6 +39,17 @@ contains
         end where
     END FUNCTION relu2d
 
+    FUNCTION relu4d(x) result(output)
+        real, intent(in) :: x(:,:,:,:)
+        real :: output(size(x,1), size(x,2), size(x,3), size(x,4))
+        
+        where (x < 0)
+            output = 0
+        elsewhere
+            output = x
+        end where
+    END FUNCTION relu4d
+
     FUNCTION tanhh(x) result(output)
         real, intent(in) :: x(:)
         real :: output(size(x))
