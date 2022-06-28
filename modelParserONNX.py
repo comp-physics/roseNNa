@@ -168,7 +168,16 @@ with open('onnxModel.txt','w') as f:
             f.write(str(node.attribute[1].ints[0]))
             f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
+        
+        elif layer == "AveragePool":
+            modelArch.append(("AveragePool", [ioMap[node.input[0]]], [node.attribute[0].i, node.attribute[2].ints, node.attribute[3].ints])) #(ceil_mode, pads, strides)
+            f.write(str(node.attribute[1].ints[0]))
+            f.write("\n")
+            ioMap[node.output[0]] = ioMap[node.input[0]]
 
+        elif layer == "Pad":
+            ioMap[node.output[0]] = ioMap[node.input[0]]
+            
         elif layer == "Relu":
             modelArch.append(("Relu", [ioMap[node.input[0]]], None))
 
