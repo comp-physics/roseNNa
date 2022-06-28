@@ -93,9 +93,55 @@ contains
         output = reshape(output,(/SIZE(output,dim=1),SIZE(output,dim=2), SIZE(output,dim=4),SIZE(output,dim=3)/), order = [1,2,4,3]) !==(timesteps,num_directions,batch_size,m)
     end subroutine
 
+    function padding(arr, input)
+        implicit none
+        integer, dimension(:), intent(in) :: arr
+        real, dimension(:,:,:,:), intent(in) :: input
+        real, dimension(size(input,1),size(input,2),size(input,3)+2*arr(1),size(input,4)+2*arr(2)) :: padding
+        real, dimension(size(input,1),size(input,2),size(input,3)+2*arr(1),size(input,4)+2*arr(2)) :: formatted
+        
+        integer :: i
+        integer :: j
+        integer :: k
+        integer :: channels
+        integer :: rows
+        integer :: cols
+        integer :: inputrows
+        DO channels=1, size(formatted,2) !iterate over channels
+            DO i=1, arr(1)
+                DO j=1, size(formatted,4)
+                    formatted(1,channels,i,j) = 0
+                END DO
+            END DO
+            inputrows=1
+            DO rows = 1+arr(1), 1+arr(1)+size(input,3)-1
+                DO k=1, arr(2)
+                    formatted(1,channels,rows,k) = 0
+                END DO
+    
+                DO cols=1, size(input,4)
+                    formatted(1,channels,rows,cols+arr(2)) = input(1,channels,inputrows,cols)
+                END DO
+    
+    
+                DO k=size(formatted,4) - arr(2)+1, size(formatted,4)
+                    formatted(1,channels,rows,k) = 0
+                END DO
+                inputrows = inputrows + 1
+            END DO
+    
+            DO i=size(formatted,3)-arr(1)+1, size(formatted,3)
+                DO j=1, size(formatted,4)
+                    formatted(1,channels,i,j) = 0
+                END DO
+            END DO
+        END DO
+        padding = formatted
+    end function padding
+
     subroutine conv(inp, convWeights, bias, dilations, pads, strides)
         implicit none
-        REAL, INTENT(INOUT), ALLOCATABLE, DIMENSION(:,:,:,:) :: inp !==(numImages,imageD1,imageD2)
+        REAL, INTENT(INOUT), ALLOCATABLE, DIMENSION(:,:,:,:) :: inp !==(batches,numImages,imageD1,imageD2)
         REAL, INTENT(IN), ALLOCATABLE, DIMENSION(:,:,:,:) :: convWeights !==(numConvRows,numConvCols,ConvRowDim,ConvColDim)
         REAL, INTENT(IN), ALLOCATABLE, DIMENSION(:) :: bias
         INTEGER, INTENT(IN), DIMENSION(:) :: dilations
@@ -106,6 +152,8 @@ contains
         INTEGER :: kernel_size !==(ConvRowDim,ConvColDim) SHOULD BE INTENT(IN)
         REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: out
 
+        REAL, DIMENSION(size(inp,1),size(inp,2),size(inp,3)+2*pads(1),size(inp,4)+2*pads(2)) :: padded
+
         INTEGER :: outer
         INTEGER :: overImage
         INTEGER :: inner
@@ -115,19 +163,23 @@ contains
         in_channels = SIZE(inp, dim=2)
         out_channels = SIZE(convWeights, dim=1)
         kernel_size = SIZE(convWeights, dim=3)
-        ALLOCATE(out(1,out_channels, size(inp,dim=3)-kernel_size + 1, size(inp,dim=3)-kernel_size+1))
-        outRowDim = size(inp,dim=3)-kernel_size + 1
-        outColDim = size(inp,dim=3)-kernel_size + 1
+        padded = padding(pads, inp)
+        ALLOCATE(out(1,out_channels, (size(padded,dim=3)-kernel_size)/strides(1) + 1, &
+            (size(padded,dim=4)-kernel_size)/strides(2)+1))
+        outRowDim = size(out,4)
+        outColDim = size(out,3)
 
+        
         DO outer = 0, out_channels-1 !==iterating through each output image
             DO overImage = 0, (outRowDim*outColDim)-1 !==iterating kernel through the whole image
                 DO inner = 0, in_channels-1 !==applying kernel to each input image
-                    sumini = sumini + SUM(inp(1,inner+1,(overImage/outRowDim + 1):(overImage/outRowDim+kernel_size) &
-                                      ,(MODULO(overImage,outColDim) + 1):(MODULO(overImage,outColDim)+kernel_size)) &
+                    sumini = sumini + SUM(padded(1,inner+1, &
+                    (1 + (overImage/outRowDim)*strides(1)):((overImage/outRowDim)*strides(1)+kernel_size) &
+                    ,(1 + MODULO(overImage,outRowDim)*strides(2)):(MODULO(overImage,outRowDim)*strides(2)+kernel_size)) &
                           * convWeights(outer+1,inner+1,:,:)) !==depending on the way convWeights is laid out change position of outer/inner, currently it is row based (input images are applied to 1st row then 2nd row, etc.)
                 END DO
-                out(1,outer+1,overImage/outRowDim + 1,MODULO(overImage,outColDim)+1) = sumini + bias(outer+1)
-                sumini = 0;
+                out(1,outer+1,overImage/outRowDim + 1,MODULO(overImage,outRowDim)+1) = sumini + bias(outer+1)
+                sumini = 0
             END DO
         END DO
         inp = out
@@ -138,30 +190,34 @@ contains
 
     subroutine max_pool(inp, maxpool, ceil_mode, pads, strides) !==ceil_mode, pads, strides
         implicit none
-        REAL, INTENT(INOUT), ALLOCATABLE, DIMENSION(:,:,:) :: inp !==(numImages,imageD1,imageD2)
+        REAL, INTENT(INOUT), ALLOCATABLE, DIMENSION(:,:,:,:) :: inp !==(numImages,imageD1,imageD2)
         TYPE(maxpoolLayer), INTENT(IN) :: maxpool !==(ConvRowDim,ConvColDim)
         INTEGER, INTENT(IN) :: ceil_mode
         INTEGER, INTENT(IN), DIMENSION(:) :: pads
         INTEGER, INTENT(IN), DIMENSION(:) :: strides
         !==INTEGER, INTENT(IN) :: stride IMPLEMENT THIS
-        REAL, ALLOCATABLE, DIMENSION(:,:,:) :: out
+        REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: out
         INTEGER :: kernel_size
+
+        REAL, DIMENSION(size(inp,1),size(inp,2),size(inp,3)+2*pads(1),size(inp,4)+2*pads(2)) :: padded
 
         INTEGER :: overImage
         INTEGER :: inner
         INTEGER :: outRowDim
         INTEGER :: outColDim
+        padded = padding(pads, inp)
         kernel_size = maxpool%kernel_size
-        ALLOCATE(out(size(inp,dim=1), size(inp,dim=2)/kernel_size, size(inp,dim=3)/kernel_size))
-        outRowDim = size(inp,dim=2)/kernel_size
-        outColDim = size(inp,dim=3)/kernel_size
+        ALLOCATE(out(1,size(padded,dim=2), (size(padded,dim=3)-kernel_size)/strides(1) + 1, &
+            (size(padded,dim=4)-kernel_size)/strides(2)+1))
+        outRowDim = size(out,4)
+        outColDim = size(out,3)
 
         DO overImage = 0, (outRowDim*outColDim)-1 !==iterating kernel through the whole image
-            DO inner = 0, size(inp,dim=1)-1 !==applying kernel to each input image
-                out(inner+1,(overImage/outRowDim)+1,MODULO(overImage,outColDim)+1) = &
-                 MAXVAL(inp(inner+1,((overImage/outRowDim)*kernel_size + 1):((overImage/outRowDim)*kernel_size)+kernel_size &
-                 ,(MODULO(overImage,outColDim)*kernel_size + 1): &
-                (MODULO(overImage,outColDim)*kernel_size+kernel_size)))
+            DO inner = 0, size(padded,dim=2)-1 !==applying kernel to each input image
+                out(1,inner+1,(overImage/outRowDim)+1,MODULO(overImage,outColDim)+1) = &
+                 MAXVAL(padded(1,inner+1,1 + ((overImage/outRowDim)*strides(1)):((overImage/outRowDim)*strides(1)+kernel_size) &
+                 ,(1 + MODULO(overImage,outRowDim)*strides(2)): &
+                 (MODULO(overImage,outRowDim)*strides(2)+kernel_size)))
             END DO
         END DO
         inp = out

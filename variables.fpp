@@ -1,4 +1,4 @@
-#:set architecture = [('Conv', ['input'], [[1, 1], [3, 3], [0, 0, 0, 0], [1, 1]])]
+#:set architecture = [('MaxPool', ['input'], [0, [0, 0, 0, 0], [1, 1]])]
 #:set inputs = [['input', 4]]
 #:set trueInputs = [['input', 4]]
 #:set outShape = [['output', 4]]
