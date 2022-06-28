@@ -22,9 +22,8 @@ module model
             REAL :: T1, T2
             CALL CPU_TIME(T1)
             
-            !========Conv Layer============
-            CALL conv(input, convLayers(1)%weights, convLayers(1)%biases,         (/1, 1/),         (/0, 0, 0, 0/),         (/1,&
-                & 1/))
+            !========MaxPool Layer============
+            CALL max_pool(input,maxpoolLayers(1), 0,         (/0, 0, 0, 0/),         (/1, 1/))
 
             call CPU_TIME(T2)
             print *, "-------------"

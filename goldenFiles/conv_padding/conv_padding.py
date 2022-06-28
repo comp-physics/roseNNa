@@ -6,10 +6,10 @@ from onnx import numpy_helper
 class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
-        self.maxpool = nn.MaxPool2d(3)
+        self.conv = nn.Conv2d(2,3,3, padding=[2,3])
 
     def forward(self, inp):
-        return self.maxpool(inp)
+        return self.conv(inp)
 
 model = NN()
 inp = torch.rand(1,2,6,6)
@@ -31,8 +31,8 @@ def stringer(mat):
     return s.strip()
 logits = model(inp)
 
-filePath = "goldenFiles/maxpool_basic/"
-with open(filePath+"maxpool_basic.txt", "w") as f2:
+filePath = "goldenFiles/conv_padding/"
+with open(filePath+"conv_padding.txt", "w") as f2:
     f2.write(stringer(list(logits.shape)))
     f2.write("\n")
     f2.write(stringer(logits.flatten().tolist()))
@@ -40,7 +40,7 @@ print(logits.flatten().tolist())
 
 torch.onnx.export(model,               # model being run
                   inp,                         # model input (or a tuple for multiple inputs)
-                  filePath+"maxpool_basic.onnx",   # where to save the model (can be a file or file-like object)
+                  filePath+"conv_padding.onnx",   # where to save the model (can be a file or file-like object)
                   export_params=True,        # store the trained parameter weights inside the model file
                   opset_version=10,          # the ONNX version to export the model to
                   do_constant_folding=True,  # whether to execute constant folding for optimization
@@ -50,7 +50,7 @@ torch.onnx.export(model,               # model being run
 
 torch.onnx.export(model,               # model being run
                   inp,                         # model input (or a tuple for multiple inputs)
-                  filePath+"maxpool_basic_weights.onnx",   # where to save the model (can be a file or file-like object)
+                  filePath+"conv_padding_weights.onnx",   # where to save the model (can be a file or file-like object)
                   export_params=True,        # store the trained parameter weights inside the model file
                   opset_version=10,          # the ONNX version to export the model to
                   do_constant_folding=False,  # whether to execute constant folding for optimization
