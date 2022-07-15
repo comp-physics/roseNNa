@@ -1,5 +1,6 @@
 *
 !*/
+!goldenFiles/*/
 !openNP.fpp
 !userTesting.fpp
 !modelCreator.fpp
@@ -14,3 +15,5 @@ reading.f90
 userTesting.f90
 linearV3copy.f90
 test.txt
+goldenFiles/gemm_huge/
+goldenFiles/vgg16/

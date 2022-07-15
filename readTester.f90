@@ -11,6 +11,7 @@ module readTester
     TYPE(convLayer), ALLOCATABLE, DIMENSION(:) :: convLayers
     TYPE(maxpoolLayer), ALLOCATABLE, DIMENSION(:) :: maxpoolLayers
     TYPE(avgpoolLayer), ALLOCATABLE, DIMENSION(:) :: avgpoolLayers
+    TYPE(addLayer), ALLOCATABLE, DIMENSION(:) :: addLayers
     CHARACTER(len = 20) :: activation_func
     REAL, ALLOCATABLE, DIMENSION(:,:) :: weights
     REAL, ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
@@ -39,6 +40,7 @@ module readTester
         ALLOCATE(convLayers(0))
         ALLOCATE(maxpoolLayers(0))
         ALLOCATE(avgpoolLayers(0))
+        ALLOCATE(addLayers(0))
         open(10, file = "onnxModel.txt")
         open(11, file = "onnxWeights.txt")
 
@@ -59,6 +61,10 @@ module readTester
                 CALL read_maxpool(10, 11)
             else if (layerName .eq. "AveragePool") then
                 CALL read_avgpool(10, 11)
+            else if (layerName .eq. "Add") then
+                CALL read_add(10, 11)
+            else if (layerName .eq. "MatMul") then
+                cycle
             else if (layerName .eq. "Reshape") then
                 CYCLE
             else if (layerName .eq. "Transpose") then
@@ -67,6 +73,8 @@ module readTester
                 cycle
             else if (layerName .eq. "Pad") then
                 cycle
+            else
+                print *, layerName, " HAS NOT BEEN ACCOUNTED FOR"
             end if
 
 
@@ -74,6 +82,20 @@ module readTester
         END DO readloop
 
     end subroutine
+
+    subroutine read_add(file1, file2)
+        INTEGER, INTENT(IN) :: file1
+        INTEGER, INTENT(IN) :: file2
+        TYPE(addLayer), ALLOCATABLE, DIMENSION(:) :: add
+        ALLOCATE(add(1))
+        read(file1, *) w_dim1, w_dim2, w_dim3, w_dim4
+        ALLOCATE(largeWeights(w_dim1, w_dim2, w_dim3, w_dim4))
+        read(file2, *) largeWeights
+        add(1)%adder = largeWeights
+        addLayers = [addLayers, add]
+        DEALLOCATE(add)
+    end subroutine
+
     subroutine read_avgpool(file1, file2)
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2

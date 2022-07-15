@@ -38,6 +38,10 @@ module derived_types
         INTEGER :: kernel_size
     ENDTYPE avgpoolLayer
 
+    TYPE addLayer
+        REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: adder
+    ENDTYPE addLayer
+
     
 
     
