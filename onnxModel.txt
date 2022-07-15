@@ -1,4 +1,20 @@
+12
+Reshape
+Conv
+8 1 5 5 
+Add
+1 8 1 1 
+Relu
+MaxPool
 2
-Pad
-AveragePool
+Conv
+16 8 5 5 
+Add
+1 16 1 1 
+Relu
+MaxPool
 3
+Reshape
+MatMul
+Add
+1 1 1 10 

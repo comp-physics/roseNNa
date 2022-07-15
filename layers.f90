@@ -21,6 +21,43 @@ contains
         END IF
     end subroutine
 
+    subroutine matmul2D(inp1, inp2)
+        IMPLICIT NONE
+        real, allocatable, intent(inout), dimension(:,:) :: inp1
+        real, intent(in), dimension(:,:) :: inp2
+
+        inp1 = matmul(inp1,inp2)
+    end subroutine
+
+    subroutine matmul3D(inp1, inp2)
+        IMPLICIT NONE
+        real, allocatable, intent(inout), dimension(:,:,:) :: inp1
+        real, intent(in), dimension(:,:,:) :: inp2
+        real, dimension(size(inp1,1),size(inp1,2),size(inp2,3)) :: out
+        integer :: i
+
+        DO i=1, size(inp1,1)
+            out(i,:,:) = MATMUL(inp1(i,:,:),inp2(i,:,:))
+        END DO
+        inp1 = out
+    end subroutine
+
+    subroutine matmul4D(inp1, inp2)
+        IMPLICIT NONE
+        real, allocatable, intent(inout), dimension(:,:,:,:) :: inp1
+        real, intent(in), dimension(:,:,:,:) :: inp2
+        real, dimension(size(inp1,1),size(inp1,2),size(inp1,3),size(inp2,4)) :: out
+        integer :: i
+        integer :: j
+
+        DO i=1, size(inp1,1)
+            DO j=1,size(inp1,2)
+                out(i,j,:,:) = MATMUL(inp1(i,j,:,:),inp2(i,j,:,:))
+            END DO
+        END DO
+        inp1 = out
+    end subroutine
+
     subroutine lstm_cell(input, hid1, cell1, Whh, Wih, Bih, Bhh)
         implicit none
         real, intent(in), DIMENSION(:,:) :: input !== (n,batch_size)
@@ -263,6 +300,71 @@ contains
         DEALLOCATE(out)
 
     end subroutine
+
+    ! !FUCK THIS!!!
+    ! != INSTEAD WHAT I SHOULD DO IS DO ALL OF THIS IN MODELCREATOR.FPP
+    ! !== BASICALLY, I TAKE THE SMALLER ARRAY, WHICH SHOULD BE THE ONE THATS ADDLAYER%ADDER
+    ! !== I SPREAD THIS BASED ON EACH DIMENSION OF THE LARGER ARRAY
+    ! !==THEN I RESHAPE TO THE SHAPE OF THE LARGER ARRAY
+    ! subroutine ad(inp, adding, reshapeDim)
+    !     INTEGER, INTENT(in) :: reshapeDim
+    !     real, ALLOCATABLE, intent(in) :: inp(:,:,:,:)
+    !     TYPE(addLayer), INTENT(IN) :: adding
+    !     real, ALLOCATABLE, DIMENSION(:,:,:,:) :: intermediate
+    !     INTEGER, DIMENSION(4) :: true
+    !     INTEGER, DIMENSION(reshapeDim) :: reshaped
+    !     INTEGER, ALLOCATABLE, DIMENSION(:) :: inter
+    !     INTEGER, DIMENSION(4) :: changing
+    !     INTEGER :: i
+    !     true = SHAPE(inp)
+    !     intermediate = adding%adder
+    !     inter = SHAPE(intermediate)
+    !     DO i=1, 4
+    !         if (i .ne. 4) then
+    !             changing = [true(:i),inter((i+1):)]
+    !             intermediate = RESHAPE(SPREAD(intermediate,i,size(inp,i)), changing)
+    !         else
+    !             intermediate = RESHAPE(SPREAD(intermediate,i,size(inp,i)), SHAPE(inp))
+    !         end if
+    !     END DO
+
+    !     if (reshapeDim .eq. 1) then
+    !         asdf
+    !     else if (reshapeDim .eq. 2) then
+    !         asdf
+    !     else if (reshapeDim .eq. 3) then
+    !         asdf
+    !     else
+    !         asdf
+    !     end if 
+    !     print *, RESHAPE(intermediate, )  ! make var called output
+    ! end subroutine
+
+    function broadc(inp, trueShape, spreadInfo) result(out)
+        implicit none
+        real, dimension(:,:,:,:), intent(in) :: inp
+        integer, dimension(4) :: trueShape
+        integer, dimension(:,:), intent(in) :: spreadInfo
+        real, ALLOCATABLE, dimension(:,:,:,:) :: out
+    
+        INTEGER, DIMENSION(4) :: true
+        INTEGER, ALLOCATABLE, DIMENSION(:) :: inter
+        INTEGER, DIMENSION(4) :: changing
+        real, ALLOCATABLE, dimension(:,:,:,:) :: intermediate
+    
+        INTEGER :: i
+        intermediate = inp
+        inter = SHAPE(inp)
+        DO i=1, size(spreadInfo,1)
+            if (i .ne. size(spreadInfo,1)) then
+                changing = [trueShape(:spreadInfo(i,1)),inter((spreadInfo(i,1)+1):)]
+                intermediate = RESHAPE(SPREAD(intermediate,spreadInfo(i,1),spreadInfo(i,2)), changing)
+            else
+                intermediate = RESHAPE(SPREAD(intermediate,spreadInfo(i,1),spreadInfo(i,2)), trueShape)
+            end if
+        END DO
+        out = intermediate
+    end function
 
 
 end module model_layers

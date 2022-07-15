@@ -83,6 +83,16 @@ module model
             !========Squeeze============
             ${tup[2][0]}$ = RESHAPE(${tup[1][0]}$,(/#{for num in range(tup[1][1])}##{if num not in tup[3][0]}#SIZE(${tup[1][0]}$, dim = ${num+1}$)#{if num < (tup[1][1]-1)}#, #{endif}##{endif}##{endfor}#/))
 
+            #!Add
+            #: elif tup[0] == 'Add'
+            !===========Add============
+            ${tup[1][0]}$ = ${tup[1][0]}$ + RESHAPE(broadc(addLayers(${layer_dict[tup[0]]}$)%adder,${genArray(tup[2][0])}$,RESHAPE(${genArray(tup[2][1])}$,${genArray([int(len(tup[2][1])/2),2])}$, order=[2,1])), ${genArray(tup[2][0][-tup[2][2]:])}$)
+
+            #!MatMul
+            #: elif tup[0] == 'MatMul'
+            !=======MatMul=========
+            CALL matmul${tup[2][0]}$D(${tup[1][0]}$, ${tup[1][1]}$)
+
             #: endif
             #: mute
             $: layer_dict.update([(tup[0],layer_dict[tup[0]]+1)])

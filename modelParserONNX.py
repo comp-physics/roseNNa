@@ -12,12 +12,21 @@ import sys
 file = sys.argv[1]
 
 onnxModel = onnx.load('goldenFiles/'+file+'/'+file+'.onnx')
-onnxModel_weights = onnx.load('goldenFiles/'+file+'/'+file+'_weights.onnx')
+print("done")
+try:
+    onnxModel_weights = onnx.load('goldenFiles/'+file+'/'+file+'_weights.onnx')
+except:
+    onnxModel_weights = onnxModel
+print("done")
 nodes = onnxModel.graph.node
-value_info = onnx.shape_inference.infer_shapes(onnxModel).graph.value_info
+try:
+    inferred = onnx.load('goldenFiles/'+file+'/'+file+'_inferred.onnx')
+    value_info = inferred.graph.value_info
+except:
+    value_info = onnx.shape_inference.infer_shapes(onnxModel).graph.value_info
+print("done")
 ioMap = {}
 initializer = {}
-initializerWeights = {}
 intermediateShapes = {}
 inputs = [] # need to export
 for inp in onnxModel.graph.input:
@@ -29,8 +38,6 @@ for inter in value_info:
 
 for weights in onnxModel.graph.initializer:
     initializer[weights.name] = weights.dims
-    initializerWeights[weights.name] = numpy_helper.to_array(weights)
-
 out = {}
 for x in onnxModel.graph.output:
     out[x.name] = [d.dim_value for d in x.type.tensor_type.shape.dim]
@@ -72,6 +79,34 @@ def reshapeParser(reshape, trueShape):
         reshape[ind] = missing_dim
         return reshape
     
+def findWeightsInitializer(input_name):
+    for weights in onnxModel.graph.initializer:
+        if weights.name == input_name:
+            return numpy_helper.to_array(weights)
+
+def fourDTransform(trueshape, toBeTransformedShape):
+    new = [1,1,1,1]
+    i = 0
+    for dim in toBeTransformedShape:
+        try:
+            find = trueshape.index(dim)
+            new[find-len(trueshape)] = dim
+        except:
+            pass
+    return new
+
+def fakeFourD(inp):
+    add = 4-len(inp)
+    return add*[1] + inp
+
+def spreadInfo(trueShape, toBeTransformedShape):
+    ret = []
+    for index,dim in enumerate(toBeTransformedShape):
+        if trueShape[index] != dim:
+            ret.append(index+1)
+            ret.append(dim)
+    return ret
+
 #ONNX parser
 #onnxModel.txt => holds model structure
 #onnxWeights.txt => holds model's weights in corresponding order
@@ -80,12 +115,12 @@ def reshapeParser(reshape, trueShape):
 #initializer => holds weights dims
 
 #modelArch => (layer_name, input_list[], parameters) to call respective subroutines in fypp
+print("starting to write weights..")
 with open('onnxWeights.txt', 'w') as f2:
     for w in onnxModel_weights.graph.initializer:
         f2.write(stranspose(numpy_helper.to_array(w)))
         f2.write("\n")
-
-
+print("starting parsing...")
 with open('onnxModel.txt','w') as f:
     f.write(str(len(nodes)))
     f.write("\n")
@@ -108,9 +143,6 @@ with open('onnxModel.txt','w') as f:
                 for dim in initializer[inp]:
                     f.write(str(dim)+" ")
                 f.write("\n")
-                # f2.write(stranspose(initializerWeights[inp]))
-                # f2.write("\n")
-            split = np.split(initializerWeights[node.input[3]],2,1)
             for x in range(2):
                 f.write(str(int(initializer[node.input[3]][1]/2)))
                 f.write("\n")
@@ -129,8 +161,6 @@ with open('onnxModel.txt','w') as f:
                 for dim in initializer[inp]:
                     f.write(str(dim)+ " ") 
                 f.write("\n")
-                # f2.write(stranspose(initializerWeights[inp]))
-                # f2.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         #check notion summer start
@@ -147,7 +177,10 @@ with open('onnxModel.txt','w') as f:
 
         #check notion summer start
         elif layer == "Reshape": #changes shape
-            modelArch.append(("Reshape", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [reshapeParser(initializerWeights[node.input[-1]].tolist(), intermediateShapes[node.input[0]])])) #new shape
+            try:
+                modelArch.append(("Reshape", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [reshapeParser(findWeightsInitializer(node.input[-1]).tolist(), intermediateShapes[node.input[0]])])) #new shape
+            except:
+                modelArch.append(("Reshape", (ioMap[node.input[0]], len(initializer[node.input[0]])),["output" + extra], [reshapeParser(findWeightsInitializer(node.input[-1]).tolist(), initializer[node.input[0]])])) #new shape
             inputs.append(["output"+extra, len(intermediateShapes[node.output[0]])])
             ioMap[node.output[0]] = "output" + extra
             extra = str(int(extra)+1)
@@ -159,8 +192,6 @@ with open('onnxModel.txt','w') as f:
                 for dim in initializer[inp]:
                     f.write(str(dim)+ " ")
                 f.write("\n")
-                # f2.write(stranspose(initializerWeights[inp]))
-                # f2.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "MaxPool":
@@ -175,9 +206,25 @@ with open('onnxModel.txt','w') as f:
             f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
-        elif layer == "Pad":
+        elif layer == "Add":
+            fourd = fourDTransform(intermediateShapes[node.input[0]],findWeightsInitializer(node.input[-1]).shape)
+            true = fakeFourD(intermediateShapes[node.input[0]])
+            modelArch.append(("Add",[ioMap[node.input[0]]], [true, spreadInfo(true,fourd),len(intermediateShapes[node.input[0]])])) #[trueshape, need to be broadcasted and added SHAPE]
+            for dim in fourd:
+                f.write(str(dim) + " ")
+            f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
-            
+        
+        elif layer == "MatMul":
+            modelArch.append(("MatMul",[ioMap[node.input[0]],ioMap[node.input[1]]], [len(intermediateShapes[node.input[0]])])) #[trueshape, need to be broadcasted and added SHAPE]
+            for dim in fourd:
+                f.write(str(dim) + " ")
+            f.write("\n")
+            ioMap[node.output[0]] = ioMap[node.input[0]]
+
+        elif layer == "Pad": #FINISH
+            ioMap[node.output[0]] = ioMap[node.input[0]]
+
         elif layer == "Relu":
             modelArch.append(("Relu", [ioMap[node.input[0]]], None))
 
@@ -193,21 +240,14 @@ with open('onnxModel.txt','w') as f:
 
             ioMap[node.output[0]] = ioMap[node.input[0]]
         else:
+            print(f'{layer} NOT SUPPORTED BY RoseNNa CURRENTLY!')
+            ioMap[node.output[0]] = ioMap[node.input[0]]
             continue
     for x in list(ioMap.keys()):
         if x in out:
             outputs[x] = ioMap[x]
-    # print(modelArch)
-    # print("*"*50)
-    # print(ioMap)
-    # print("*"*50)
-    # print(inputs)
-    # print("*"*50)
-    # print(outShape)
-    # print("*"*50)
-    # print(outputs)
     trueInputs = [[x.name, len(x.type.tensor_type.shape.dim)] for x in onnxModel.graph.input]
-
+    print(modelArch)
 
 
 with open("variables.fpp",'w') as f:
@@ -221,7 +261,4 @@ with open("variables.fpp",'w') as f:
     f.write("\n")
     f.write(f"""#:set outputs = {outputs}""")
     f.write("\n")
-#: set tup = ('Squeeze', ('output0', 4), ['output1'], [[1]])
-#${tup[2][0]}$ = RESHAPE(${tup[1][0]}$,(/#{for num in range(tup[1][1])}##{if num not in tup[3][0]}#SIZE(${tup[1][0]}$, dim = ${num+1}$)#{if num < (tup[1][1]-1)}#, #{endif}##{endif}##{endfor}#/))
-
 
