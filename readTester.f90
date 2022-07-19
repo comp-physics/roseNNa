@@ -48,6 +48,7 @@ module readTester
         
         readloop: DO i = 1, 10
             read(10, *, IOSTAT=Reason) layerName
+            print *, layerName
             if (Reason < 0) then
                 exit readloop
             end if
@@ -74,7 +75,7 @@ module readTester
             else if (layerName .eq. "Pad") then
                 cycle
             else
-                print *, layerName, " HAS NOT BEEN ACCOUNTED FOR"
+                cycle
             end if
 
 
@@ -92,6 +93,7 @@ module readTester
         ALLOCATE(largeWeights(w_dim1, w_dim2, w_dim3, w_dim4))
         read(file2, *) largeWeights
         add(1)%adder = largeWeights
+        DEALLOCATE(largeWeights)
         addLayers = [addLayers, add]
         DEALLOCATE(add)
     end subroutine
