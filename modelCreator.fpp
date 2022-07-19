@@ -37,9 +37,6 @@ module model
             REAL, ALLOCATABLE, INTENT(OUT), DIMENSION${ranksuffix(o[1])}$ :: ${o[0]}$
             #:endfor
             REAL :: T1, T2
-            #:for inp in inputs
-            ALLOCATE(${inp[0]}$(${genArrayNoParen([0]*inp[1])}$))
-            #:endfor
             CALL CPU_TIME(T1)
             
             #: set layer_dict = {}
