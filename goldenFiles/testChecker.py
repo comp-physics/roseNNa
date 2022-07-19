@@ -19,7 +19,7 @@ with open("goldenFiles/test.txt") as f, open("goldenFiles/"+file+"/"+file+".txt"
         print(str(e))
     finally:
         outCompRun = True
-        outputFailPath = "/Users/ajaybati/Documents/researchcompphys/outputCase.txt"
+        outputFailPath = "outputCase.txt"
         if os.path.exists(outputFailPath) and os.stat(outputFailPath).st_size != 0:
             outCompRun = False
         if outCompRun:
@@ -35,7 +35,7 @@ with open("goldenFiles/test.txt") as f, open("goldenFiles/"+file+"/"+file+".txt"
                 sys.exit(1)
         else:
             print("Error occurred while executing! Failed! Here is the output: ")
-            failed = open("/Users/ajaybati/Documents/researchcompphys/outputCase.txt",'r')
+            failed = open("outputCase.txt",'r')
             fail = failed.read()
             print(fail)
             sys.exit(1)
