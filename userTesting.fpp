@@ -41,9 +41,11 @@ program name
     #:for x in outputs
     print *, ${x}$
     #:endfor
-    WRITE(1, *) SHAPE(output)
     #:for x in outShape
+    #: set a = x[0]
+    WRITE(1, *) SHAPE(${a}$)
     ${x[0]}$ = RESHAPE(${x[0]}$,(/#{for num in range(x[1],0,-1)}#SIZE(${x[0]}$, dim = ${num}$)#{if num > 1}#, #{endif}##{endfor}#/), order = [#{for x in range(x[1],0,-1)}#${x}$#{if x > 1}#, #{endif}##{endfor}#])
+    WRITE(1, *) PACK(${a}$,.true.)
     #:endfor
-    WRITE(1, *) PACK(output,.true.)
+    
 end program name

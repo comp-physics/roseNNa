@@ -13,10 +13,12 @@ file = sys.argv[1]
 
 onnxModel = onnx.load('goldenFiles/'+file+'/'+file+'.onnx')
 print("done")
+externalWeightsFile = True
 try:
     onnxModel_weights = onnx.load('goldenFiles/'+file+'/'+file+'_weights.onnx')
 except:
     onnxModel_weights = onnxModel
+    externalWeightsFile = False
 print("done")
 nodes = onnxModel.graph.node
 try:
@@ -29,8 +31,10 @@ ioMap = {}
 initializer = {}
 intermediateShapes = {}
 inputs = [] # need to export
+input_shapes = {}
 for inp in onnxModel.graph.input:
     ioMap[inp.name] = inp.name
+    input_shapes[inp.name] = [d.dim_value for d in inp.type.tensor_type.shape.dim]
     inputs.append([inp.name,len(inp.type.tensor_type.shape.dim)])
 
 for inter in value_info:
@@ -116,12 +120,14 @@ def spreadInfo(trueShape, toBeTransformedShape):
 
 #modelArch => (layer_name, input_list[], parameters) to call respective subroutines in fypp
 print("starting to write weights..")
-with open('onnxWeights.txt', 'w') as f2:
-    for w in onnxModel_weights.graph.initializer:
-        f2.write(stranspose(numpy_helper.to_array(w)))
-        f2.write("\n")
+# with open('onnxWeights.txt', 'w') as f2:
+#     for w in onnxModel_weights.graph.initializer:
+#         f2.write(stranspose(numpy_helper.to_array(w)))
+#         f2.write("\n")
 print("starting parsing...")
-with open('onnxModel.txt','w') as f:
+true_index = 0
+true_weights = onnxModel_weights.graph.initializer
+with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
     f.write(str(len(nodes)))
     f.write("\n")
     for node in nodes:
@@ -142,24 +148,44 @@ with open('onnxModel.txt','w') as f:
             for inp in node.input[1:3]: #represents ONNX's locations of weights
                 for dim in initializer[inp]:
                     f.write(str(dim)+" ")
+                if externalWeightsFile:
+                    f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
+                    true_index+=1
+                else:
+                    f2.write(stranspose(findWeightsInitializer(inp)))
+                f2.write("\n")
                 f.write("\n")
+            #check if bias exists
+            if not externalWeightsFile:
+                split = np.split(findWeightsInitializer(node.input[3]),2,axis=1)
             for x in range(2):
                 f.write(str(int(initializer[node.input[3]][1]/2)))
                 f.write("\n")
-                # f2.write(stringer(split[x].flatten().tolist()))
-                # f2.write("\n")
+                if externalWeightsFile:
+                    f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
+                    true_index+=1
+                else:
+                    f2.write(stranspose(split[x]))
+                f2.write("\n")
+                
             ioMap[node.output[0]] = "output" + extra
             extra = str(int(extra)+1)
             ioMap[node.output[1]] = ioMap[node.input[-2]]
             ioMap[node.output[2]] = ioMap[node.input[-1]]
 
-            #write weights to f2
         elif layer == "Gemm":
             modelArch.append(("Gemm", [ioMap[node.input[0]],node.attribute[2].i], None))
 
+            #check if bias exists
             for inp in node.input[1:3]:
                 for dim in initializer[inp]:
-                    f.write(str(dim)+ " ") 
+                    f.write(str(dim)+ " ")
+                if externalWeightsFile:
+                    f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
+                    true_index+=1
+                else:
+                    f2.write(stranspose(findWeightsInitializer(inp)))
+                f2.write("\n")
                 f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
@@ -186,16 +212,88 @@ with open('onnxModel.txt','w') as f:
             extra = str(int(extra)+1)
 
         elif layer == "Conv":
-            modelArch.append(("Conv", [ioMap[node.input[0]]], [node.attribute[0].ints, node.attribute[2].ints, node.attribute[3].ints, node.attribute[4].ints])) #(dilations, kernel_shape, pads, strides)
-
-            for inp in node.input[1:3]:
-                for dim in initializer[inp]:
-                    f.write(str(dim)+ " ")
+            attributes = {}
+            auto_pad = False
+            for attr in node.attribute:
+                name = str(attr.name)
+                if name == "group":
+                    pass
+                elif name == "auto_pad":
+                    auto_pad = True
+                    attributes['auto_pad'] = attr.s.decode('ASCII')
+                else:
+                    attributes[attr.name] = attr.ints
+            
+            if auto_pad: # DEAL WITH STRIDE > 1?
+                kernel_shape = attributes['kernel_shape'][0]
+                pad_total = kernel_shape - 1
+                pad = int(pad_total/2)
+                if pad_total % 2 != 0:
+                    if attributes['auto_pad'] == "SAME_UPPER":
+                        attributes['pads'] = [pad,pad,pad+1,pad+1]
+                    else:
+                        attributes['pads'] = [pad+1,pad+1,pad,pad]
+                else:
+                    attributes['pads'] = [pad]*4
+            modelArch.append(("Conv", [ioMap[node.input[0]]], [attributes['dilations'], attributes['kernel_shape'], attributes['pads'], attributes['strides']])) #(dilations, kernel_shape, pads, strides)
+            
+            if len(node.input) < 3:
+                numzs = 0
+                for inp in node.input[1:]:
+                    for dim in initializer[inp]:
+                        numzs = dim
+                        f.write(str(dim)+ " ")
+                    if externalWeightsFile:
+                        f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
+                        true_index+=1
+                    else:
+                        f2.write(stranspose(findWeightsInitializer(inp)))
+                    f2.write("\n")
+                    f.write("\n")
+                f.write(str(numzs))
                 f.write("\n")
+                f2.write(stranspose(np.zeros(numzs)))
+                f2.write("\n")
+            else:
+                for inp in node.input[1:3]:
+                    for dim in initializer[inp]:
+                        f.write(str(dim)+ " ")
+                    if externalWeightsFile:
+                        f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
+                        true_index+=1
+                    else:
+                        f2.write(stranspose(findWeightsInitializer(inp)))
+                    f2.write("\n")
+                    f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "MaxPool":
-            modelArch.append(("MaxPool", [ioMap[node.input[0]]], [node.attribute[0].i, node.attribute[2].ints, node.attribute[3].ints])) #(ceil_mode, pads, strides)
+            attributes = {}
+            auto_pad = False
+            #--SOME CONSTANTS THAT ARE REQUIRED IN ARGUMENTS AND MAY NOT APPEAR IN ONNX--
+            attributes['ceil_mode'] = 0
+            #-------------
+            for attr in node.attribute:
+                name = str(attr.name)
+                if name == "ceil_mode":
+                    attributes[attr.name] = attr.i
+                elif name == "auto_pad":
+                    auto_pad = True
+                    attributes['auto_pad'] = attr.s.decode('ASCII')
+                else:
+                    attributes[attr.name] = attr.ints
+            if auto_pad: # DEAL WITH STRIDE > 1?
+                kernel_shape = attributes['kernel_shape'][0]
+                pad_total = kernel_shape - 1
+                pad = int(pad_total/2)
+                if pad_total % 2 != 0:
+                    if attributes['auto_pad'] == "SAME_UPPER":
+                        attributes['pads'] = [pad,pad,pad+1,pad+1]
+                    else:
+                        attributes['pads'] = [pad+1,pad+1,pad,pad]
+                else:
+                    attributes['pads'] = [pad]*4
+            modelArch.append(("MaxPool", [ioMap[node.input[0]]], [attributes['ceil_mode'],attributes['pads'],attributes['strides']])) #(ceil_mode, pads, strides)
             f.write(str(node.attribute[1].ints[0]))
             f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
@@ -213,13 +311,17 @@ with open('onnxModel.txt','w') as f:
             for dim in fourd:
                 f.write(str(dim) + " ")
             f.write("\n")
+            if externalWeightsFile:
+                f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
+                true_index+=1
+            else:
+                f2.write(stranspose(findWeightsInitializer(node.input[1])))
+            f2.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
         
         elif layer == "MatMul":
             modelArch.append(("MatMul",[ioMap[node.input[0]],ioMap[node.input[1]]], [len(intermediateShapes[node.input[0]])])) #[trueshape, need to be broadcasted and added SHAPE]
-            for dim in fourd:
-                f.write(str(dim) + " ")
-            f.write("\n")
+            
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "Pad": #FINISH
@@ -246,7 +348,7 @@ with open('onnxModel.txt','w') as f:
     for x in list(ioMap.keys()):
         if x in out:
             outputs[x] = ioMap[x]
-    trueInputs = [[x.name, len(x.type.tensor_type.shape.dim)] for x in onnxModel.graph.input]
+    trueInputs = [[x.name, len(x.type.tensor_type.shape.dim)] for x in onnxModel.graph.input if x.name not in initializer]
     print(modelArch)
 
 

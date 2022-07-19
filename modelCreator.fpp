@@ -24,6 +24,10 @@ module model
         #:def genArray(arr)
         (/#{for index, x in enumerate(arr)}#${x}$#{if index < (len(arr)-1)}#, #{endif}##{endfor}#/)
         #:enddef genArray
+        #:def genArrayNoParen(arr)
+        #{for index, x in enumerate(arr)}#${x}$#{if index < (len(arr)-1)}#, #{endif}##{endfor}#
+        #:enddef genArrayNoParen
+
         SUBROUTINE use_model(#{for index,n in enumerate(trueInputs+outShape)}#${n[0]}$#{if index < (len(trueInputs+outShape)-1)}#, #{endif}##{endfor}#)
             IMPLICIT NONE
             #:for inp in inputs
@@ -33,6 +37,9 @@ module model
             REAL, ALLOCATABLE, INTENT(OUT), DIMENSION${ranksuffix(o[1])}$ :: ${o[0]}$
             #:endfor
             REAL :: T1, T2
+            #:for inp in inputs
+            ALLOCATE(${inp[0]}$(${genArrayNoParen([0]*inp[1])}$))
+            #:endfor
             CALL CPU_TIME(T1)
             
             #: set layer_dict = {}
@@ -86,8 +93,11 @@ module model
             #!Add
             #: elif tup[0] == 'Add'
             !===========Add============
+            #: if len(tup[2][1]) == 0
+            ${tup[1][0]}$ = ${tup[1][0]}$ + RESHAPE(addLayers(${layer_dict[tup[0]]}$)%adder, ${genArray(tup[2][0][-tup[2][2]:])}$)
+            #: else
             ${tup[1][0]}$ = ${tup[1][0]}$ + RESHAPE(broadc(addLayers(${layer_dict[tup[0]]}$)%adder,${genArray(tup[2][0])}$,RESHAPE(${genArray(tup[2][1])}$,${genArray([int(len(tup[2][1])/2),2])}$, order=[2,1])), ${genArray(tup[2][0][-tup[2][2]:])}$)
-
+            #: endif
             #!MatMul
             #: elif tup[0] == 'MatMul'
             !=======MatMul=========
