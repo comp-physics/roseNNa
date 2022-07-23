@@ -11,7 +11,7 @@ inp = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
 inp = np.reshape(inp, (1,1,28,28))
 
 ort_sess = ort.InferenceSession('goldenFiles/mnist/mnist.onnx')
-
+#hi
 
 print("starting...")
 start = time.time()
