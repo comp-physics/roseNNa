@@ -53,6 +53,8 @@ jobs:
           pip3 install onnx
           pip3 install numpy
           pip3 install fypp
+          pip3 install onnxruntime
+
 
       - name: Running Test Cases
         run: |

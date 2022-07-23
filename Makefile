@@ -16,7 +16,7 @@ output: $(COMP) $(OBJ2)
 	$(FC) $(FFLAGS) -o $@ -c $<
 
 test: ex1 output
-	./output
+	./output 2> outputCase.txt
 
 testing: ex1 output
 	./output 2> outputCase.txt
