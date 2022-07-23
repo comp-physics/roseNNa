@@ -339,7 +339,7 @@ contains
     !     end if 
     !     print *, RESHAPE(intermediate, )  ! make var called output
     ! end subroutine
-
+    !hi
     function broadc(inp, trueShape, spreadInfo) result(out)
         implicit none
         real, dimension(:,:,:,:), intent(in) :: inp
