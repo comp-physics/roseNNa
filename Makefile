@@ -1,5 +1,5 @@
 FC=gfortran
-FFLAGS=-O3 -Wall -Wextra -fcheck=all -fbacktrace
+FFLAGS=-O3
 SRC=modelCreator.fpp userTesting.fpp
 SRCBASE=activation_funcs.f90 derived_types.f90 layers.f90 readTester.f90
 OBJ2=${SRC:.fpp=.o}
