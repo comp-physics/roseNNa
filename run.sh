@@ -7,7 +7,7 @@ for d in goldenFiles/*/ ; do
     name=$(basename "$d")
     if [[ "$name" != "$skip" ]] && [[ "$name" != "vgg16" ]] && [[ "$name" != "gemm_huge" ]]; then
         echo "---------------- TEST #$testnum $name -------------------"
-        make test case="$name"
+        make test case="$name" >/dev/null 2>&1
         output=$(python3 -Wi goldenFiles/testChecker.py "$name")
         if [[ $? -eq 0 ]]; then
             ((++npass))
