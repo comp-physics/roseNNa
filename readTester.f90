@@ -12,6 +12,7 @@ module readTester
     TYPE(maxpoolLayer), ALLOCATABLE, DIMENSION(:) :: maxpoolLayers
     TYPE(avgpoolLayer), ALLOCATABLE, DIMENSION(:) :: avgpoolLayers
     TYPE(addLayer), ALLOCATABLE, DIMENSION(:) :: addLayers
+    TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshapeLayers
     CHARACTER(len = 20) :: activation_func
     REAL, ALLOCATABLE, DIMENSION(:,:) :: weights
     REAL, ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
@@ -29,6 +30,7 @@ module readTester
 
     INTEGER :: numLayers
     INTEGER :: i
+    INTEGER :: readOrNot
 
     contains
     
@@ -41,14 +43,14 @@ module readTester
         ALLOCATE(maxpoolLayers(0))
         ALLOCATE(avgpoolLayers(0))
         ALLOCATE(addLayers(0))
+        ALLOCATE(reshapeLayers(0))
         open(10, file = "onnxModel.txt")
         open(11, file = "onnxWeights.txt")
 
         read(10, *) numLayers
         
-        readloop: DO i = 1, 10
+        readloop: DO i = 1, numLayers
             read(10, *, IOSTAT=Reason) layerName
-            print *, layerName
             if (Reason < 0) then
                 exit readloop
             end if
@@ -67,12 +69,21 @@ module readTester
             else if (layerName .eq. "MatMul") then
                 cycle
             else if (layerName .eq. "Reshape") then
-                CYCLE
+                read(10, *) readOrNot
+                if (readOrNot .eq. 2) then
+                    CALL read_reshape2d(10, 11)
+                else if (readOrNot .eq. 3) then
+                    CALL read_reshape3d(10, 11)
+                else if (readOrNot .eq. 4) then
+                    CALL read_reshape4d(10, 11)
+                endif
             else if (layerName .eq. "Transpose") then
                 cycle
             else if (layerName .eq. "Squeeze") then
                 cycle
             else if (layerName .eq. "Pad") then
+                cycle
+            else if (layerName .eq. "Relu") then
                 cycle
             else
                 cycle
@@ -82,6 +93,48 @@ module readTester
             
         END DO readloop
 
+    end subroutine
+
+    subroutine read_reshape2d(file1, file2)
+        INTEGER, INTENT(IN) :: file1
+        INTEGER, INTENT(IN) :: file2
+        TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshape
+        ALLOCATE(reshape(1))
+        read(file1, *) w_dim1, w_dim2
+        ALLOCATE(weights(w_dim1, w_dim2))
+        read(file2, *) weights
+        reshape(1)%reshape2d = weights
+        DEALLOCATE(weights)
+        reshapeLayers = [reshapeLayers, reshape]
+        DEALLOCATE(reshape)
+    end subroutine
+
+    subroutine read_reshape3d(file1, file2)
+        INTEGER, INTENT(IN) :: file1
+        INTEGER, INTENT(IN) :: file2
+        TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshape
+        ALLOCATE(reshape(1))
+        read(file1, *) w_dim1, w_dim2, w_dim3
+        ALLOCATE(midWeights(w_dim1, w_dim2, w_dim3))
+        read(file2, *) midWeights
+        reshape(1)%reshape3d = midWeights
+        DEALLOCATE(midWeights)
+        reshapeLayers = [reshapeLayers, reshape]
+        DEALLOCATE(reshape)
+    end subroutine
+
+    subroutine read_reshape4d(file1, file2)
+        INTEGER, INTENT(IN) :: file1
+        INTEGER, INTENT(IN) :: file2
+        TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshape
+        ALLOCATE(reshape(1))
+        read(file1, *) w_dim1, w_dim2, w_dim3, w_dim4
+        ALLOCATE(largeWeights(w_dim1, w_dim2, w_dim3, w_dim4))
+        read(file2, *) largeWeights
+        reshape(1)%reshape4d = largeWeights
+        DEALLOCATE(largeWeights)
+        reshapeLayers = [reshapeLayers, reshape]
+        DEALLOCATE(reshape)
     end subroutine
 
     subroutine read_add(file1, file2)

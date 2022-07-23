@@ -108,7 +108,7 @@ def spreadInfo(trueShape, toBeTransformedShape):
     for index,dim in enumerate(toBeTransformedShape):
         if trueShape[index] != dim:
             ret.append(index+1)
-            ret.append(dim)
+            ret.append(trueShape[index])
     return ret
 
 #ONNX parser
@@ -204,9 +204,18 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
         #check notion summer start
         elif layer == "Reshape": #changes shape
             try:
-                modelArch.append(("Reshape", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [reshapeParser(findWeightsInitializer(node.input[-1]).tolist(), intermediateShapes[node.input[0]])])) #new shape
+                modelArch.append(("Reshape", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [reshapeParser(findWeightsInitializer(node.input[-1]).tolist(), intermediateShapes[node.input[0]])],[0])) #new shape
+                f.write("0")
+                f.write("\n")
             except:
-                modelArch.append(("Reshape", (ioMap[node.input[0]], len(initializer[node.input[0]])),["output" + extra], [reshapeParser(findWeightsInitializer(node.input[-1]).tolist(), initializer[node.input[0]])])) #new shape
+                modelArch.append(("Reshape", (ioMap[node.input[0]], len(initializer[node.input[0]])),["output" + extra], [reshapeParser(findWeightsInitializer(node.input[-1]).tolist(), initializer[node.input[0]])], [1])) #new shape
+                f.write(str(len(initializer[node.input[0]])))
+                f.write("\n")
+                for dim in initializer[node.input[0]]:
+                    f.write(str(dim)+ " ")
+                f.write("\n")
+                f2.write(stranspose(findWeightsInitializer(node.input[0])))
+                f2.write("\n")
             inputs.append(["output"+extra, len(intermediateShapes[node.output[0]])])
             ioMap[node.output[0]] = "output" + extra
             extra = str(int(extra)+1)
@@ -240,8 +249,8 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             if len(node.input) < 3:
                 numzs = 0
                 for inp in node.input[1:]:
+                    numzs = initializer[inp][0]
                     for dim in initializer[inp]:
-                        numzs = dim
                         f.write(str(dim)+ " ")
                     if externalWeightsFile:
                         f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
@@ -278,8 +287,9 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 if name == "ceil_mode":
                     attributes[attr.name] = attr.i
                 elif name == "auto_pad":
-                    auto_pad = True
                     attributes['auto_pad'] = attr.s.decode('ASCII')
+                    if attributes['auto_pad'] != "NOTSET":
+                        auto_pad = True
                 else:
                     attributes[attr.name] = attr.ints
             if auto_pad: # DEAL WITH STRIDE > 1?
@@ -328,7 +338,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "Relu":
-            modelArch.append(("Relu", [ioMap[node.input[0]]], None))
+            modelArch.append(("Relu", [ioMap[node.input[0]]], [len(intermediateShapes[node.input[0]])]))
 
             ioMap[node.output[0]] = ioMap[node.input[0]]
 

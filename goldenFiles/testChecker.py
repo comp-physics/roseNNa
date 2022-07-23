@@ -12,7 +12,7 @@ with open("goldenFiles/test.txt") as f, open("goldenFiles/"+file+"/"+file+".txt"
         outShape = shapeP == shapeF
         outRes = True
         for p, f in zip(outputP,outputF):
-            if abs(p-f) > 10**-6:
+            if abs(p-f) > 10**-5:
                 outRes = False
                 break
     except Exception as e:

@@ -42,7 +42,11 @@ module derived_types
         REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: adder
     ENDTYPE addLayer
 
-    
+    TYPE reshapeLayer
+        REAL, ALLOCATABLE, DIMENSION(:,:) :: reshape2d
+        REAL, ALLOCATABLE, DIMENSION(:,:,:) :: reshape3d
+        REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: reshape4d
+    ENDTYPE
 
     
 end module derived_types

@@ -60,7 +60,6 @@ module model
             #: elif tup[0] == 'Conv'
             !========Conv Layer============
             CALL conv(${tup[1][0]}$, convLayers(${layer_dict[tup[0]]}$)%weights, convLayers(${layer_dict[tup[0]]}$)%biases, ${genArray(tup[2][0])}$, ${genArray(tup[2][2])}$, ${genArray(tup[2][3])}$)
-
             #!Max Pooling Layer
             #: elif tup[0] == 'MaxPool'
             !========MaxPool Layer============
@@ -79,8 +78,13 @@ module model
             #!Reshape
             #: elif tup[0] == 'Reshape'
             !========Reshape============
+            #: if tup[-1][0] == 0
             ${tup[1][0]}$ = RESHAPE(${tup[1][0]}$,(/#{for num in range(tup[1][1],0,-1)}#SIZE(${tup[1][0]}$, dim = ${num}$)#{if num > 1}#, #{endif}##{endfor}#/), order = [#{for x in range(tup[1][1],0,-1)}#${x}$#{if x > 1}#, #{endif}##{endfor}#])
             ${tup[2][0]}$ = RESHAPE(${tup[1][0]}$,(/#{for index, num in enumerate(tup[3][0])}#${num}$#{if index < (len(tup[3][0])-1)}#, #{endif}##{endfor}#/), order = [#{for x in range(len(tup[3][0]),0,-1)}#${x}$#{if x > 1}#, #{endif}##{endfor}#])
+            #: else
+            reshapeLayers(${layer_dict[tup[0]]}$)%reshape${tup[1][1]}$d = RESHAPE(reshapeLayers(${layer_dict[tup[0]]}$)%reshape${tup[1][1]}$d,(/#{for num in range(tup[1][1],0,-1)}#SIZE(reshapeLayers(${layer_dict[tup[0]]}$)%reshape${tup[1][1]}$d, dim = ${num}$)#{if num > 1}#, #{endif}##{endfor}#/), order = [#{for x in range(tup[1][1],0,-1)}#${x}$#{if x > 1}#, #{endif}##{endfor}#])
+            ${tup[2][0]}$ = RESHAPE(reshapeLayers(${layer_dict[tup[0]]}$)%reshape${tup[1][1]}$d,(/#{for index, num in enumerate(tup[3][0])}#${num}$#{if index < (len(tup[3][0])-1)}#, #{endif}##{endfor}#/), order = [#{for x in range(len(tup[3][0]),0,-1)}#${x}$#{if x > 1}#, #{endif}##{endfor}#])
+            #: endif
 
             #!Squeeze
             #: elif tup[0] == 'Squeeze'
@@ -95,10 +99,15 @@ module model
             #: else
             ${tup[1][0]}$ = ${tup[1][0]}$ + RESHAPE(broadc(addLayers(${layer_dict[tup[0]]}$)%adder,${genArray(tup[2][0])}$,RESHAPE(${genArray(tup[2][1])}$,${genArray([int(len(tup[2][1])/2),2])}$, order=[2,1])), ${genArray(tup[2][0][-tup[2][2]:])}$)
             #: endif
+
             #!MatMul
             #: elif tup[0] == 'MatMul'
             !=======MatMul=========
             CALL matmul${tup[2][0]}$D(${tup[1][0]}$, ${tup[1][1]}$)
+            
+            #!ReLu
+            #: elif tup[0] == 'Relu'
+            ${tup[1][0]}$ = relu${tup[2][0]}$d(${tup[1][0]}$)
 
             #: endif
             #: mute
