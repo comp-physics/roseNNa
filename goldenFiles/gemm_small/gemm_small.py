@@ -2,18 +2,26 @@ import torch
 import torch.nn as nn
 import sys
 import os
+<<<<<<< HEAD
 import timeit
 import numpy as np
+=======
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
 class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
         self.linear_relu_stack = nn.Sequential(
+<<<<<<< HEAD
             nn.Linear(2, 100),
             nn.ReLU(),
             nn.Linear(100, 100),
             nn.Sigmoid(),
             nn.Linear(100, 2),
             nn.Sigmoid(),
+=======
+            nn.Linear(2, 2),
+            nn.ReLU(),
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
             nn.Linear(2, 3),
             nn.Sigmoid(),
         )
@@ -31,6 +39,7 @@ class NN(nn.Module):
         hid = self.linear_relu_stack(inp)
         return hid
 
+<<<<<<< HEAD
 SETUP_CODE = '''
 import torch
 import torch.nn as nn
@@ -67,6 +76,9 @@ class NN(nn.Module):
 model = NN()
 inp = torch.ones(1,2)
 '''
+=======
+
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
 model = NN()
 inp = torch.ones(1,2)
 
@@ -85,6 +97,7 @@ def stringer(mat):
     for elem in mat:
         s += str(elem) + " "
     return s.strip()
+<<<<<<< HEAD
 TEST_CODE = '''
 with torch.jit.optimized_execution(False):
     logits = model(inp)'''
@@ -93,6 +106,8 @@ times = timeit.repeat(setup = SETUP_CODE,
                           repeat = 10000,
                           number = 1)
 print(f"Median is: {np.median(np.array(times))}")
+=======
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
 logits = model(inp)
 filePath = "goldenFiles/gemm_small/"
 with open(filePath+"gemm_small.txt", "w") as f:

@@ -15,9 +15,15 @@ contains
         real, DIMENSION(size(lin%weights,1),size(inp,transInp+1)) :: bias_broadcast !==(m,n)
         bias_broadcast = SPREAD(lin%biases, 2, size(inp,transInp+1))
         if (transInp == 0) THEN
+<<<<<<< HEAD
             inp = matmul(inp,TRANSPOSE(lin%weights)) + TRANSPOSE(bias_broadcast)
         ELSE
             inp = matmul(lin%weights,inp) + bias_broadcast
+=======
+            inp = lin%fn_ptr(matmul(inp,TRANSPOSE(lin%weights)) + TRANSPOSE(bias_broadcast))
+        ELSE
+            inp = lin%fn_ptr(matmul(lin%weights,inp) + bias_broadcast)
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
         END IF
     end subroutine
 

@@ -246,6 +246,7 @@ module readTester
 
         ! read(file1, *) activation_func
 
+<<<<<<< HEAD
         ! if (activation_func .eq. "Relu") then
         !     lin(1)%fn_ptr => relu2d
         ! else if (activation_func .eq. "Sigmoid") then
@@ -255,6 +256,15 @@ module readTester
         ! else
         !     lin(1)%fn_ptr => null()
         ! end if
+=======
+        if (activation_func .eq. "Relu") then
+            lin(1)%fn_ptr => relu2d
+        else if (activation_func .eq. "Sigmoid") then
+            lin(1)%fn_ptr => sigmoid2d
+        else if (activation_func .eq. "Tanh") then
+            lin(1)%fn_ptr => tanhh2d
+        end if
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
 
         lin(1)%weights = weights
         lin(1)%biases = biases

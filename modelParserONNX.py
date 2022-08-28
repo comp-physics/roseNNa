@@ -5,6 +5,7 @@ import torch.onnx
 import onnx
 import itertools 
 from onnx import numpy_helper
+<<<<<<< HEAD
 import argparse
 import sys
 
@@ -16,6 +17,13 @@ parser.add_argument('--weights',"-w", help="(Optional) Please provide .onnx file
 args = parser.parse_args()
 
 file = args.onnxfile
+=======
+import math
+import sys
+
+
+file = sys.argv[1]
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
 
 onnxModel = onnx.load('goldenFiles/'+file+'/'+file+'.onnx')
 print("done")
@@ -181,6 +189,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
 
         elif layer == "Gemm":
             modelArch.append(("Gemm", [ioMap[node.input[0]],node.attribute[2].i], None))
+<<<<<<< HEAD
             numzs = 0
             #check if bias exists
             if len(node.input) < 3:
@@ -210,6 +219,20 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                         f2.write(stranspose(findWeightsInitializer(inp)))
                     f2.write("\n")
                     f.write("\n")
+=======
+
+            #check if bias exists
+            for inp in node.input[1:3]:
+                for dim in initializer[inp]:
+                    f.write(str(dim)+ " ")
+                if externalWeightsFile:
+                    f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
+                    true_index+=1
+                else:
+                    f2.write(stranspose(findWeightsInitializer(inp)))
+                f2.write("\n")
+                f.write("\n")
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         #check notion summer start
@@ -366,12 +389,20 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "Sigmoid":
+<<<<<<< HEAD
             modelArch.append(("Sigmoid", [ioMap[node.input[0]]], [len(intermediateShapes[node.input[0]])]))
+=======
+            modelArch.append(("Sigmoid", [ioMap[node.input[0]]], None))
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
 
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "Tanh":
+<<<<<<< HEAD
             modelArch.append(("Tanh", [ioMap[node.input[0]]], [len(intermediateShapes[node.input[0]])]))
+=======
+            modelArch.append(("Tanh", [ioMap[node.input[0]]], None))
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
 
             ioMap[node.output[0]] = ioMap[node.input[0]]
         else:

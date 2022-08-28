@@ -109,6 +109,7 @@ module model
             #: elif tup[0] == 'Relu'
             ${tup[1][0]}$ = relu${tup[2][0]}$d(${tup[1][0]}$)
 
+<<<<<<< HEAD
             #!Tanh
             #: elif tup[0] == 'Tanh'
             ${tup[1][0]}$ = tanhh${tup[2][0]}$d(${tup[1][0]}$)
@@ -117,17 +118,27 @@ module model
             #: elif tup[0] == 'Sigmoid'
             ${tup[1][0]}$ = sigmoid${tup[2][0]}$d(${tup[1][0]}$)
 
+=======
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
             #: endif
             #: mute
             $: layer_dict.update([(tup[0],layer_dict[tup[0]]+1)])
             #: endmute
             #: endfor
             call CPU_TIME(T2)
+<<<<<<< HEAD
 
             #:for out in outputs
             ${out}$ = ${outputs[out]}$
             #:endfor
 
+=======
+            print *, "-------------"
+            #:for out in outputs
+            ${out}$ = ${outputs[out]}$
+            #:endfor
+            print *, "TIME TAKEN:", T2-T1
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
         end SUBROUTINE
     !===================================================================================================================================================
         

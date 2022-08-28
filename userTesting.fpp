@@ -22,9 +22,12 @@ program name
     #:include 'inputs.fpp'
     #:include 'variables.fpp'
     #:endmute
+<<<<<<< HEAD
     REAL :: T1, T2
     REAL, DIMENSION(10000) :: times
     integer :: time
+=======
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
     #:for inp in inpShape
     REAL, ALLOCATABLE, DIMENSION${ranksuffix(len(inpShape[inp]))}$ :: ${inp}$
     #:endfor
@@ -37,6 +40,7 @@ program name
     #:for inp in arrs
     ${inp}$ = RESHAPE(${genArray(arrs[inp])}$,${genArray(inpShape[inp])}$, order = ${rev(inpShape[inp])}$)
     #:endfor
+<<<<<<< HEAD
     
     CALL initialize()
     print *, "Model Reconstruction Success!"
@@ -49,6 +53,12 @@ program name
     END DO !delete this line
     CALL bubble_sort(times) !delete this line
     print *, "Median is: ", times(size(times,1)/2) !delete this line
+=======
+    CALL initialize()
+    print *, "Model Reconstruction Success!"
+    open(1, file = "goldenFiles/test.txt")
+    CALL use_model(#{for index,n in enumerate(inpShape)}#${n}$, #{endfor}##{for index,n in enumerate(outputs)}#${n}$#{if index < (len(outputs)-1)}#, #{endif}##{endfor}#)
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
     #:for x in outputs
     print *, ${x}$
     #:endfor
@@ -58,6 +68,7 @@ program name
     ${x[0]}$ = RESHAPE(${x[0]}$,(/#{for num in range(x[1],0,-1)}#SIZE(${x[0]}$, dim = ${num}$)#{if num > 1}#, #{endif}##{endfor}#/), order = [#{for x in range(x[1],0,-1)}#${x}$#{if x > 1}#, #{endif}##{endfor}#])
     WRITE(1, *) PACK(${a}$,.true.)
     #:endfor
+<<<<<<< HEAD
     contains
         subroutine bubble_sort(array)
             implicit none
@@ -77,4 +88,7 @@ program name
             enddo
         
         end subroutine bubble_sort
+=======
+    
+>>>>>>> 932293133341125e44857a018a79d106ec53632e
 end program name
