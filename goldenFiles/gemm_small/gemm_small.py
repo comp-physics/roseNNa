@@ -2,12 +2,18 @@ import torch
 import torch.nn as nn
 import sys
 import os
+import timeit
+import numpy as np
 class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
         self.linear_relu_stack = nn.Sequential(
-            nn.Linear(2, 2),
+            nn.Linear(2, 100),
             nn.ReLU(),
+            nn.Linear(100, 100),
+            nn.Sigmoid(),
+            nn.Linear(100, 2),
+            nn.Sigmoid(),
             nn.Linear(2, 3),
             nn.Sigmoid(),
         )
@@ -25,7 +31,42 @@ class NN(nn.Module):
         hid = self.linear_relu_stack(inp)
         return hid
 
+SETUP_CODE = '''
+import torch
+import torch.nn as nn
+import sys
+import os
+import timeit
+torch.set_num_threads(1)
+class NN(nn.Module):
+    def __init__(self):
+        super(NN, self).__init__()
+        self.linear_relu_stack = nn.Sequential(
+            nn.Linear(2, 100),
+            nn.ReLU(),
+            nn.Linear(100, 100),
+            nn.Sigmoid(),
+            nn.Linear(100, 2),
+            nn.Sigmoid(),
+            nn.Linear(2, 3),
+            nn.Sigmoid(),
+        )
 
+    def forward(self, inp):
+        # logits, hid = self.lstm(inp,hidden) #logits will have shape of hidden_dimension
+        # print("Logits")
+        # print(logits)
+        # print("------")
+        # print("Hidden")
+        # print(hid)
+        # print("------")
+        # logits = logits.view(-1,logits.size(2)) #.view reshapes it to a valid (1,hid_dim) for lin layer
+        # logits = self.linear_relu_stack(logits)
+        hid = self.linear_relu_stack(inp)
+        return hid
+model = NN()
+inp = torch.ones(1,2)
+'''
 model = NN()
 inp = torch.ones(1,2)
 
@@ -44,6 +85,14 @@ def stringer(mat):
     for elem in mat:
         s += str(elem) + " "
     return s.strip()
+TEST_CODE = '''
+with torch.jit.optimized_execution(False):
+    logits = model(inp)'''
+times = timeit.repeat(setup = SETUP_CODE,
+                          stmt = TEST_CODE,
+                          repeat = 10000,
+                          number = 1)
+print(f"Median is: {np.median(np.array(times))}")
 logits = model(inp)
 filePath = "goldenFiles/gemm_small/"
 with open(filePath+"gemm_small.txt", "w") as f:

@@ -1,5 +1,5 @@
 FC=gfortran
-FFLAGS=-O3
+FFLAGS=-O2
 SRC=modelCreator.fpp userTesting.fpp
 SRCBASE=activation_funcs.f90 derived_types.f90 layers.f90 readTester.f90
 OBJ2=${SRC:.fpp=.o}
@@ -16,7 +16,7 @@ output: $(COMP) $(OBJ2)
 	$(FC) $(FFLAGS) -o $@ -c $<
 
 test: ex1 output
-	./output 
+	./output 2> outputCase.txt
 
 testing: ex1 output
 	./output 2> outputCase.txt
@@ -24,7 +24,7 @@ testing: ex1 output
 
 ex1: modelParserONNX.py
 	python3 goldenFiles/$(case)/$(case).py
-	python3 modelParserONNX.py $(case)
+	python3 modelParserONNX.py -f $(case)
 
 compile: $(COMP)
 

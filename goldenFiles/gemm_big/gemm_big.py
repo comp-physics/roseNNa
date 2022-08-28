@@ -18,7 +18,16 @@ class NN(nn.Module):
             nn.Linear(40,1),
             nn.Sigmoid()
         )
-
+#nn.Linear(2, 20, bias=False),
+            # nn.Linear(20, 30),
+            # nn.Sigmoid(),
+            # nn.Linear(30, 30),
+            # nn.ReLU(),
+            # nn.Linear(30,40),
+            # nn.Tanh(),
+            # nn.Linear(40,1),
+            # nn.Sigmoid()
+#TRY LATER
     def forward(self, x):
         logits = self.linear_relu_stack(x)
         return logits

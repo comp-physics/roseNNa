@@ -123,11 +123,11 @@ module model
             #: endmute
             #: endfor
             call CPU_TIME(T2)
-
+            print *, "-------------"
             #:for out in outputs
             ${out}$ = ${outputs[out]}$
             #:endfor
-
+            print *, "TIME TAKEN:", T2-T1
         end SUBROUTINE
     !===================================================================================================================================================
         

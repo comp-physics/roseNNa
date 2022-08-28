@@ -1,25 +1,3 @@
-12
-Reshape
-4
-16 4 4 10 
-Conv
-8 1 5 5 
-8
-Add
-1 8 1 1 
-Relu
-MaxPool
-2
-Conv
-16 8 5 5 
-16
-Add
-1 16 1 1 
-Relu
+1
 MaxPool
 3
-Reshape
-0
-MatMul
-Add
-1 1 1 10 

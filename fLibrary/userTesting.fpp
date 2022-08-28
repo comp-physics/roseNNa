@@ -22,9 +22,6 @@ program name
     #:include 'inputs.fpp'
     #:include 'variables.fpp'
     #:endmute
-    REAL :: T1, T2
-    REAL, DIMENSION(10000) :: times
-    integer :: time
     #:for inp in inpShape
     REAL, ALLOCATABLE, DIMENSION${ranksuffix(len(inpShape[inp]))}$ :: ${inp}$
     #:endfor
@@ -37,18 +34,10 @@ program name
     #:for inp in arrs
     ${inp}$ = RESHAPE(${genArray(arrs[inp])}$,${genArray(inpShape[inp])}$, order = ${rev(inpShape[inp])}$)
     #:endfor
-    
     CALL initialize()
     print *, "Model Reconstruction Success!"
     open(1, file = "goldenFiles/test.txt")
-    DO time=1,10000 !delete this line
-        CALL CPU_TIME(T1)
-        CALL use_model(#{for index,n in enumerate(inpShape)}#${n}$, #{endfor}##{for index,n in enumerate(outputs)}#${n}$#{if index < (len(outputs)-1)}#, #{endif}##{endfor}#)
-        CALL CPU_TIME(T2)
-        times(time) = T2-T1
-    END DO !delete this line
-    CALL bubble_sort(times) !delete this line
-    print *, "Median is: ", times(size(times,1)/2) !delete this line
+    CALL use_model(#{for index,n in enumerate(inpShape)}#${n}$, #{endfor}##{for index,n in enumerate(outputs)}#${n}$#{if index < (len(outputs)-1)}#, #{endif}##{endfor}#)
     #:for x in outputs
     print *, ${x}$
     #:endfor
@@ -58,23 +47,5 @@ program name
     ${x[0]}$ = RESHAPE(${x[0]}$,(/#{for num in range(x[1],0,-1)}#SIZE(${x[0]}$, dim = ${num}$)#{if num > 1}#, #{endif}##{endfor}#/), order = [#{for x in range(x[1],0,-1)}#${x}$#{if x > 1}#, #{endif}##{endfor}#])
     WRITE(1, *) PACK(${a}$,.true.)
     #:endfor
-    contains
-        subroutine bubble_sort(array)
-            implicit none
-            real, intent(inout) :: array(:)
-            real :: temp
-            integer :: i,j,last
-        
-            last=size(array)
-            do i=last-1,1,-1
-            do j=1,i
-                if (array(j+1).lt.array(j)) then
-                    temp=array(j+1)
-                    array(j+1)=array(j)
-                    array(j)=temp
-                endif
-            enddo
-            enddo
-        
-        end subroutine bubble_sort
+    
 end program name
