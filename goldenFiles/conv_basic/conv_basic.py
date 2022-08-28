@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.onnx
 import onnx
 from onnx import numpy_helper
-<<<<<<< HEAD
 import timeit
 import numpy as np
 SETUP_CODE = '''
@@ -24,8 +23,6 @@ class NN(nn.Module):
 model = NN()
 inp = torch.rand(1,2,6,6)
 '''
-=======
->>>>>>> 932293133341125e44857a018a79d106ec53632e
 class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
@@ -52,7 +49,6 @@ def stringer(mat):
     for elem in mat:
         s += str(elem) + " "
     return s.strip()
-<<<<<<< HEAD
 TEST_CODE = '''
 with torch.jit.optimized_execution(False):
     logits = model(inp)'''
@@ -61,8 +57,6 @@ times = timeit.repeat(setup = SETUP_CODE,
                           repeat = 10000,
                           number = 1)
 print(f"Median is: {np.median(np.array(times))}")
-=======
->>>>>>> 932293133341125e44857a018a79d106ec53632e
 logits = model(inp)
 
 filePath = "goldenFiles/conv_basic/"
