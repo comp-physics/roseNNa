@@ -1,31 +1,31 @@
 module derived_types
-
+    use iso_c_binding
     use activation_functions
 
     implicit none
 
     abstract interface
         function func (z) result(output)
-            real, intent(in) :: z(:,:)
+            REAL, intent(in) :: z(:,:)
             real :: output(size(z,1), size(z,2))
         end function func
     end interface
     
     TYPE linLayer
-        REAL, ALLOCATABLE, DIMENSION(:,:) :: weights
-        REAL, ALLOCATABLE, DIMENSION(:) :: biases
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:) :: weights
+        REAL (c_double), ALLOCATABLE, DIMENSION(:) :: biases
     ENDTYPE linLayer
 
     TYPE lstmLayer
-        REAL, ALLOCATABLE, DIMENSION(:,:,:) :: whh
-        REAL, ALLOCATABLE, DIMENSION(:,:,:) :: wih
-        REAL, ALLOCATABLE, DIMENSION(:) :: bhh
-        REAL, ALLOCATABLE, DIMENSION(:) :: bih
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: whh
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: wih
+        REAL (c_double), ALLOCATABLE, DIMENSION(:) :: bhh
+        REAL (c_double), ALLOCATABLE, DIMENSION(:) :: bih
     ENDTYPE lstmLayer
 
     TYPE convLayer
-        REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: weights
-        REAL, ALLOCATABLE, DIMENSION(:) :: biases
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: weights
+        REAL (c_double), ALLOCATABLE, DIMENSION(:) :: biases
         !==stride
     ENDTYPE convLayer
 
@@ -38,13 +38,13 @@ module derived_types
     ENDTYPE avgpoolLayer
 
     TYPE addLayer
-        REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: adder
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: adder
     ENDTYPE addLayer
 
     TYPE reshapeLayer
-        REAL, ALLOCATABLE, DIMENSION(:,:) :: reshape2d
-        REAL, ALLOCATABLE, DIMENSION(:,:,:) :: reshape3d
-        REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: reshape4d
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:) :: reshape2d
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: reshape3d
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: reshape4d
     ENDTYPE
 
     

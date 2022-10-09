@@ -1,21 +1,25 @@
-10
-Gemm
-100 2 
-100 
+12
+Reshape
+4
+16 4 4 10 
+Conv
+8 1 5 5 
+8
+Add
+1 8 1 1 
 Relu
-Gemm
-100 100 
-100 
-Sigmoid
-Gemm
-2 100 
-2 
-Sigmoid
-Gemm
-2 2 
-2 
+MaxPool
+2
+Conv
+16 8 5 5 
+16
+Add
+1 16 1 1 
 Relu
-Gemm
-3 2 
-3 
-Sigmoid
+MaxPool
+3
+Reshape
+0
+MatMul
+Add
+1 1 1 10 

@@ -32,7 +32,7 @@ class NN(nn.Module):
         return self.conv(inp)
 
 model = NN()
-inp = torch.rand(1,2,6,6)
+inp = torch.rand(2,2,6,6)
 
 with open("inputs.fpp",'w') as f1:
     inputs = inp.flatten().tolist()
@@ -64,7 +64,8 @@ with open(filePath+"conv_basic.txt", "w") as f2:
     f2.write(stringer(list(logits.shape)))
     f2.write("\n")
     f2.write(stringer(logits.flatten().tolist()))
-print(logits.flatten().tolist())
+print(logits)
+# print(logits.flatten().tolist())
 
 torch.onnx.export(model,               # model being run
                   inp,                         # model input (or a tuple for multiple inputs)

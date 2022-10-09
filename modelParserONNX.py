@@ -12,24 +12,28 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument('--onnxfile',"-f", required=True, help="Please provide .onnx file of your pretrained model.")
 parser.add_argument('--weights',"-w", help="(Optional) Please provide .onnx file of your pretrained model without any optimizations (do_constant_folding = False).")
+parser.add_argument('--inferred',"-i", help="(Optional) Please provide .onnx file that has inferred shapes")
+
 
 args = parser.parse_args()
 
 file = args.onnxfile
+weights = args.weights
+inferred = args.inferred
 
 
-onnxModel = onnx.load('goldenFiles/'+file+'/'+file+'.onnx')
+onnxModel = onnx.load(file)
 print("done")
 externalWeightsFile = True
 try:
-    onnxModel_weights = onnx.load('goldenFiles/'+file+'/'+file+'_weights.onnx')
+    onnxModel_weights = onnx.load(weights)
 except:
     onnxModel_weights = onnxModel
     externalWeightsFile = False
 print("done")
 nodes = onnxModel.graph.node
 try:
-    inferred = onnx.load('goldenFiles/'+file+'/'+file+'_inferred.onnx')
+    inferred = onnx.load(inferred)
     value_info = inferred.graph.value_info
 except:
     value_info = onnx.shape_inference.infer_shapes(onnxModel).graph.value_info
@@ -42,7 +46,7 @@ input_shapes = {}
 for inp in onnxModel.graph.input:
     ioMap[inp.name] = inp.name
     input_shapes[inp.name] = [d.dim_value for d in inp.type.tensor_type.shape.dim]
-    inputs.append([inp.name,len(inp.type.tensor_type.shape.dim)])
+    # inputs.append([inp.name,len(inp.type.tensor_type.shape.dim)])
 
 for inter in value_info:
     intermediateShapes[inter.name] = [d.dim_value for d in inter.type.tensor_type.shape.dim]
@@ -143,7 +147,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
         f.write("\n")
         for index,x in enumerate(node.output):
             if x in out:
-                outShape.append([x,len(out[x])])
+                outShape.append([x,out[x]])
         if layer == "Transpose": #for this, make sure order is set to tuple[2] and shape is set accordingly
             modelArch.append(("Transpose",[ioMap[node.input[0]]], [list(map(lambda x: x+1,node.attribute[0].ints))])) #"order"
 
@@ -382,7 +386,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
     for x in list(ioMap.keys()):
         if x in out:
             outputs[x] = ioMap[x]
-    trueInputs = [[x.name, len(x.type.tensor_type.shape.dim)] for x in onnxModel.graph.input if x.name not in initializer]
+    trueInputs = [[x.name, [a.dim_value for a in x.type.tensor_type.shape.dim]] for x in onnxModel.graph.input if x.name not in initializer]
     print(modelArch)
 
 

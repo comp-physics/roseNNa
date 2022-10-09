@@ -23,9 +23,20 @@ testing: ex1 output
 	./output 2> outputCase.txt
 	python3 -Wi goldenFiles/testChecker.py $(case)
 
+capi: capi.c modelCreator.o
+	gcc -c capi.c
+	gfortran -o capi modelCreator.o capi.o
+	./capi
+
 ex1: modelParserONNX.py
 	python3 goldenFiles/$(case)/$(case).py
-	python3 modelParserONNX.py -f $(case)
+	python3 modelParserONNX.py -f goldenFiles/$(case)/$(case).onnx -w goldenFiles/$(case)/$(case)_weights.onnx -i goldenFiles/$(case)/$(case)_inferred.onnx
+
+
+graphs: output
+	./output 2> outputCase.txt
+	
+
 
 compile: $(COMP)
 

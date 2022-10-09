@@ -10,6 +10,7 @@ module rosenna
     USE readTester
     USE model
     USE derived_types
+    USE iso_c_binding
     ! ===============================================================
 
     

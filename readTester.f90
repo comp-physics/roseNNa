@@ -2,6 +2,7 @@ module readTester
 
     USE derived_types
     USE activation_functions
+    use iso_c_binding
 
     implicit none
 
@@ -14,15 +15,15 @@ module readTester
     TYPE(addLayer), ALLOCATABLE, DIMENSION(:) :: addLayers
     TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshapeLayers
     CHARACTER(len = 20) :: activation_func
-    REAL, ALLOCATABLE, DIMENSION(:,:) :: weights
-    REAL, ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
-    REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
+    REAL (c_double), ALLOCATABLE, DIMENSION(:,:) :: weights
+    REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
+    REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
     INTEGER :: w_dim1
     INTEGER :: w_dim2
     INTEGER :: w_dim3
     INTEGER :: w_dim4
 
-    REAL, ALLOCATABLE, DIMENSION(:) :: biases
+    REAL (c_double), ALLOCATABLE, DIMENSION(:) :: biases
 
     ! INTEGER :: activation_func
 
