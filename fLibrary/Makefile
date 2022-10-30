@@ -30,7 +30,7 @@ library: output
 	ar crv libcorelib.a $(COMP) $(OBJ2)
 
 clean:
-	rm *.o objFiles/*.mod 
+	rm *.o objFiles/*.mod
 	rm libcorelib.a
 # testing: ex1 outputs
 #     # runs userTesting/main file provided by user
