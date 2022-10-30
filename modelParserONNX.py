@@ -380,6 +380,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
 
             ioMap[node.output[0]] = ioMap[node.input[0]]
         else:
+            print(modelArch)
             print(f'{layer} NOT SUPPORTED BY RoseNNa CURRENTLY!')
             ioMap[node.output[0]] = ioMap[node.input[0]]
             continue
