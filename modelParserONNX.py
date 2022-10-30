@@ -381,6 +381,8 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             modelArch.append(("Tanh", [ioMap[node.input[0]]], [len(intermediateShapes[node.input[0]])]))
 
             ioMap[node.output[0]] = ioMap[node.input[0]]
+        elif layer == "Constant":
+            continue
         else:
             print(modelArch)
             print(f'{layer} NOT SUPPORTED BY RoseNNa CURRENTLY!')
