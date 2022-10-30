@@ -138,6 +138,8 @@ print("starting to write weights..")
 print("starting parsing...")
 true_index = 0
 true_weights = onnxModel_weights.graph.initializer
+for node in nodes:
+    print(node.op_type)
 with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
     f.write(str(len(nodes)))
     f.write("\n")
