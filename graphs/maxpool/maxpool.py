@@ -18,27 +18,27 @@ import os
 import timeit
 torch.set_num_threads(1)
 class NN(nn.Module):
-    def __init__(self,inp,out,kernel):
+    def __init__(self,kernel):
         super(NN, self).__init__()
-        self.conv = nn.Conv2d(inp,out,kernel)
+        self.maxpool = nn.MaxPool2d(kernel)
 
     def forward(self, inp):
-        return self.conv(inp)
-
+        return self.maxpool(inp)
 
 models = {}
 for inp in [30,50,100,500,1000]:
     for neurons in [3,9,15,25]:
         s = "Layers"+str(inp)+"Neurons"+str(neurons)
-        models[s] = (NN(1,1,neurons),torch.rand(1,1,inp,inp))
+        models[s] = (NN(neurons),torch.rand(1,1,inp,inp))
 '''
+
 TEST_CODE = '''
 with torch.jit.optimized_execution(False):
     logits = models'''
 
 
 if run:
-    filePath = "graphs/conv/"
+    filePath = "graphs/maxpool/"
     with open(filePath+"times.txt", "w") as f:
         for inp in [30,50,100,500,1000]:
             print(f"Doing inp size {inp}")
@@ -53,6 +53,4 @@ if run:
                 median = np.median(np.array(t))
                 print(f"Time for layer {inp}, {neurons} neurons: {median}")
                 f.write(str(median)+ " ")
-
-
 

@@ -5,13 +5,7 @@ import onnx
 from onnx import numpy_helper
 import timeit
 import numpy as np
-SETUP_CODE = '''
-import torch
-import torch.nn as nn
-import sys
-import os
-import timeit
-torch.set_num_threads(1)
+
 class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
@@ -21,18 +15,7 @@ class NN(nn.Module):
         return self.conv(inp)
 
 model = NN()
-inp = torch.rand(1,2,6,6)
-'''
-class NN(nn.Module):
-    def __init__(self):
-        super(NN, self).__init__()
-        self.conv = nn.Conv2d(2,3,3)
-
-    def forward(self, inp):
-        return self.conv(inp)
-
-model = NN()
-inp = torch.rand(2,2,6,6)
+inp = torch.rand(2,2,7,7)
 
 with open("inputs.fpp",'w') as f1:
     inputs = inp.flatten().tolist()
@@ -49,14 +32,7 @@ def stringer(mat):
     for elem in mat:
         s += str(elem) + " "
     return s.strip()
-TEST_CODE = '''
-with torch.jit.optimized_execution(False):
-    logits = model(inp)'''
-times = timeit.repeat(setup = SETUP_CODE,
-                          stmt = TEST_CODE,
-                          repeat = 10000,
-                          number = 1)
-print(f"Median is: {np.median(np.array(times))}")
+
 logits = model(inp)
 
 filePath = "goldenFiles/conv_basic/"

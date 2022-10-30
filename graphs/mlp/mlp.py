@@ -96,9 +96,11 @@ class NN(nn.Module):
         return hid
 inp = torch.ones(1,1)
 models = {}
+def put(layer, m):
+    return (m-len(layer))*"0"+layer
 for layer in [1,5,10,25,50]:
     for neurons in [10,25,50,100]:
-        s = "Layers"+str(layer)+"Neurons"+str(neurons)
+        s = "Layers"+put(str(layer),3)+"Neurons"+put(str(neurons),3)
         models[s] = NN(layer,neurons)
 
 
