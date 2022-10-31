@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 import torch.onnx
 import onnx
-import itertools 
+import itertools
 from onnx import numpy_helper
 import argparse
 import sys
@@ -93,7 +93,7 @@ def reshapeParser(reshape, trueShape):
         missing_dim = int(true/res)
         reshape[ind] = missing_dim
         return reshape
-    
+
 def findWeightsInitializer(input_name):
     for weights in onnxModel.graph.initializer:
         if weights.name == input_name:
@@ -180,7 +180,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 else:
                     f2.write(stranspose(split[x]))
                 f2.write("\n")
-                
+
             ioMap[node.output[0]] = "output" + extra
             extra = str(int(extra)+1)
             ioMap[node.output[1]] = ioMap[node.input[-2]]
@@ -262,7 +262,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                     attributes['auto_pad'] = attr.s.decode('ASCII')
                 else:
                     attributes[attr.name] = attr.ints
-            
+
             if auto_pad: # DEAL WITH STRIDE > 1?
                 kernel_shape = attributes['kernel_shape'][0]
                 pad_total = kernel_shape - 1
@@ -275,7 +275,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 else:
                     attributes['pads'] = [pad]*4
             modelArch.append(("Conv", [ioMap[node.input[0]]], [attributes['dilations'], attributes['kernel_shape'], attributes['pads'], attributes['strides']])) #(dilations, kernel_shape, pads, strides)
-            
+
             if len(node.input) < 3:
                 numzs = 0
                 for inp in node.input[1:]:
@@ -337,7 +337,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             f.write(str(node.attribute[1].ints[0]))
             f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
-        
+
         elif layer == "AveragePool":
             modelArch.append(("AveragePool", [ioMap[node.input[0]]], [node.attribute[0].i, node.attribute[2].ints, node.attribute[3].ints])) #(ceil_mode, pads, strides)
             f.write(str(node.attribute[1].ints[0]))
@@ -358,10 +358,10 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 f2.write(stranspose(findWeightsInitializer(node.input[1])))
             f2.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
-        
+
         elif layer == "MatMul":
             modelArch.append(("MatMul",[ioMap[node.input[0]],ioMap[node.input[1]]], [len(intermediateShapes[node.input[0]])])) #[trueshape, need to be broadcasted and added SHAPE]
-            
+
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "Pad": #FINISH
@@ -381,8 +381,8 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             modelArch.append(("Tanh", [ioMap[node.input[0]]], [len(intermediateShapes[node.input[0]])]))
 
             ioMap[node.output[0]] = ioMap[node.input[0]]
-        elif layer == "Constant":
-            continue
+        # elif layer == "Constant":
+        #     continue
         else:
             print(modelArch)
             print(f'{layer} NOT SUPPORTED BY RoseNNa CURRENTLY!')
@@ -406,4 +406,3 @@ with open("variables.fpp",'w') as f:
     f.write("\n")
     f.write(f"""#:set outputs = {outputs}""")
     f.write("\n")
-

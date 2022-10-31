@@ -26,10 +26,12 @@ module model
 
             !INPUTS CORRESPONDING TO INTERMEDIARY PROCESSING
             REAL (c_double), ALLOCATABLE,  DIMENSION(:,:,:,:) :: output0
+            REAL (c_double), ALLOCATABLE,  DIMENSION(:,:,:) :: output1
+            REAL (c_double), ALLOCATABLE,  DIMENSION(:,:) :: output2
             !================================================
 
             !OUTPUTS CORRESPONDING TO C
-            REAL (c_double), INTENT(OUT), DIMENSION(        1, 1, 2) :: o0
+            REAL (c_double), INTENT(OUT), DIMENSION(        2, 1) :: o0
             !===========================
 
             REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: input
@@ -56,8 +58,34 @@ module model
             CALL lstm(input, hidden_state, cell_state, lstmLayers(1)%whh, lstmLayers(1)%wih, lstmLayers(1)%bih, lstmLayers(1)%bhh,&
                 & output0)
 
+            !========Squeeze============
+            output1 = RESHAPE(output0,(/SIZE(output0, dim = 1), SIZE(output0, dim = 3), SIZE(output0, dim = 4)/))
+
+            !========Transpose============
+            output1 = RESHAPE(output1,(/SIZE(output1, dim = 2), SIZE(output1, dim = 1), SIZE(output1, dim = 3)/), order = [2, 1, 3])
+
+            !========Reshape============
+            output1 = RESHAPE(output1,(/SIZE(output1, dim = 3), SIZE(output1, dim = 2), SIZE(output1, dim = 1)/), order = [3, 2, 1])
+            output2 = RESHAPE(output1,(/2, 2/), order = [2, 1])
+
+            !========Gemm Layer============
+            CALL linear_layer(output2, linLayers(1),0)
+            output2 = relu2d(output2)
+            
+            !========Gemm Layer============
+            CALL linear_layer(output2, linLayers(2),0)
+            output2 = sigmoid2d(output2)
+
+            !========Gemm Layer============
+            CALL linear_layer(output2, linLayers(3),0)
+            output2 = relu2d(output2)
+            
+            !========Gemm Layer============
+            CALL linear_layer(output2, linLayers(4),0)
+            output2 = sigmoid2d(output2)
+
             call CPU_TIME(T2)
-            o0 = cell_state
+            o0 = output2
         end SUBROUTINE
     !===================================================================================================================================================
         
