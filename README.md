@@ -18,3 +18,60 @@ Lastly, we have two **.fpp** files. [modelCreator.fpp](https://github.com/comp-p
 [testChecker.py](https://github.com/comp-physics/FyeNNa/blob/develop/goldenFiles/testChecker.py) compares the outputted text file to the test's "golden file". If the shapes match and the outputs are within reasonable range, the test case passes. Otherwise, the error is outputted.
 
 
+## Fortran Library
+The fLibrary folder holds all the core files that are needed to recreate the model in Fortran and be linked to a program. It contains a Makefile that compiles all core files and creates a library. 
+
+Here are the steps one needs to follow. First preprocess the model down below. This customizes the modelCreator.f90 file to the model that is currently being used/preprocessed.
+
+```make
+    preprocess: modelParserONNX.py
+        # arg1 = model structure file (.onnx format)
+        # arg2 (optional) = weights file (.onnx format)
+        python3 modelParserONNX.py $(arg1) $(arg2)
+
+        #create the model based on modelParserONNX
+        fypp modelCreator.fpp modelCreator.f90
+```
+Then, run "make library" to compile all the core files and create a library called "libcorelib.a". This file must be used to link any other "*.o" files in the program with the library. 
+
+### User Example
+
+``` fortran
+    program name
+        
+        !must be imported
+        USE rosenna
+        implicit none
+        
+        !user has to provide inputs to the model
+        REAL, DIMENSION(1,1,28,28) :: inputs
+        REAL, DIMENSION(1,5) :: Plus214_Output_0
+        
+        !this must be called somewhere to read all the weights in
+        CALL initialize()
+        
+        ! this must be called to run inference on the model
+        CALL use_model(inputs, Plus214_Output_0)
+
+        print *, Plus214_Output_0
+    end program name
+```
+This represents a sample program that can be linked with the library created above and run succesfully (given the model's inputs match the inputs provided). Four things are required to use this library: **USE rosenna**, **initializing inputs**, **CALL initialize()**, and **CALL use_model(args)**.
+
+## C Library
+Need to Update
+
+
+# Open Source Development
+
+## Adding activation functions, layer functionality, and more
+
+### Parsing in modelParserONNX.py
+
+### Reading layer in reader.f90
+
+### Adding Layer
+
+### Adding activation function
+
+### Fypp to call the layer/activation function
