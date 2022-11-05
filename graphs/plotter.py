@@ -14,6 +14,6 @@ def plot(times):
     # fig.write_image("mlp.png")
     fig.show()
 
-a = pd.read_csv("conv/conv_times.csv")
+a = pd.read_csv("mlp/mlp_times.csv")
 print(a)
 plot(a)

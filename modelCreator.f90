@@ -16,76 +16,75 @@ module model
     contains
     !===============================================THIS BLOCK COMES FROM FYPP OUTPUT "openNP.fpp"=======================================================
         
-        SUBROUTINE use_model(        i0, i1, i2,         o0)
+        SUBROUTINE use_model(        i0,         o0)
             IMPLICIT NONE
             !INPUTS CORRESPONDING TO C
-            REAL (c_double), INTENT(INOUT), DIMENSION(        1, 2, 5) :: i0
-            REAL (c_double), INTENT(INOUT), DIMENSION(        1, 1, 2) :: i1
-            REAL (c_double), INTENT(INOUT), DIMENSION(        1, 1, 2) :: i2
+            REAL (c_double), INTENT(INOUT), DIMENSION(        1, 1, 28, 28) :: i0
             !===========================
 
             !INPUTS CORRESPONDING TO INTERMEDIARY PROCESSING
-            REAL (c_double), ALLOCATABLE,  DIMENSION(:,:,:,:) :: output0
-            REAL (c_double), ALLOCATABLE,  DIMENSION(:,:,:) :: output1
-            REAL (c_double), ALLOCATABLE,  DIMENSION(:,:) :: output2
+            REAL (c_double), ALLOCATABLE,  DIMENSION(:,:) :: output0
+            REAL (c_double), ALLOCATABLE,  DIMENSION(:,:) :: output1
             !================================================
 
             !OUTPUTS CORRESPONDING TO C
-            REAL (c_double), INTENT(OUT), DIMENSION(        2, 1) :: o0
+            REAL (c_double), INTENT(OUT), DIMENSION(        1, 10) :: o0
             !===========================
 
-            REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: input
-            REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: hidden_state
-            REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: cell_state
+            REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: Input3
 
             REAL :: T1, T2
 
-            ALLOCATE(input(        1, 2, 5))
-            ALLOCATE(hidden_state(        1, 1, 2))
-            ALLOCATE(cell_state(        1, 1, 2))
+            ALLOCATE(Input3(        1, 1, 28, 28))
 
-            input = i0
-            hidden_state = i1
-            cell_state = i2
+            Input3 = i0
 
             
             CALL CPU_TIME(T1)
             
-            !========Transpose============
-            input = RESHAPE(input,(/SIZE(input, dim = 2), SIZE(input, dim = 1), SIZE(input, dim = 3)/), order = [2, 1, 3])
+            !========Reshape============
+            reshapeLayers(1)%reshape4d = RESHAPE(reshapeLayers(1)%reshape4d,(/SIZE(reshapeLayers(1)%reshape4d, dim = 4),&
+                & SIZE(reshapeLayers(1)%reshape4d, dim = 3), SIZE(reshapeLayers(1)%reshape4d, dim = 2),&
+                & SIZE(reshapeLayers(1)%reshape4d, dim = 1)/), order = [4, 3, 2, 1])
+            output0 = RESHAPE(reshapeLayers(1)%reshape4d,(/256, 10/), order = [2, 1])
 
-            !========LSTM Layer============
-            CALL lstm(input, hidden_state, cell_state, lstmLayers(1)%whh, lstmLayers(1)%wih, lstmLayers(1)%bih, lstmLayers(1)%bhh,&
-                & output0)
+            !========Conv Layer============
+            CALL conv(Input3, convLayers(1)%weights, convLayers(1)%biases,         (/1, 1/),         (/2, 2, 2, 2/),         (/1,&
+                & 1/))
+            !===========Add============
+            Input3 = Input3 + RESHAPE(broadc(addLayers(1)%adder,        (/1, 8, 28, 28/),RESHAPE(        (/3, 28, 4, 28/),       &
+                & (/2, 2/), order=[2,1])),         (/1, 8, 28, 28/))
 
-            !========Squeeze============
-            output1 = RESHAPE(output0,(/SIZE(output0, dim = 1), SIZE(output0, dim = 3), SIZE(output0, dim = 4)/))
+            Input3 = relu4d(Input3)
+            
+            !========MaxPool Layer============
+            CALL max_pool(Input3,maxpoolLayers(1), 0,         (/0, 0, 0, 0/),         (/2, 2/))
 
-            !========Transpose============
-            output1 = RESHAPE(output1,(/SIZE(output1, dim = 2), SIZE(output1, dim = 1), SIZE(output1, dim = 3)/), order = [2, 1, 3])
+            !========Conv Layer============
+            CALL conv(Input3, convLayers(2)%weights, convLayers(2)%biases,         (/1, 1/),         (/2, 2, 2, 2/),         (/1,&
+                & 1/))
+            !===========Add============
+            Input3 = Input3 + RESHAPE(broadc(addLayers(2)%adder,        (/1, 16, 14, 14/),RESHAPE(        (/3, 14, 4, 14/),       &
+                & (/2, 2/), order=[2,1])),         (/1, 16, 14, 14/))
+
+            Input3 = relu4d(Input3)
+            
+            !========MaxPool Layer============
+            CALL max_pool(Input3,maxpoolLayers(2), 0,         (/0, 0, 0, 0/),         (/3, 3/))
 
             !========Reshape============
-            output1 = RESHAPE(output1,(/SIZE(output1, dim = 3), SIZE(output1, dim = 2), SIZE(output1, dim = 1)/), order = [3, 2, 1])
-            output2 = RESHAPE(output1,(/2, 2/), order = [2, 1])
+            Input3 = RESHAPE(Input3,(/SIZE(Input3, dim = 4), SIZE(Input3, dim = 3), SIZE(Input3, dim = 2), SIZE(Input3, dim =&
+                & 1)/), order = [4, 3, 2, 1])
+            output1 = RESHAPE(Input3,(/1, 256/), order = [2, 1])
 
-            !========Gemm Layer============
-            CALL linear_layer(output2, linLayers(1),0)
-            output2 = relu2d(output2)
+            !=======MatMul=========
+            CALL matmul2D(output1, output0)
             
-            !========Gemm Layer============
-            CALL linear_layer(output2, linLayers(2),0)
-            output2 = sigmoid2d(output2)
-
-            !========Gemm Layer============
-            CALL linear_layer(output2, linLayers(3),0)
-            output2 = relu2d(output2)
-            
-            !========Gemm Layer============
-            CALL linear_layer(output2, linLayers(4),0)
-            output2 = sigmoid2d(output2)
+            !===========Add============
+            output1 = output1 + RESHAPE(addLayers(3)%adder,         (/1, 10/))
 
             call CPU_TIME(T2)
-            o0 = output2
+            o0 = output1
         end SUBROUTINE
     !===================================================================================================================================================
         

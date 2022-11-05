@@ -23,39 +23,47 @@ inferred = args.inferred
 
 
 onnxModel = onnx.load(file)
-print("done")
+
+#lstm files require external weights file (unparsed onnx file, look up for details)
 externalWeightsFile = True
 try:
     onnxModel_weights = onnx.load(weights)
 except:
     onnxModel_weights = onnxModel
     externalWeightsFile = False
-print("done")
-nodes = onnxModel.graph.node
+
+#sometimes the inferred shapes is too big, so we need to store an external file of the precomputed inferred shapes
 try:
     inferred = onnx.load(inferred)
     value_info = inferred.graph.value_info
 except:
     value_info = onnx.shape_inference.infer_shapes(onnxModel).graph.value_info
-print("done")
-ioMap = {}
-initializer = {}
-intermediateShapes = {}
-inputs = [] # need to export
-input_shapes = {}
+
+nodes = onnxModel.graph.node #all layers of model that will be parsed
+
+ioMap = {} #mapping input names to output names
+initializer = {} #holds (weight dimensions, np.array of weights)
+intermediateShapes = {} #holds intermediate shapes of layers
+inputs = [] #general inputs to the model (including intermediary stuff needed for fortran to process)
+input_shapes = {} #shapes of inputs
+constants = {} #constants and initalizer weights are the places where weights of the model could be stored
 for inp in onnxModel.graph.input:
     ioMap[inp.name] = inp.name
     input_shapes[inp.name] = [d.dim_value for d in inp.type.tensor_type.shape.dim]
-    # inputs.append([inp.name,len(inp.type.tensor_type.shape.dim)])
 
 for inter in value_info:
     intermediateShapes[inter.name] = [d.dim_value for d in inter.type.tensor_type.shape.dim]
 
 for weights in onnxModel.graph.initializer:
-    initializer[weights.name] = weights.dims
+    initializer[weights.name] = (weights.dims,numpy_helper.to_array(weights))
 out = {}
 for x in onnxModel.graph.output:
     out[x.name] = [d.dim_value for d in x.type.tensor_type.shape.dim]
+
+for x in onnxModel.graph.node:
+    if x.op_type == "Constant":
+        constants[x.output[0]] = numpy_helper.to_array(x.attribute[0].t)
+
 outputs = {} #what outputs corresponds to, need to export
 outShape = [] #what shape to instantiate the output name to, need to export
 modelArch = [] #need to export
@@ -95,9 +103,9 @@ def reshapeParser(reshape, trueShape):
         return reshape
 
 def findWeightsInitializer(input_name):
-    for weights in onnxModel.graph.initializer:
-        if weights.name == input_name:
-            return numpy_helper.to_array(weights)
+    if input_name in initializer:
+        return initializer[input_name][1]
+    return constants[input_name]
 
 def fourDTransform(trueshape, toBeTransformedShape):
     new = [1,1,1,1]
@@ -159,7 +167,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             modelArch.append(("LSTM", [ioMap[node.input[0]], ioMap[node.input[-2]], ioMap[node.input[-1]]], ["output"+extra], None)) #input = ["input", "hidden_state", "cell_state"]
             inputs.append(["output"+extra,len(intermediateShapes[node.output[0]])])
             for inp in node.input[1:3]: #represents ONNX's locations of weights
-                for dim in initializer[inp]:
+                for dim in initializer[inp][0]:
                     f.write(str(dim)+" ")
                 if externalWeightsFile:
                     f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
@@ -172,7 +180,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             if not externalWeightsFile:
                 split = np.split(findWeightsInitializer(node.input[3]),2,axis=1)
             for x in range(2):
-                f.write(str(int(initializer[node.input[3]][1]/2)))
+                f.write(str(int(initializer[node.input[3]][0][1]/2)))
                 f.write("\n")
                 if externalWeightsFile:
                     f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
@@ -192,8 +200,8 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             #check if bias exists
             if len(node.input) < 3:
                 for inp in node.input[1:]:
-                    numzs = initializer[inp][0]
-                    for dim in initializer[inp]:
+                    numzs = initializer[inp][0][0]
+                    for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
                     if externalWeightsFile:
                         f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
@@ -208,7 +216,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 f2.write("\n")
             else:
                 for inp in node.input[1:3]:
-                    for dim in initializer[inp]:
+                    for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
                     if externalWeightsFile:
                         f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
@@ -238,10 +246,10 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 f.write("0")
                 f.write("\n")
             except:
-                modelArch.append(("Reshape", (ioMap[node.input[0]], len(initializer[node.input[0]])),["output" + extra], [reshapeParser(findWeightsInitializer(node.input[-1]).tolist(), initializer[node.input[0]])], [1])) #new shape
-                f.write(str(len(initializer[node.input[0]])))
+                modelArch.append(("Reshape", (ioMap[node.input[0]], len(initializer[node.input[0]][0])),["output" + extra], [reshapeParser(findWeightsInitializer(node.input[-1]).tolist(), initializer[node.input[0]][0])], [1])) #new shape
+                f.write(str(len(initializer[node.input[0]][0])))
                 f.write("\n")
-                for dim in initializer[node.input[0]]:
+                for dim in initializer[node.input[0]][0]:
                     f.write(str(dim)+ " ")
                 f.write("\n")
                 f2.write(stranspose(findWeightsInitializer(node.input[0])))
@@ -279,8 +287,8 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             if len(node.input) < 3:
                 numzs = 0
                 for inp in node.input[1:]:
-                    numzs = initializer[inp][0]
-                    for dim in initializer[inp]:
+                    numzs = initializer[inp][0][0]
+                    for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
                     if externalWeightsFile:
                         f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
@@ -295,7 +303,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 f2.write("\n")
             else:
                 for inp in node.input[1:3]:
-                    for dim in initializer[inp]:
+                    for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
                     if externalWeightsFile:
                         f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
@@ -381,8 +389,8 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             modelArch.append(("Tanh", [ioMap[node.input[0]]], [len(intermediateShapes[node.input[0]])]))
 
             ioMap[node.output[0]] = ioMap[node.input[0]]
-        # elif layer == "Constant":
-        #     continue
+        elif layer == "Constant":
+            continue
         else:
             print(modelArch)
             print(f'{layer} NOT SUPPORTED BY RoseNNa CURRENTLY!')
