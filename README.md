@@ -63,15 +63,99 @@ Need to Update
 
 
 # Open Source Development
-
-## Adding activation functions, layer functionality, and more
+This project is ongoing and does not contain functionality of every layer available in ONNX. In order to embed new layers into roseNNa, certain steps must be followed:
 
 ### Parsing in modelParserONNX.py
+This file reads in the ONNX interpretation of the model. At a higher level, it iterattes over all the layers in the ONNX model (called nodes in the graph), parses its contents by (1) sending some of its options to be parsed in f90 via fypp and (2) finding the weights that correspond to this layer and writing their dimensions to 'onnxModel.txt' and the weights to 'onnxWeights.txt'. These two files will be read in by Fortran so it can store the weights and layers. Here is a pseudocode example from the "GEMM" layer in ONNX:
 
-### Reading layer in reader.f90
-
+```python
+#an additional if statement must be added so the parser knows to parse this layer
+elif layer == "Gemm":
+    #modelArch stores the layer and options for layer (fypp input later on)
+    #ioMap is referenced to get the output name from the last layer (which is input to this layer)
+    modelArch.append(("Gemm", [ioMap[node.input[0]],node.attribute[2].i], None)) 
+    
+    #parsing the inputs to the layer
+    for inp in node.input[1:3]:
+        
+        #writing the dimension to 'onnxModel.txt'
+        for dim in initializer[inp]:
+            f.write(str(dim)+ " ")
+        
+        #this is mainly for LSTM layers, but when externalWeightsFile is provided, all weights are stored in order
+        if externalWeightsFile:
+            f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
+            true_index+=1
+        #when it is not provided, we just store weights in a hashmap and call this function to retrieve it for us (since it is not in order)
+        #stranspose is to convert the weights into column major order (for F90)
+        else:
+            f2.write(stranspose(findWeightsInitializer(inp)))
+        f2.write("\n")
+        f.write("\n")
+    #at the end, we have to make sure that the names for the inputs are preseved. The output name (e.g. "out1") will be the input to the next layer, so we will be using "out1" as the input
+    #this must be stored in some kind of map
+    ioMap[node.output[0]] = ioMap[node.input[0]]
+```
 ### Adding Layer
+Most layers come with a set of parameters that are commonly manipulated (number of layers, activation functions, hidden state, etc.). This information can be integrated by creating a derived type of the layer in [derived_types.f90](https://github.com/comp-physics/roseNNa/blob/develop/derived_types.f90). Here is an example:
+
+``` fortran
+TYPE lstmLayer
+    REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: whh
+    REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: wih
+    REAL (c_double), ALLOCATABLE, DIMENSION(:) :: bhh
+    REAL (c_double), ALLOCATABLE, DIMENSION(:) :: bih
+ENDTYPE lstmLayer
+```
+The LSTM layer requires 4 types of hidden weights that are used while running through the layer. They are stored within the derived type. The layer dimensions cannot be changed later on.
 
 ### Adding activation function
+For any activation functions that need to be added will go in [activation_funcs.f90](https://github.com/comp-physics/roseNNa/blob/develop/activation_funcs.f90). To do so, just a function needs to be created. Here is an example:
+
+``` fortran
+FUNCTION tanhh(x) result(output)
+    REAL (c_double), intent(in) :: x(:)
+    REAL (c_double) :: output(size(x))
+    output = (exp(x)-exp(-1*x))/(exp(x)+exp(-1*x))
+END FUNCTION tanhh
+```
+
+### Reading layer in reader.f90
+In order to read in the weights and layers from the files 'onnxModel.txt' and 'onnxWeights.txt', the file [reader.f90](https://github.com/comp-physics/roseNNa/blob/develop/readTester.f90) has to include the new layer/activation function. First, we will create an array of derived types for the new layer. This will allow us to store multiple of the same layer if the model contains it (we make it allocatable so it can be appended to with no dimension restrictions). Then, we create a new subroutine for the layer, which defines how we will read in the weights/dimensions (this will depend based on how you wrote the dimensions to the files in the first place). Here is an example:
+
+``` fortran
+#subroutine definition for GEMM/MLP layer (file1=dimensions, file2=weights)
+subroutine read_linear(file1, file2)
+    INTEGER, INTENT(IN) :: file1
+    INTEGER, INTENT(IN) :: file2
+    
+    !create temporary derived type for this one layer
+    TYPE(linLayer), ALLOCATABLE,DIMENSION(:) :: lin
+    
+    !read in dimensions from file1 and allocate weights to store the incoming weights
+    ALLOCATE(lin(1))
+    read(file1, *) w_dim1, w_dim2
+    ALLOCATE(weights(w_dim1,w_dim2))
+    
+    !read in the weights
+    read(file2, *) weights
+    
+    !repeat for biases
+    read(file1, *) w_dim1
+    ALLOCATE(biases(w_dim1))
+    read(file2, *) biases
+
+    !then assign the temporary layer its weights
+    lin(1)%weights = weights
+    lin(1)%biases = biases
+
+    DEALLOCATE(weights)
+    DEALLOCATE(biases)
+    
+    !append the temporary layer to the list of layers
+    linLayers = [linLayers, lin]
+    DEALLOCATE(lin)
+end subroutine
+```
 
 ### Fypp to call the layer/activation function
