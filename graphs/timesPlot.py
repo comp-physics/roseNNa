@@ -3,7 +3,7 @@ import plotly.express as px
 import numpy as np
 import pandas as pd
 import sys
-#mlp, conv, maxpool
+#mlp, conv, maxpool, lstm
 print(sys.argv)
 dir_check = sys.argv[1]
 
@@ -41,3 +41,11 @@ with open("graphs/timesF.txt") as f, open(dir) as f2:
                 d+=1
         pl = pd.DataFrame(dic)
         pl.to_csv(f"graphs/{dir_check}/{dir_check}_times.csv")
+    elif dir_check == "lstm":
+        for inpSize in [2,5,10,50,100]:
+            for neurons in [3,25,50,75]:
+                dic.append({"Sequence Length":str(inpSize), "Time":div[d],"Hidden Dim/Sequence Length":str(neurons)})
+                d+=1
+        pl = pd.DataFrame(dic)
+        pl.to_csv(f"graphs/{dir_check}/{dir_check}_times.csv")
+        plot(pl)

@@ -21,6 +21,8 @@ module derived_types
         REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: wih
         REAL (c_double), ALLOCATABLE, DIMENSION(:) :: bhh
         REAL (c_double), ALLOCATABLE, DIMENSION(:) :: bih
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: hid
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: cell
     ENDTYPE lstmLayer
 
     TYPE convLayer

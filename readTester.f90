@@ -56,7 +56,8 @@ module readTester
                 exit readloop
             end if
             if (layerName .eq.  "LSTM") then
-                CALL read_lstm(10, 11)
+                read(10,*) readOrNot
+                CALL read_lstm(10, 11, readOrNot)
             else if (layerName .eq. "Gemm") then
                 CALL read_linear(10, 11)
             else if (layerName .eq. "Conv") then
@@ -198,7 +199,8 @@ module readTester
         DEALLOCATE(conv)
     end subroutine
 
-    subroutine read_lstm(file1, file2)
+    subroutine read_lstm(file1, file2, readOrNot)
+        INTEGER, INTENT(IN) :: readOrNot
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(lstmLayer), ALLOCATABLE, DIMENSION(:) :: lstm
@@ -227,6 +229,23 @@ module readTester
         read(file2, *) biases
         lstm(1)%bhh = biases
         DEALLOCATE(biases)
+        
+        if (readOrNot .eq. 1) then
+            read(file1, *) w_dim1, w_dim2, w_dim3
+            ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
+            read(file2, *) midWeights
+            lstm(1)%hid = midWeights
+            DEALLOCATE(midWeights)
+
+            read(file1, *) w_dim1, w_dim2, w_dim3
+            ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
+            read(file2, *) midWeights
+            lstm(1)%cell = midWeights
+            DEALLOCATE(midWeights)
+        endif
+        
+
+
         lstmLayers = [lstmLayers, lstm]
         DEALLOCATE(lstm)
     end subroutine

@@ -18,3 +18,5 @@ linearV3copy.f90
 test.txt
 goldenFiles/gemm_huge/
 goldenFiles/vgg16/
+goldenFiles/turbulentShear/
+

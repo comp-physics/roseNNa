@@ -2,12 +2,14 @@ import torch
 import torch.nn as nn
 import sys
 import os
+import numpy as np
 sys.path.insert(1, "goldenFiles/")
 from nnLSTM import LSTM
+import timeit
 class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
-        self.lstm = LSTM(5,2,1)
+        self.lstm = LSTM(10,20,1)
         # self.linear_relu_stack = nn.Sequential(
         #     nn.Linear(2, 2),
         #     nn.ReLU(),
@@ -31,13 +33,65 @@ class NN(nn.Module):
         # logits = self.linear_relu_stack(logits)
         logits, hid = self.lstm(inp,hidden)
         return logits
+SETUP_CODE = '''
+import torch
+import torch.nn as nn
+import sys
+import os
+sys.path.insert(1, "goldenFiles/")
+from nnLSTM import LSTM
+class NN(nn.Module):
+    def __init__(self):
+        super(NN, self).__init__()
+        self.lstm = LSTM(10,20,1)
+        # self.linear_relu_stack = nn.Sequential(
+        #     nn.Linear(2, 2),
+        #     nn.ReLU(),
+        #     nn.Linear(2, 3),
+        #     nn.Sigmoid(),
+        #     nn.Linear(3, 3),
+        #     nn.ReLU(),
+        #     nn.Linear(3,1),
+        #     nn.Sigmoid(),
+        # )
 
-
+    def forward(self, inp, hidden):
+        # logits, hid = self.lstm(inp,hidden) #logits will have shape of hidden_dimension
+        # print("Logits")
+        # print(logits)
+        # print("------")
+        # print("Hidden")
+        # print(hid)
+        # print("------")
+        # logits = logits.view(-1,logits.size(2)) #.view reshapes it to a valid (1,hid_dim) for lin layer
+        # logits = self.linear_relu_stack(logits)
+        logits, hid = self.lstm(inp,hidden)
+        return logits
 model = NN()
 batch_size = 1
-seq_len = 2
-hidden_dim = 2
-input_dim = 5
+seq_len = 25
+hidden_dim = 20
+input_dim = 10
+n_layers = 1
+inp = torch.ones(batch_size, seq_len, input_dim)
+hidden_state = torch.ones(n_layers, batch_size, hidden_dim)
+cell_state = torch.ones(n_layers, batch_size, hidden_dim)
+hidden = (hidden_state, cell_state)
+'''
+TEST_CODE = '''
+with torch.jit.optimized_execution(False):
+    logits = model(inp, hidden)'''
+t = timeit.repeat(setup = SETUP_CODE,
+                    stmt = TEST_CODE,
+                    repeat = 100,
+                    number = 1)
+median = np.median(np.array(t))
+print("Python Time:" + str(median))
+model = NN()
+batch_size = 1
+seq_len = 25
+hidden_dim = 20
+input_dim = 10
 n_layers = 1
 inp = torch.ones(batch_size, seq_len, input_dim)
 hidden_state = torch.ones(n_layers, batch_size, hidden_dim)
