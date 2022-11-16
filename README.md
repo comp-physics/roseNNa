@@ -159,3 +159,11 @@ end subroutine
 ```
 
 ### Fypp to call the layer/activation function
+After encoding the layer/activation function and reading it, fypp will construct the model. Fypp takes in the model architecture, inputs, outputs, and shapes, all of which have been written to an external fypp file. In [modelCreator.fpp](https://github.com/comp-physics/roseNNa/blob/master/modelCreator.fpp), there is a condition for each of the layers that need to be added. Here is an example for the multilayer perceptron layer (GEMM):
+
+``` fortran
+#: if tup[0] == 'Gemm'
+    !========Gemm Layer============
+    CALL linear_layer(${tup[1][0]}$, linLayers(${layer_dict[tup[0]]}$),${1-tup[1][1]}$)
+```
+In this example, we call the **linear_layer** implemented in layers.f90 and pass in arguments that come from the external fypp files. There is a for loop running through each layer in the model architecture (a list of tuples), and **tup** contains certain arguments that enables the tool to call the correct names and arguments. **linLayers** is defined in the reader file and stores information about the **i**th layer. One thing to make sure is to store the correct information in model architecture so it can be referenced during this stage.
