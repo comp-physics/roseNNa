@@ -10,7 +10,9 @@
 </a>
 </p>
 
-A fast, portable library for neural network inference in HPC codebases
+roseNNA is a fast, portable, and minimally-intrusive library for neural network inference in HPC codebases. 
+It runs inference on RNNS, CNNS, and MLPs, though more networks are in the works.
+It is an optimized Fortran library that outperforms PyTorch for the relatively small neural networks deployed in physics applications, like CFD.
 
 ## **Fortran Library**
 The fLibrary folder holds all the core files that are needed to recreate the model in Fortran and be linked to a program. It contains a Makefile that compiles all core files and creates a library.
