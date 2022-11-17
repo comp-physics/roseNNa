@@ -1,4 +1,18 @@
-2
-Pad
-AveragePool
-3
+6
+Transpose
+LSTM
+1
+1 360 9 
+1 360 90 
+360
+360
+1 1 90 
+1 1 90 
+Squeeze
+MatMul
+Gemm
+90 9 
+90
+Add
+1 1 1 9 
+Tanh

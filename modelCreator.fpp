@@ -8,7 +8,8 @@ module model
     ! USE filereader !<loading in weights, biases
     USE activation_functions !<getting activation functions
     USE model_layers
-    USE readTester
+    USE reader
+    USE iso_c_binding
     ! ===============================================================
 
     
@@ -38,7 +39,7 @@ module model
         #:enddef genOutput
         #:endmute
         
-        SUBROUTINE use_model(${genInput(trueInputs)}$, ${genOutput(outShape)}$)
+        SUBROUTINE use_model(${genInput(trueInputs)}$, ${genOutput(outShape)}$) bind(c,name="use_model")
             IMPLICIT NONE
             !INPUTS CORRESPONDING TO C
             #:for index, inp in enumerate(trueInputs)

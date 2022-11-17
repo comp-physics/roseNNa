@@ -1,4 +1,4 @@
-module readTester
+module reader
 
     USE derived_types
     USE activation_functions
@@ -35,7 +35,7 @@ module readTester
 
     contains
     
-    subroutine initialize()
+    subroutine initialize() bind(c,name="initialize") !add arguments for location of onnxModel.txt and onnxWeights.txt
         INTEGER :: Reason
         CHARACTER(len = 10), ALLOCATABLE, DIMENSION(:) :: name
         ALLOCATE(lstmLayers(0))
@@ -45,6 +45,7 @@ module readTester
         ALLOCATE(avgpoolLayers(0))
         ALLOCATE(addLayers(0))
         ALLOCATE(reshapeLayers(0))
+
         open(10, file = "onnxModel.txt")
         open(11, file = "onnxWeights.txt")
 

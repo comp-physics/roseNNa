@@ -12,6 +12,7 @@
 !*.sh
 !*.yml
 !goldenFiles/mnist/mnist.onnx
+!instructions/*
 reading.f90
 userTesting.f90
 linearV3copy.f90

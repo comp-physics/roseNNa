@@ -19,7 +19,7 @@ program name
     #{for index, x in enumerate(arr)}#${x}$#{if index < (len(arr)-1)}#, #{endif}##{endfor}#
     #:enddef genArrayNoParen
     USE model
-    USE readTester
+    USE reader
     implicit none
     #:mute
     #:include 'inputs.fpp'
