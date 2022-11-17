@@ -1,10 +1,11 @@
 <p align="center">
   <img src="doc/rosenna.png" alt="roseNNa banner" width="600"/></center>
 </p>
-
+<p align="center">
 <a href="https://github.com/comp-physics/roseNNa/actions">
   <img src="https://github.com/comp-physics/roseNNa/actions/workflows/CI.yml/badge.svg" />
 </a>
+</p>
 
 A fast, portable library for neural network inference in HPC codebases
 
