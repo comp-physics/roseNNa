@@ -1,4 +1,7 @@
-# **roseNNa**
+<p align="center">
+  <img src="doc/banner.png" alt="roseNNa banner" width="600"/></center>
+</p>
+
 A fast, portable library for neural network inference in HPC codebases
 
 ## **Fortran Library**
