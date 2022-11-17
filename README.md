@@ -98,7 +98,7 @@ gfortran -o capi path/to/libcorelib.a *.o
 This represents a sample program that can be linked with the library created above and run succesfully (given the model's inputs match the inputs provided). Four things are required to use this library: **USE rosenna**, **initializing inputs**, **CALL initialize()**, and **CALL use_model(args)**.
 
 ## **Open Source Development**
-LINK TO OPEN SOURCE
+[Open Source](https://github.com/comp-physics/roseNNa/blob/develop/instructions/opensource.md)
 
 ## **roseNNa Pipeline**
-LINK TO METHODOLOGY
+[Pipeline Documentation](https://github.com/comp-physics/roseNNa/blob/develop/instructions/methodology.md)
