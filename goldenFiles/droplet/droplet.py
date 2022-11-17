@@ -1,12 +1,7 @@
 import torch
 import torch.nn as nn
-import sys
-import os
 import timeit
 import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-import random
 
 torch.set_num_threads(1)
 class NN(nn.Module):
