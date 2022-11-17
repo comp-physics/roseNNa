@@ -24,11 +24,10 @@ program hello_world
   implicit none
 
   real, dimension(1,1,28,28) :: input ! model inputs
-  real, dimension(1,5) :: output
+  real, dimension(1,5) :: output ! model outputs
 
-  call initialize() ! reads weights
-
-  CALL use_model(input, output) ! run inference
+  call initialize() ! read weights
+  call use_model(input, output) ! run inference
 
 end program
 ```
