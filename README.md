@@ -5,6 +5,9 @@
 <a href="https://github.com/comp-physics/roseNNa/actions">
   <img src="https://github.com/comp-physics/roseNNa/actions/workflows/CI.yml/badge.svg" />
 </a>
+<a href="https://lbesson.mit-license.org/">
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg" />
+</a>
 </p>
 
 A fast, portable library for neural network inference in HPC codebases
