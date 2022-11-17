@@ -15,6 +15,26 @@ Its intended use case is large Fortran- and C-based HPC codebases.
 roseNNa currently supports RNNs, CNNs, and MLPs, though more architectures are in the works.
 The library is optimized Fortran and outperforms PyTorch (by a factor between 2 and 5x) for the relatively small neural networks used in physics applications, like CFD.
 
+## Hello World
+
+``` fortran
+program hello_world
+
+  use rosenna
+  implicit none
+
+  real, dimension(1,1,28,28) :: input ! model inputs
+  real, dimension(1,5) :: output
+
+  call initialize() ! reads weights
+
+  CALL use_model(input, output) ! run inference
+
+end program
+```
+
+This represents a sample program that can be linked with the library created above and run succesfully (given the model's inputs match the inputs provided). Four things are required to use this library: **USE rosenna**, **initializing inputs**, **CALL initialize()**, and **CALL use_model(args)**.
+
 ## **Fortran Library**
 The fLibrary folder holds all the core files that are needed to recreate the model in Fortran and be linked to a program. It contains a Makefile that compiles all core files and creates a library.
 
@@ -88,28 +108,7 @@ gfortran -o capi path/to/libcorelib.a *.o
 ./capi
 ```
 
-## **User Example**
 
-``` fortran
-    program name
-
-        !must be imported
-        USE rosenna
-        implicit none
-
-        !user has to provide inputs to the model
-        REAL, DIMENSION(1,1,28,28) :: inputs
-        REAL, DIMENSION(1,5) :: Plus214_Output_0
-
-        !this must be called somewhere to read all the weights in
-        CALL initialize()
-
-        ! this must be called to run inference on the model
-        CALL use_model(inputs, Plus214_Output_0)
-
-    end program name
-```
-This represents a sample program that can be linked with the library created above and run succesfully (given the model's inputs match the inputs provided). Four things are required to use this library: **USE rosenna**, **initializing inputs**, **CALL initialize()**, and **CALL use_model(args)**.
 
 ## **Open Source Development**
 [Open Source](https://github.com/comp-physics/roseNNa/blob/develop/instructions/opensource.md)
