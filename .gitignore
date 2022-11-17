@@ -20,4 +20,6 @@ test.txt
 goldenFiles/gemm_huge/
 goldenFiles/vgg16/
 goldenFiles/turbulentShear/
+graphs/
+graph_scripts/
 
