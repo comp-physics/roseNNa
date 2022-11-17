@@ -37,9 +37,12 @@ jobs:
           brew install wget make make cmake coreutils
           brew install gcc@11
 
-      - name: Checking F90 version
+      - name: Sym Link
         run: |
           ln -s /usr/local/bin/gfortran-10 /usr/local/bin/gfortran
+      
+      - name: Checking F90 Version
+        run: |
           gfortran --version
 
       - name: Set up Python 3.8
