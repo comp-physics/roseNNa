@@ -1,7 +1,8 @@
-module readTester
+module reader
 
     USE derived_types
     USE activation_functions
+    use iso_c_binding
 
     implicit none
 
@@ -14,15 +15,15 @@ module readTester
     TYPE(addLayer), ALLOCATABLE, DIMENSION(:) :: addLayers
     TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshapeLayers
     CHARACTER(len = 20) :: activation_func
-    REAL, ALLOCATABLE, DIMENSION(:,:) :: weights
-    REAL, ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
-    REAL, ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
+    REAL (c_double), ALLOCATABLE, DIMENSION(:,:) :: weights
+    REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
+    REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
     INTEGER :: w_dim1
     INTEGER :: w_dim2
     INTEGER :: w_dim3
     INTEGER :: w_dim4
 
-    REAL, ALLOCATABLE, DIMENSION(:) :: biases
+    REAL (c_double), ALLOCATABLE, DIMENSION(:) :: biases
 
     ! INTEGER :: activation_func
 
@@ -34,7 +35,7 @@ module readTester
 
     contains
     
-    subroutine initialize()
+    subroutine initialize() bind(c,name="initialize") !add arguments for location of onnxModel.txt and onnxWeights.txt
         INTEGER :: Reason
         CHARACTER(len = 10), ALLOCATABLE, DIMENSION(:) :: name
         ALLOCATE(lstmLayers(0))
@@ -44,6 +45,7 @@ module readTester
         ALLOCATE(avgpoolLayers(0))
         ALLOCATE(addLayers(0))
         ALLOCATE(reshapeLayers(0))
+
         open(10, file = "onnxModel.txt")
         open(11, file = "onnxWeights.txt")
 
@@ -55,7 +57,8 @@ module readTester
                 exit readloop
             end if
             if (layerName .eq.  "LSTM") then
-                CALL read_lstm(10, 11)
+                read(10,*) readOrNot
+                CALL read_lstm(10, 11, readOrNot)
             else if (layerName .eq. "Gemm") then
                 CALL read_linear(10, 11)
             else if (layerName .eq. "Conv") then
@@ -197,7 +200,8 @@ module readTester
         DEALLOCATE(conv)
     end subroutine
 
-    subroutine read_lstm(file1, file2)
+    subroutine read_lstm(file1, file2, readOrNot)
+        INTEGER, INTENT(IN) :: readOrNot
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(lstmLayer), ALLOCATABLE, DIMENSION(:) :: lstm
@@ -226,6 +230,23 @@ module readTester
         read(file2, *) biases
         lstm(1)%bhh = biases
         DEALLOCATE(biases)
+        
+        if (readOrNot .eq. 1) then
+            read(file1, *) w_dim1, w_dim2, w_dim3
+            ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
+            read(file2, *) midWeights
+            lstm(1)%hid = midWeights
+            DEALLOCATE(midWeights)
+
+            read(file1, *) w_dim1, w_dim2, w_dim3
+            ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
+            read(file2, *) midWeights
+            lstm(1)%cell = midWeights
+            DEALLOCATE(midWeights)
+        endif
+        
+
+
         lstmLayers = [lstmLayers, lstm]
         DEALLOCATE(lstm)
     end subroutine

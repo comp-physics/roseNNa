@@ -2,7 +2,7 @@ FC=gfortran
 FFLAGS=-O2
 FFLAGS=-O3
 SRC=modelCreator.fpp userTesting.fpp
-SRCBASE=activation_funcs.f90 derived_types.f90 layers.f90 readTester.f90
+SRCBASE=activation_funcs.f90 derived_types.f90 layers.f90 reader.f90
 OBJ2=${SRC:.fpp=.o}
 COMP=${SRCBASE:.f90=.o}
 
@@ -29,13 +29,13 @@ capi: capi.c modelCreator.o
 	./capi
 
 ex1: modelParserONNX.py
-	python3 goldenFiles/$(case)/$(case).py
-	python3 modelParserONNX.py -f goldenFiles/$(case)/$(case).onnx -w goldenFiles/$(case)/$(case)_weights.onnx -i goldenFiles/$(case)/$(case)_inferred.onnx
+	python3 goldenFiles/$(case)/$(case).py 
+	python3 modelParserONNX.py -f goldenFiles/$(case)/$(case).onnx -w goldenFiles/$(case)/$(case)_weights.onnx -i goldenFiles/$(case)/$(case)_inferred.onnx 1>/dev/null
 
 
 graphs: output
 	./output 2> outputCase.txt
-	
+
 
 
 compile: $(COMP)

@@ -35,11 +35,14 @@ jobs:
       - name: Installing Core Dependencies (brew)
         run: |
           brew install wget make make cmake coreutils
-          brew install gcc@11
+          brew install gcc
 
-      - name: Checking F90 version
+      - name: Sym Link
         run: |
-          ln -s /usr/local/bin/gfortran-10 /usr/local/bin/gfortran
+          ln -s /usr/local/bin/gfortran-12 /usr/local/bin/gfortran
+      
+      - name: Checking F90 Version
+        run: |
           gfortran --version
 
       - name: Set up Python 3.8

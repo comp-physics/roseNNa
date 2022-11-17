@@ -8,7 +8,8 @@ module model
     ! USE filereader !<loading in weights, biases
     USE activation_functions !<getting activation functions
     USE model_layers
-    USE readTester
+    USE reader
+    USE iso_c_binding
     ! ===============================================================
 
     
@@ -38,7 +39,7 @@ module model
         #:enddef genOutput
         #:endmute
         
-        SUBROUTINE use_model(${genInput(trueInputs)}$, ${genOutput(outShape)}$)
+        SUBROUTINE use_model(${genInput(trueInputs)}$, ${genOutput(outShape)}$) bind(c,name="use_model")
             IMPLICIT NONE
             !INPUTS CORRESPONDING TO C
             #:for index, inp in enumerate(trueInputs)
@@ -86,10 +87,17 @@ module model
             #: if tup[0] == 'Gemm'
             !========Gemm Layer============
             CALL linear_layer(${tup[1][0]}$, linLayers(${layer_dict[tup[0]]}$),${1-tup[1][1]}$)
+
             #!LSTM Layer
             #: elif tup[0] == 'LSTM'
             !========LSTM Layer============
+            #: if tup[-1][0] == 0
             CALL lstm(${tup[1][0]}$, ${tup[1][1]}$, ${tup[1][2]}$, lstmLayers(${layer_dict[tup[0]]}$)%whh, lstmLayers(${layer_dict[tup[0]]}$)%wih, lstmLayers(${layer_dict[tup[0]]}$)%bih, lstmLayers(${layer_dict[tup[0]]}$)%bhh, ${tup[2][0]}$)
+            #: else
+            ${tup[1][1]}$ = lstmLayers(${layer_dict[tup[0]]}$)%hid
+            ${tup[1][2]}$ = lstmLayers(${layer_dict[tup[0]]}$)%cell
+            CALL lstm(${tup[1][0]}$, ${tup[1][1]}$, ${tup[1][2]}$, lstmLayers(${layer_dict[tup[0]]}$)%whh, lstmLayers(${layer_dict[tup[0]]}$)%wih, lstmLayers(${layer_dict[tup[0]]}$)%bih, lstmLayers(${layer_dict[tup[0]]}$)%bhh, ${tup[2][0]}$)
+            #: endif
 
             #!Convolutional Layer
             #: elif tup[0] == 'Conv'

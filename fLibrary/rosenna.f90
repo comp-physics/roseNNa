@@ -7,12 +7,12 @@ module rosenna
     ! ===============================================================
     USE activation_functions !<getting activation functions
     USE model_layers
-    USE readTester
+    USE reader
     USE model
     USE derived_types
     ! ===============================================================
 
-    
+
     IMPLICIT NONE
 END module rosenna
 

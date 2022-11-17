@@ -1,21 +1,18 @@
-10
+6
+Transpose
+LSTM
+1
+1 360 9 
+1 360 90 
+360
+360
+1 1 90 
+1 1 90 
+Squeeze
+MatMul
 Gemm
-20 2 
-20 
-Relu
-Gemm
-30 20 
-30 
-Sigmoid
-Gemm
-30 30 
-30 
-Relu
-Gemm
-40 30 
-40 
+90 9 
+90
+Add
+1 1 1 9 
 Tanh
-Gemm
-1 40 
-1 
-Sigmoid

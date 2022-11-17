@@ -8,7 +8,8 @@ module model
     ! USE filereader !<loading in weights, biases
     USE activation_functions !<getting activation functions
     USE model_layers
-    USE readTester
+    USE reader
+    USE iso_c_binding
     ! ===============================================================
 
     
@@ -17,26 +18,62 @@ module model
     !===============================================THIS BLOCK COMES FROM FYPP OUTPUT "openNP.fpp"=======================================================
         #:mute
         #:include 'variables.fpp'
-        #:endmute
+        
         #:def ranksuffix(RANK)
         $:'' if RANK == 0 else '(' + ':' + ',:' * (RANK - 1) + ')'
         #:enddef ranksuffix
         #:def genArray(arr)
         (/#{for index, x in enumerate(arr)}#${x}$#{if index < (len(arr)-1)}#, #{endif}##{endfor}#/)
         #:enddef genArray
+
         #:def genArrayNoParen(arr)
         #{for index, x in enumerate(arr)}#${x}$#{if index < (len(arr)-1)}#, #{endif}##{endfor}#
         #:enddef genArrayNoParen
 
-        SUBROUTINE use_model(#{for index,n in enumerate(trueInputs+outShape)}#${n[0]}$#{if index < (len(trueInputs+outShape)-1)}#, #{endif}##{endfor}#)
+        #:def genInput(arr)
+        #{for index,n in enumerate(arr)}#i${index}$#{if index < (len(arr)-1)}#, #{endif}##{endfor}#
+        #:enddef genInput
+
+        #:def genOutput(arr)
+        #{for index,n in enumerate(arr)}#o${index}$#{if index < (len(arr)-1)}#, #{endif}##{endfor}#
+        #:enddef genOutput
+        #:endmute
+        
+        SUBROUTINE use_model(${genInput(trueInputs)}$, ${genOutput(outShape)}$) bind(c,name="use_model")
             IMPLICIT NONE
+            !INPUTS CORRESPONDING TO C
+            #:for index, inp in enumerate(trueInputs)
+            REAL (c_double), INTENT(INOUT), DIMENSION(${genArrayNoParen(inp[1])}$) :: i${index}$
+            #:endfor
+            !===========================
+
+            !INPUTS CORRESPONDING TO INTERMEDIARY PROCESSING
             #:for inp in inputs
-            REAL, ALLOCATABLE, #{if any(inp[0] in sublist for sublist in trueInputs)}#INTENT(INOUT),#{endif}# DIMENSION${ranksuffix(inp[1])}$ :: ${inp[0]}$
+            REAL (c_double), ALLOCATABLE, #{if any(inp[0] in sublist for sublist in trueInputs)}#INTENT(INOUT),#{endif}# DIMENSION${ranksuffix(inp[1])}$ :: ${inp[0]}$
             #:endfor
-            #:for o in outShape
-            REAL, ALLOCATABLE, INTENT(OUT), DIMENSION${ranksuffix(o[1])}$ :: ${o[0]}$
+            !================================================
+
+            !OUTPUTS CORRESPONDING TO C
+            #:for index,o in enumerate(outShape)
+            REAL (c_double), INTENT(OUT), DIMENSION(${genArrayNoParen(o[1])}$) :: o${index}$
             #:endfor
+            !===========================
+
+            #:for inp in trueInputs
+            REAL (c_double), ALLOCATABLE, DIMENSION${ranksuffix(len(inp[1]))}$ :: ${inp[0]}$
+            #:endfor
+
             REAL :: T1, T2
+
+            #:for inp in trueInputs
+            ALLOCATE(${inp[0]}$(${genArrayNoParen(inp[1])}$))
+            #:endfor
+
+            #:for index, inp in enumerate(trueInputs)
+            ${inp[0]}$ = i${index}$
+            #:endfor
+
+            
             CALL CPU_TIME(T1)
             
             #: set layer_dict = {}
@@ -54,7 +91,13 @@ module model
             #!LSTM Layer
             #: elif tup[0] == 'LSTM'
             !========LSTM Layer============
+            #: if tup[-1][0] == 0
             CALL lstm(${tup[1][0]}$, ${tup[1][1]}$, ${tup[1][2]}$, lstmLayers(${layer_dict[tup[0]]}$)%whh, lstmLayers(${layer_dict[tup[0]]}$)%wih, lstmLayers(${layer_dict[tup[0]]}$)%bih, lstmLayers(${layer_dict[tup[0]]}$)%bhh, ${tup[2][0]}$)
+            #: else
+            ${tup[1][1]}$ = lstmLayers(${layer_dict[tup[0]]}$)%hid
+            ${tup[1][2]}$ = lstmLayers(${layer_dict[tup[0]]}$)%cell
+            CALL lstm(${tup[1][0]}$, ${tup[1][1]}$, ${tup[1][2]}$, lstmLayers(${layer_dict[tup[0]]}$)%whh, lstmLayers(${layer_dict[tup[0]]}$)%wih, lstmLayers(${layer_dict[tup[0]]}$)%bih, lstmLayers(${layer_dict[tup[0]]}$)%bhh, ${tup[2][0]}$)
+            #: endif
 
             #!Convolutional Layer
             #: elif tup[0] == 'Conv'
@@ -108,7 +151,7 @@ module model
             #!ReLu
             #: elif tup[0] == 'Relu'
             ${tup[1][0]}$ = relu${tup[2][0]}$d(${tup[1][0]}$)
-
+            
             #!Tanh
             #: elif tup[0] == 'Tanh'
             ${tup[1][0]}$ = tanhh${tup[2][0]}$d(${tup[1][0]}$)
@@ -123,11 +166,9 @@ module model
             #: endmute
             #: endfor
             call CPU_TIME(T2)
-            print *, "-------------"
-            #:for out in outputs
-            ${out}$ = ${outputs[out]}$
+            #:for index,out in enumerate(outputs)
+            o${index}$ = ${outputs[out]}$
             #:endfor
-            print *, "TIME TAKEN:", T2-T1
         end SUBROUTINE
     !===================================================================================================================================================
         

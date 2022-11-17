@@ -5,9 +5,9 @@ skip="__pycache__"
 make compile
 for d in goldenFiles/*/ ; do
     name=$(basename "$d")
-    if [[ "$name" != "$skip" ]] && [[ "$name" != "vgg16" ]] && [[ "$name" != "gemm_huge" ]]; then
+    if [[ "$name" != "$skip" ]] && [[ "$name" != "vgg16" ]] && [[ "$name" != "gemm_huge" ]] && [[ "$name" != "turbulentShear" ]]; then
         echo "---------------- TEST #$testnum $name -------------------"
-        make test case="$name" 
+        make --silent test case="$name"
         output=$(python3 -Wi goldenFiles/testChecker.py "$name")
         if [[ $? -eq 0 ]]; then
             ((++npass))
