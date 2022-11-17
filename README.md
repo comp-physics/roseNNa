@@ -32,12 +32,12 @@ program hello_world
 end program
 ```
 
-This represents a sample program that can be linked with the library created above and run succesfully (given the model's inputs match the inputs provided). Four things are required to use this library: **USE rosenna**, **initializing inputs**, **CALL initialize()**, and **CALL use_model(args)**.
+This represents a sample program that can be linked with the library created above and run succesfully (given the model's inputs match the inputs provided). Four things are required to use this library: `USE rosenn`, `initializing inputs`, `CALL initialize()`, and `CALL use_model(args)`.
 
 ## **Fortran Library**
 The fLibrary folder holds all the core files that are needed to recreate the model in Fortran and be linked to a program. It contains a Makefile that compiles all core files and creates a library.
 
-Here are the steps one needs to follow. First preprocess the model down below. This encodes the models: it writes the weights and architecture to text files (onnxModel.txt and onnxWeights.txt) and stores information about the model in an external fpp file (variable.fpp).
+Here are the steps one needs to follow. First preprocess the model down below. This encodes the models: it writes the weights and architecture to text files (`onnxModel.txt` and `onnxWeights.txt`) and stores information about the model in an external fpp file (`variable.fpp`).
 
 ```make
     preprocess: modelParserONNX.py
@@ -48,7 +48,7 @@ Here are the steps one needs to follow. First preprocess the model down below. T
         #for *.mod and *.o files
         mkdir -p objFiles
 ```
-Then, run "make library" to compile all the core files and create a library called "libcorelib.a". This file must be used to link any other "*.o" files in the program with the library.
+Then, run `make library` to compile all the core files and create a library called `libcorelib.a`. This file must be used to link any other `*.o` files in the program with the library.
 
 Here is an example test file:
 
@@ -98,7 +98,7 @@ int main(void) {
     }
 }
 ```
-The two functions that will be used includes **use_model** and **initialize** (same procedure as Fortran). Therefore, the function headers must be defined in C. Then, based on the model encoded, instantiate an input and outupt with the correct dimension. **Call initialize** to allow fortran to read in the weights and **call use_model** which will write the output of the model into **out**.
+The two functions that will be used includes `use_model` and `initialize` (same procedure as Fortran). Therefore, the function headers must be defined in C. Then, based on the model encoded, instantiate an input and outupt with the correct dimension. **Call initialize** to allow fortran to read in the weights and **call use_model** which will write the output of the model into **out**.
 
 For compilation follow these steps:
 ``` shell
