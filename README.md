@@ -2,6 +2,10 @@
   <img src="doc/rosenna.png" alt="roseNNa banner" width="600"/></center>
 </p>
 
+<a href="https://github.com/comp-physics/roseNNa/actions">
+  <img src="https://github.com/comp-physics/roseNNa/actions/workflows/CI.yml/badge.svg" />
+</a>
+
 A fast, portable library for neural network inference in HPC codebases
 
 ## **Fortran Library**
