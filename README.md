@@ -50,7 +50,7 @@ pip install torch onnx numpy fypp onnxruntime
 
 ## Compiling roseNNa 
 
-`fLibrary/` holds the library files that recreate the model.
+`fLibrary/` holds the library files that recreate the model and run inference on it.
 It has a `Makefile` that first pre-processes the model:
 ```make
     preprocess: modelParserONNX.py
