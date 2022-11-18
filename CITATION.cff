@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: Bati
+    given-names: Ajay
+  - family-names: Bryngelson
+    given-names: Spencer
+    orcid: https://orcid.org/0000-0003-1750-7265
+title: "roseNNa"
+version: 0.1
+doi: 10.5281/zenodo.7334627
+date-released: 2022-11-18
