@@ -37,7 +37,7 @@ end program
 ```
 
 This example program links to the roseNNa library, parses the model inputs, and runs inference on the loaded library. 
-Only four lines are required to use the library: `use rosenna`, `call initialize()`, and `call use_model(args)`.
+Only a few lines are required to use the library: `use rosenna`, `call initialize()`, and `call use_model(args)`.
 
 ## Dependencies
 
