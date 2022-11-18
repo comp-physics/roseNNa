@@ -35,9 +35,7 @@ end program
 This example program links to the roseNNa library, parses the model inputs, and runs inference on the loaded library. 
 Only four lines are required to use the library: `use rosenna`, `call initialize()`, and `call use_model(args)`.
 
-## Further documentation
 
-Please see [this document](https://github.com/comp-physics/roseNNa/blob/master/instructions/opensource.md) on how to extend roseNNa to new network models and [this ducment](https://github.com/comp-physics/roseNNa/blob/master/instructions/methodology.md) on the details of the roseNNa pipeline.
 
 ## Compiling roseNNa 
 
@@ -93,3 +91,7 @@ gcc -c *.c
 gfortran -o capi path/to/libcorelib.a *.o
 ./capi
 ```
+
+## Further documentation
+
+Please see [this document](https://github.com/comp-physics/roseNNa/blob/master/instructions/opensource.md) on how to extend roseNNa to new network models and [this ducment](https://github.com/comp-physics/roseNNa/blob/master/instructions/methodology.md) on the details of the roseNNa pipeline.
