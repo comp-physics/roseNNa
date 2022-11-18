@@ -61,5 +61,6 @@ jobs:
 
       - name: Running Test Cases
         run: |
+          mkdir fLibrary/objFiles/
           cd test/
           ./run.sh
