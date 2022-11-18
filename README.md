@@ -2,6 +2,9 @@
   <img src="doc/rosenna.png" alt="roseNNa banner" width="600"/></center>
 </p>
 <p align="center">
+<a href="https://zenodo.org/badge/latestdoi/466203469">
+  <img src="https://zenodo.org/badge/466203469.svg" alt="DOI">
+</a>
 <a href="https://github.com/comp-physics/roseNNa/actions">
   <img src="https://github.com/comp-physics/roseNNa/actions/workflows/CI.yml/badge.svg" />
 </a>
