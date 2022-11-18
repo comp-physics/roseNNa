@@ -68,7 +68,7 @@ Information about the model is also included in a library helper module `variabl
 
 ## Fortran usage 
 
-One can compile a Fortran example (like the `Hello World` exmple above) by specifying the location of the module files and linking the library to other program files.
+One can compile a Fortran example (like the `Hello World` exmaple above) by specifying the location of the module files and linking the library to other program files.
 In practice, this looks like
 ``` shell
 gfortran -c *.f90 -Ipath/to/objFiles
