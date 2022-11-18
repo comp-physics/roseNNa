@@ -41,5 +41,5 @@ with open(filePath+"mnist.txt", "w") as f2:
     f2.write(stringer(logits.flatten().tolist()))
 print(logits.flatten().tolist())
 
-onnx.shape_inference.infer_shapes_path('goldenFiles/mnist/mnist.onnx', 'goldenFiles/mnist/mnist_inferred.onnx')
+onnx.shape_inference.infer_shapes_path('../goldenFiles/mnist/mnist.onnx', '../goldenFiles/mnist/mnist_inferred.onnx')
 print("done")

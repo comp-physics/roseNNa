@@ -26,7 +26,7 @@ userTesting: $(OBJ2) userTesting.fpp variables.fpp
 	fypp userTesting.fpp userTesting.f90
 	$(FC) $(FFLAGS) -o userTesting.o -c userTesting.f90
 
-testing: ex1 userTesting output
+testing: ex1 compile userTesting output
 	./output 2> outputCase.txt
 	python3 -Wi testChecker.py $(case)
 
