@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import sys
 import os
-sys.path.insert(1, "goldenFiles/")
+sys.path.insert(1, "../test")
 from nnLSTM import LSTM
 class NN(nn.Module):
     def __init__(self):
