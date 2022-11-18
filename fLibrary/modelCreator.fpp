@@ -12,13 +12,13 @@ module model
     USE iso_c_binding
     ! ===============================================================
 
-    
+
     IMPLICIT NONE
     contains
     !===============================================THIS BLOCK COMES FROM FYPP OUTPUT "openNP.fpp"=======================================================
         #:mute
-        #:include 'variables.fpp'
-        
+        #:include '../test/variables.fpp'
+
         #:def ranksuffix(RANK)
         $:'' if RANK == 0 else '(' + ':' + ',:' * (RANK - 1) + ')'
         #:enddef ranksuffix
@@ -38,7 +38,7 @@ module model
         #{for index,n in enumerate(arr)}#o${index}$#{if index < (len(arr)-1)}#, #{endif}##{endfor}#
         #:enddef genOutput
         #:endmute
-        
+
         SUBROUTINE use_model(${genInput(trueInputs)}$, ${genOutput(outShape)}$) bind(c,name="use_model")
             IMPLICIT NONE
             !INPUTS CORRESPONDING TO C
@@ -73,9 +73,9 @@ module model
             ${inp[0]}$ = i${index}$
             #:endfor
 
-            
+
             CALL CPU_TIME(T1)
-            
+
             #: set layer_dict = {}
             #: for tup in architecture
             #: mute
@@ -147,11 +147,11 @@ module model
             #: elif tup[0] == 'MatMul'
             !=======MatMul=========
             CALL matmul${tup[2][0]}$D(${tup[1][0]}$, ${tup[1][1]}$)
-            
+
             #!ReLu
             #: elif tup[0] == 'Relu'
             ${tup[1][0]}$ = relu${tup[2][0]}$d(${tup[1][0]}$)
-            
+
             #!Tanh
             #: elif tup[0] == 'Tanh'
             ${tup[1][0]}$ = tanhh${tup[2][0]}$d(${tup[1][0]}$)
@@ -171,7 +171,7 @@ module model
             #:endfor
         end SUBROUTINE
     !===================================================================================================================================================
-        
+
 
 END module model
 

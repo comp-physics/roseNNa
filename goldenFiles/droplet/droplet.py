@@ -75,7 +75,7 @@ def stringer(mat):
     return s.strip()
 
 
-filePath = "goldenFiles/droplet/"
+filePath = "../goldenFiles/droplet/"
 with open(filePath+"droplet.txt", "w") as f2:
     f2.write(stringer(list(logits.shape)))
     f2.write("\n")

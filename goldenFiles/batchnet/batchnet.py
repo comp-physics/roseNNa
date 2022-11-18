@@ -15,7 +15,7 @@ class Batch_Net_5_2(nn.Module):
         self.layer4 = nn.Sequential(nn.Linear(n_hidden_3, n_hidden_4), nn.ReLU(True))
         self.layer5 = nn.Sequential(nn.Linear(n_hidden_4, n_hidden_5), nn.ReLU(True))
         self.layer6 = nn.Sequential(nn.Linear(n_hidden_5, out_dim))
- 
+
     def forward(self, x):
         x = self.layer1(x)
         x = self.layer2(x)
@@ -60,7 +60,7 @@ class Batch_Net_5_2(nn.Module):
         self.layer4 = nn.Sequential(nn.Linear(n_hidden_3, n_hidden_4), nn.ReLU(True))
         self.layer5 = nn.Sequential(nn.Linear(n_hidden_4, n_hidden_5), nn.ReLU(True))
         self.layer6 = nn.Sequential(nn.Linear(n_hidden_5, out_dim))
- 
+
     def forward(self, x):
         x = self.layer1(x)
         x = self.layer2(x)
@@ -110,7 +110,7 @@ def stringer(mat):
     return s.strip()
 
 
-filePath = "goldenFiles/batchnet/"
+filePath = "../goldenFiles/batchnet/"
 with open(filePath+"batchnet.txt", "w") as f2:
     f2.write(stringer(list(logits.shape)))
     f2.write("\n")

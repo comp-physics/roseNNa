@@ -23,4 +23,5 @@ graphs/
 graph_scripts/
 fLibrary/*.txt
 goldenFiles/*/*.txt
+randomStuff/
 

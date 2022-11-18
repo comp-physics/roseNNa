@@ -3,7 +3,7 @@ import torch.nn as nn
 import sys
 import os
 import numpy as np
-sys.path.insert(1, "goldenFiles/")
+sys.path.insert(1, "../test/")
 from nnLSTM import LSTM
 import timeit
 class NN(nn.Module):
@@ -116,7 +116,7 @@ def stringer(mat):
         s += str(elem) + " "
     return s.strip()
 logits = model(inp, hidden)
-filePath = "goldenFiles/lstm_output/"
+filePath = "../goldenFiles/lstm_output/"
 
 with open(filePath+"lstm_output.txt", "w") as f:
     f.write(stringer(list(logits.shape)))

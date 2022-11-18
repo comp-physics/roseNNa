@@ -1,7 +1,7 @@
 import sys
 import os
 file = sys.argv[1]
-with open("goldenFiles/test.txt") as f, open("goldenFiles/"+file+"/"+file+".txt") as f2:
+with open("test.txt") as f, open("../goldenFiles/"+file+"/"+file+".txt") as f2:
     try:
         fortran = f.readlines()
         py = f2.readlines()

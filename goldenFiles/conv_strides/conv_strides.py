@@ -31,7 +31,7 @@ def stringer(mat):
     return s.strip()
 logits = model(inp)
 
-filePath = "goldenFiles/conv_strides/"
+filePath = "../goldenFiles/conv_strides/"
 with open(filePath+"conv_strides.txt", "w") as f2:
     f2.write(stringer(list(logits.shape)))
     f2.write("\n")

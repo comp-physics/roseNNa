@@ -59,7 +59,7 @@ times = timeit.repeat(setup = SETUP_CODE,
 print(f"Median is: {np.median(np.array(times))}")
 logits = model(inp)
 
-filePath = "goldenFiles/maxpool_basic/"
+filePath = "../goldenFiles/maxpool_basic/"
 with open(filePath+"maxpool_basic.txt", "w") as f2:
     f2.write(stringer(list(logits.shape)))
     f2.write("\n")

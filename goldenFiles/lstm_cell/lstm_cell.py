@@ -62,7 +62,7 @@ def stringer(mat):
         s += str(elem) + " "
     return s.strip()
 logits = model(inp, hidden)
-filePath = "goldenFiles/lstm_cell/"
+filePath = "../goldenFiles/lstm_cell/"
 with open(filePath+"lstm_cell.txt", "w") as f:
     f.write(stringer(list(logits.shape)))
     f.write("\n")
