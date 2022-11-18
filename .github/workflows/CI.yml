@@ -13,6 +13,7 @@ on:
       - '**.py'
       - '**Makefile'
       - '**makefile'
+      - '**yml'
     
   pull_request:
     branches: [ "master" ]
