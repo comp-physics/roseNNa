@@ -32,13 +32,14 @@ program hello_world
 end program
 ```
 
-This represents a sample program that can be linked with the library created above and run succesfully (given the model's inputs match the inputs provided). Four things are required to use this library: `USE rosenn`, `initializing inputs`, `CALL initialize()`, and `CALL use_model(args)`.
+This example program links to the roseNNa library, parses the model inputs, and runs inference on the loaded library. 
+Only four lines are required to use the library: `use rosenna`, `call initialize()`, and `call use_model(args)`.
 
-## **Fortran Library**
-The fLibrary folder holds all the core files that are needed to recreate the model in Fortran and be linked to a program. It contains a Makefile that compiles all core files and creates a library.
+## Compiling roseNNa 
 
-Here are the steps one needs to follow. First preprocess the model down below. This encodes the models: it writes the weights and architecture to text files (`onnxModel.txt` and `onnxWeights.txt`) and stores information about the model in an external fpp file (`variable.fpp`).
-
+* `fLibrary/` holds the core library files that recreate the model and link it to your program. 
+Its `Makefile` compiles all core files and creates the library.
+Specificially, it first pre-processes the model 
 ```make
     preprocess: modelParserONNX.py
         # arg1 = model structure file (.onnx format)
@@ -48,40 +49,26 @@ Here are the steps one needs to follow. First preprocess the model down below. T
         #for *.mod and *.o files
         mkdir -p objFiles
 ```
-Then, run `make library` to compile all the core files and create a library called `libcorelib.a`. This file must be used to link any other `*.o` files in the program with the library.
+This encodes the models, writing the weights and architecture to text files called `onnxModel.txt` and `onnxWeights.txt`.
+Information about the model is also included in a library helper module `variable.fpp`.
 
-Here is an example test file:
+Use `make library` to compiles the library into `libcorelib.a`. 
+`libcorelib.a` is required to link other `*.o` files in the program with the library.
 
-``` fortran
-program name
+## Fortran usage 
 
-    USE rosenna
-    implicit none
-    REAL (c_double), DIMENSION(1,2) :: inputs
-    REAL (c_double), DIMENSION(    1, 3) :: output
-
-    inputs = RESHAPE(    (/1.0, 1.0/),    (/1, 2/), order =     [2 , 1 ])
-
-    CALL initialize()
-
-    CALL use_model(inputs, output)
-
-    print *, output
-
-end program name
-```
-Compile the files and specify the location to the module files. Lastly, link the library to any other files in the program:
-
+One can compile a Fortran example (like the `Hello World` exmple above) by specifying the location of the module files and linking the library to other program files.
+In practice, this looks like
 ``` shell
 gfortran -c *.f90 -Ipath/to/objFiles
 gfortran -o flibrary path/to/libcorelib.a *.o
 ./flibrary
 ```
 
+## C usage
 
-## **C Library**
-The C library also uses the library created from the previous section (so make sure to read the previous section to create the library file). C and Fortran are interoperable. To call Fortran **from** C, here is the code in C:
-
+One can call roseNNA from C painlessly. 
+Compile the library, then use the the following C program as an example:
 ``` c
 void use_model(double * i0, double * o0);
 void initialize(char * model_file, char * weights_file);
@@ -98,16 +85,12 @@ int main(void) {
     }
 }
 ```
-The two functions that will be used includes `use_model` and `initialize` (same procedure as Fortran). Therefore, the function headers must be defined in C. Then, based on the model encoded, instantiate an input and outupt with the correct dimension. **Call initialize** to allow fortran to read in the weights and **call use_model** which will write the output of the model into **out**.
-
-For compilation follow these steps:
+and compile it as
 ``` shell
 gcc -c *.c
 gfortran -o capi path/to/libcorelib.a *.o
 ./capi
 ```
-
-
 
 ## **Open Source Development**
 [Open Source](https://github.com/comp-physics/roseNNa/blob/develop/instructions/opensource.md)
