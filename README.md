@@ -35,11 +35,14 @@ end program
 This example program links to the roseNNa library, parses the model inputs, and runs inference on the loaded library. 
 Only four lines are required to use the library: `use rosenna`, `call initialize()`, and `call use_model(args)`.
 
+## Further documentation
+
+Please see [this document](https://github.com/comp-physics/roseNNa/blob/master/instructions/opensource.md) on how to extend roseNNa to new network models and [this ducment](https://github.com/comp-physics/roseNNa/blob/master/instructions/methodology.md) on the details of the roseNNa pipeline.
+
 ## Compiling roseNNa 
 
-* `fLibrary/` holds the core library files that recreate the model and link it to your program. 
-Its `Makefile` compiles all core files and creates the library.
-Specificially, it first pre-processes the model 
+`fLibrary/` holds the library files that recreate the model.
+It has a `Makefile` that first pre-processes the model:
 ```make
     preprocess: modelParserONNX.py
         # arg1 = model structure file (.onnx format)
@@ -52,8 +55,7 @@ Specificially, it first pre-processes the model
 This encodes the models, writing the weights and architecture to text files called `onnxModel.txt` and `onnxWeights.txt`.
 Information about the model is also included in a library helper module `variable.fpp`.
 
-Use `make library` to compiles the library into `libcorelib.a`. 
-`libcorelib.a` is required to link other `*.o` files in the program with the library.
+`make library` to compiles the library into `libcorelib.a`, which is required to link other `*.o` files with the library.
 
 ## Fortran usage 
 
@@ -91,9 +93,3 @@ gcc -c *.c
 gfortran -o capi path/to/libcorelib.a *.o
 ./capi
 ```
-
-## **Open Source Development**
-[Open Source](https://github.com/comp-physics/roseNNa/blob/develop/instructions/opensource.md)
-
-## **roseNNa Pipeline**
-[Pipeline Documentation](https://github.com/comp-physics/roseNNa/blob/develop/instructions/methodology.md)
