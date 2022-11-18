@@ -64,7 +64,7 @@ It has a `Makefile` that first pre-processes the model:
 This encodes the models, writing the weights and architecture to text files called `onnxModel.txt` and `onnxWeights.txt`.
 Information about the model is also included in a library helper module `variable.fpp`.
 
-`make library` to compiles the library into `libcorelib.a`, which is required to link other `*.o` files with the library.
+`make library` compiless the library into `libcorelib.a`, which is required to link other `*.o` files with the library.
 
 ## Fortran usage 
 
