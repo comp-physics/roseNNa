@@ -1,11 +1,46 @@
-# **roseNNa**
-A fast, portable library for neural network inference in HPC codebases
+<p align="center">
+  <img src="doc/rosenna.png" alt="roseNNa banner" width="600"/></center>
+</p>
+<p align="center">
+<a href="https://github.com/comp-physics/roseNNa/actions">
+  <img src="https://github.com/comp-physics/roseNNa/actions/workflows/CI.yml/badge.svg" />
+</a>
+<a href="https://lbesson.mit-license.org/">
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg" />
+</a>
+</p>
 
-## **Fortran Library**
-The fLibrary folder holds all the core files that are needed to recreate the model in Fortran and be linked to a program. It contains a Makefile that compiles all core files and creates a library.
+roseNNA is a fast, portable, and minimally-intrusive library for neural network inference.
+Its intended use case is large Fortran- and C-based HPC codebases. 
+roseNNa currently supports RNNs, CNNs, and MLPs, though more architectures are in the works.
+The library is optimized Fortran and outperforms PyTorch (by a factor between 2 and 5x) for the relatively small neural networks used in physics applications, like CFD.
 
-Here are the steps one needs to follow. First preprocess the model down below. This encodes the models: it writes the weights and architecture to text files (onnxModel.txt and onnxWeights.txt) and stores information about the model in an external fpp file (variable.fpp).
+## Hello World
 
+``` fortran
+program hello_world
+
+  use rosenna
+  implicit none
+
+  real, dimension(1,1,28,28) :: input ! model inputs
+  real, dimension(1,5) :: output      ! model outputs
+
+  call initialize() ! reads weights
+  call use_model(input, output) ! run inference
+
+end program
+```
+
+This example program links to the roseNNa library, parses the model inputs, and runs inference on the loaded library. 
+Only four lines are required to use the library: `use rosenna`, `call initialize()`, and `call use_model(args)`.
+
+
+
+## Compiling roseNNa 
+
+`fLibrary/` holds the library files that recreate the model.
+It has a `Makefile` that first pre-processes the model:
 ```make
     preprocess: modelParserONNX.py
         # arg1 = model structure file (.onnx format)
@@ -15,40 +50,25 @@ Here are the steps one needs to follow. First preprocess the model down below. T
         #for *.mod and *.o files
         mkdir -p objFiles
 ```
-Then, run "make library" to compile all the core files and create a library called "libcorelib.a". This file must be used to link any other "*.o" files in the program with the library.
+This encodes the models, writing the weights and architecture to text files called `onnxModel.txt` and `onnxWeights.txt`.
+Information about the model is also included in a library helper module `variable.fpp`.
 
-Here is an example test file:
+`make library` to compiles the library into `libcorelib.a`, which is required to link other `*.o` files with the library.
 
-``` fortran
-program name
+## Fortran usage 
 
-    USE rosenna
-    implicit none
-    REAL (c_double), DIMENSION(1,2) :: inputs
-    REAL (c_double), DIMENSION(    1, 3) :: output
-
-    inputs = RESHAPE(    (/1.0, 1.0/),    (/1, 2/), order =     [2 , 1 ])
-
-    CALL initialize()
-
-    CALL use_model(inputs, output)
-
-    print *, output
-
-end program name
-```
-Compile the files and specify the location to the module files. Lastly, link the library to any other files in the program:
-
+One can compile a Fortran example (like the `Hello World` exmple above) by specifying the location of the module files and linking the library to other program files.
+In practice, this looks like
 ``` shell
 gfortran -c *.f90 -Ipath/to/objFiles
 gfortran -o flibrary path/to/libcorelib.a *.o
 ./flibrary
 ```
 
+## C usage
 
-## **C Library**
-The C library also uses the library created from the previous section (so make sure to read the previous section to create the library file). C and Fortran are interoperable. To call Fortran **from** C, here is the code in C:
-
+One can call roseNNA from C painlessly. 
+Compile the library, then use the the following C program as an example:
 ``` c
 void use_model(double * i0, double * o0);
 void initialize(char * model_file, char * weights_file);
@@ -65,40 +85,13 @@ int main(void) {
     }
 }
 ```
-The two functions that will be used includes **use_model** and **initialize** (same procedure as Fortran). Therefore, the function headers must be defined in C. Then, based on the model encoded, instantiate an input and outupt with the correct dimension. **Call initialize** to allow fortran to read in the weights and **call use_model** which will write the output of the model into **out**.
-
-For compilation follow these steps:
+and compile it as
 ``` shell
 gcc -c *.c
 gfortran -o capi path/to/libcorelib.a *.o
 ./capi
 ```
 
-## **User Example**
+## Further documentation
 
-``` fortran
-    program name
-
-        !must be imported
-        USE rosenna
-        implicit none
-
-        !user has to provide inputs to the model
-        REAL, DIMENSION(1,1,28,28) :: inputs
-        REAL, DIMENSION(1,5) :: Plus214_Output_0
-
-        !this must be called somewhere to read all the weights in
-        CALL initialize()
-
-        ! this must be called to run inference on the model
-        CALL use_model(inputs, Plus214_Output_0)
-
-    end program name
-```
-This represents a sample program that can be linked with the library created above and run succesfully (given the model's inputs match the inputs provided). Four things are required to use this library: **USE rosenna**, **initializing inputs**, **CALL initialize()**, and **CALL use_model(args)**.
-
-## **Open Source Development**
-[Open Source](https://github.com/comp-physics/roseNNa/blob/develop/instructions/opensource.md)
-
-## **roseNNa Pipeline**
-[Pipeline Documentation](https://github.com/comp-physics/roseNNa/blob/develop/instructions/methodology.md)
+Please see [this document](https://github.com/comp-physics/roseNNa/blob/master/instructions/opensource.md) on how to extend roseNNa to new network models and [this ducment](https://github.com/comp-physics/roseNNa/blob/master/instructions/methodology.md) on the details of the roseNNa pipeline.

@@ -29,9 +29,8 @@ library: output
 
 clean:
 	rm *.o objFiles/*.mod
-	rm libcorelib.a
 	rm modelCreator.f90
-	rm userTesting.f90
+	rm libcorelib.a
 # testing: ex1 outputs
 #     # runs userTesting/main file provided by user
 #     ./output

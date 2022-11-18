@@ -31,7 +31,7 @@ def stringer(mat):
     return s.strip()
 logits = model(inp)
 
-filePath = "goldenFiles/avgpool_basic/"
+filePath = "../goldenFiles/avgpool_basic/"
 with open(filePath+"avgpool_basic.txt", "w") as f2:
     f2.write(stringer(list(logits.shape)))
     f2.write("\n")

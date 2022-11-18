@@ -8,7 +8,6 @@
 !*.f90
 !*.py
 !Makefile
-!*.txt
 !*.sh
 !*.yml
 !goldenFiles/mnist/mnist.onnx
@@ -20,4 +19,9 @@ test.txt
 goldenFiles/gemm_huge/
 goldenFiles/vgg16/
 goldenFiles/turbulentShear/
+graphs/
+graph_scripts/
+fLibrary/*.txt
+goldenFiles/*/*.txt
+randomStuff/
 

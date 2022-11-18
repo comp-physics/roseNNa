@@ -37,10 +37,10 @@ program name
     #:for inp in arrs
     ${inp}$ = RESHAPE(${genArray(arrs[inp])}$,${genArray(inpShape[inp])}$, order = ${rev(inpShape[inp])}$)
     #:endfor
-    
+
     CALL initialize()
     print *, "Model Reconstruction Success!"
-    open(1, file = "goldenFiles/test.txt")
+    open(1, file = "test.txt")
     ! open(56,file='graphs/timesF.txt',action='write',position='append') !delete this line
     ! DO time=1,100 !delete this line
     #:for inp in arrs
@@ -68,7 +68,7 @@ program name
             REAL (c_double), intent(inout) :: array(:)
             real :: temp
             integer :: i,j,last
-        
+
             last=size(array)
             do i=last-1,1,-1
             do j=1,i
@@ -79,6 +79,6 @@ program name
                 endif
             enddo
             enddo
-        
+
         end subroutine bubble_sort
 end program name

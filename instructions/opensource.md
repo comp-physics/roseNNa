@@ -2,7 +2,7 @@
 This project is ongoing and does not contain functionality of every layer available in ONNX. In order to embed new layers into roseNNa, certain steps must be followed:
 
 ## Parsing in modelParserONNX.py
-This file reads in the ONNX interpretation of the model. At a higher level, it iterattes over all the layers in the ONNX model (called nodes in the graph), parses its contents by (1) sending some of its options to be parsed in f90 via fypp and (2) finding the weights that correspond to this layer and writing their dimensions to 'onnxModel.txt' and the weights to 'onnxWeights.txt'. These two files will be read in by Fortran so it can store the weights and layers. Here is a pseudocode example from the "GEMM" layer in ONNX:
+This file reads in the ONNX interpretation of the model. At a higher level, it iterattes over all the layers in the ONNX model (called nodes in the graph), parses its contents by (1) sending some of its options to be parsed in f90 via fypp and (2) finding the weights that correspond to this layer and writing their dimensions to 'onnxModel.txt' and the weights to `onnxWeights.txt`. These two files will be read in by Fortran so it can store the weights and layers. Here is a pseudocode example from the "GEMM" layer in ONNX:
 
 ```python
 #an additional if statement must be added so the parser knows to parse this layer
@@ -57,7 +57,7 @@ END FUNCTION tanhh
 ```
 
 ## Reading layer in reader.f90
-In order to read in the weights and layers from the files 'onnxModel.txt' and 'onnxWeights.txt', the file [reader.f90](https://github.com/comp-physics/roseNNa/blob/develop/readTester.f90) has to include the new layer/activation function. First, we will create an array of derived types for the new layer. This will allow us to store multiple of the same layer if the model contains it (we make it allocatable so it can be appended to with no dimension restrictions). Then, we create a new subroutine for the layer, which defines how we will read in the weights/dimensions (this will depend based on how you wrote the dimensions to the files in the first place). Here is an example:
+In order to read in the weights and layers from the files `onnxModel.txt` and `onnxWeights.txt`, the file [reader.f90](https://github.com/comp-physics/roseNNa/blob/develop/readTester.f90) has to include the new layer/activation function. First, we will create an array of derived types for the new layer. This will allow us to store multiple of the same layer if the model contains it (we make it allocatable so it can be appended to with no dimension restrictions). Then, we create a new subroutine for the layer, which defines how we will read in the weights/dimensions (this will depend based on how you wrote the dimensions to the files in the first place). Here is an example:
 
 ``` fortran
 !subroutine definition for GEMM/MLP layer (file1=dimensions, file2=weights)
@@ -102,7 +102,7 @@ After encoding the layer/activation function and reading it, fypp will construct
     !========Gemm Layer============
     CALL linear_layer(${tup[1][0]}$, linLayers(${layer_dict[tup[0]]}$),${1-tup[1][1]}$)
 ```
-In this example, we call the **linear_layer** implemented in layers.f90 and pass in arguments that come from the external fypp files. There is a for loop running through each layer in the model architecture (a list of tuples), and **tup** contains certain arguments that enables the tool to call the correct names and arguments. **linLayers** is defined in the reader file and stores information about the **i**th layer. One thing to make sure is to store the correct information in model architecture so it can be referenced during this stage.
+In this example, we call the `linear_layer` implemented in `layers.f90` and pass in arguments that come from the external fypp files. There is a for loop running through each layer in the model architecture (a list of tuples), and `tup` contains certain arguments that enables the tool to call the correct names and arguments. `linLayers` is defined in the reader file and stores information about the **i**th layer. One thing to make sure is to store the correct information in model architecture so it can be referenced during this stage.
 
 ## Running Tests
 To run current tests located in [goldenFiles](https://github.com/comp-physics/FyeNNa/tree/develop/goldenFiles), change permissions for [run.sh](https://github.com/comp-physics/FyeNNa/blob/develop/run.sh). Each time the tests are run, new weights are initialized for the given test's model. To look at the model architectures of each test, go to the same **goldenFiles** folder, view each test's folder, and go to the .py file.
