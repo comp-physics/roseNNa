@@ -1,8 +1,7 @@
 <p align="center">
   <img src="doc/rosenna.png" alt="roseNNa banner" width="600"/></center>
 </p>
-<p align="center">
-<a href="https://zenodo.org/badge/latestdoi/466203469">
+<p align="center"> <a href="https://zenodo.org/badge/latestdoi/466203469">
   <img src="https://zenodo.org/badge/466203469.svg" alt="DOI">
 </a>
 <a href="https://github.com/comp-physics/roseNNa/actions">
@@ -19,10 +18,10 @@ roseNNa's intended use case is large Fortran- and C-based HPC codebases.
 It currently supports RNNs, CNNs, and MLPs, though more architectures are in the works.
 The library is optimized Fortran and outperforms PyTorch (by a factor between 2 and 5x) for the relatively small neural networks used in physics applications, like CFD.
 
-## Hello World
+## Hello RoseNNa
 
 ``` fortran
-program hello_world
+program hello_roseNNa
 
   use rosenna
   implicit none
@@ -68,7 +67,7 @@ Information about the model is also included in a library helper module `variabl
 
 ## Fortran usage 
 
-One can compile a Fortran example (like the `Hello World` exmaple above) by specifying the location of the module files and linking the library to other program files.
+One can compile a Fortran example (like the `Hello RoseNNa` example above) by specifying the location of the module files and linking the library to other program files.
 In practice, this looks like
 ``` shell
 gfortran -c *.f90 -Ipath/to/objFiles
