@@ -10,6 +10,7 @@
 !Makefile
 !*.sh
 !*.yml
+!*.c
 !goldenFiles/mnist/mnist.onnx
 !instructions/*
 reading.f90

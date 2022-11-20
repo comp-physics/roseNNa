@@ -3,30 +3,30 @@ DIR = ../fLibrary
 MAIN = ../
 FFLAGS=-O2
 FFLAGS=-O3
-SRC=$(DIR)/modelCreator.fpp
+SRC=modelCreator.fpp userTesting.fpp
 SRCBASE=$(DIR)/activation_funcs.f90 $(DIR)/derived_types.f90 $(DIR)/layers.f90 $(DIR)/reader.f90
 OBJ2=${SRC:.fpp=.o}
 COMP=${SRCBASE:.f90=.o}
 
 output: $(COMP) $(OBJ2)
-	$(FC) $(FFLAGS) -o $@ $(COMP) $(OBJ2) userTesting.o
+	$(FC) $(FFLAGS) -o $@ $(COMP) $(OBJ2)
 
-.PRECIOUS : $(DIR)/%.f90
-$(DIR)/%.f90: $(DIR)/%.fpp variables.fpp
-	fypp $< $(DIR)/$*.f90
+.PRECIOUS : %.f90
+%.f90: %.fpp variables.fpp
+	fypp $< $*.f90
+
+%.o: %.f90
+	$(FC) $(FFLAGS) -o $@ -c $<
 
 $(DIR)/%.o: $(DIR)/%.f90
 	$(FC) $(FFLAGS) -o $@ -c $<
 
-test: ex1 userTesting output
+test: ex1 user output
 	./output 2> outputCase.txt
 
-.PRECIOUS : %.f90
-userTesting: $(OBJ2) userTesting.fpp variables.fpp
-	fypp userTesting.fpp userTesting.f90
-	$(FC) $(FFLAGS) -o userTesting.o -c userTesting.f90
+user: $(OBJ2) variables.fpp
 
-testing: ex1 compile userTesting output
+testing: ex1 compile user output
 	./output 2> outputCase.txt
 	python3 -Wi testChecker.py $(case)
 
