@@ -50,7 +50,7 @@ pip install torch onnx numpy fypp onnxruntime
 ## Compiling roseNNa 
 
 `fLibrary/` holds the library files that recreate the model and run inference on it.
-It has a `Makefile` that first pre-processes the model:
+It has a `Makefile` that first pre-processes the model. First, run `make preprocess args="path/to/model/structure path/to/weights/file"`.
 ```make
     preprocess: modelParserONNX.py
         # arg1 = model structure file (.onnx format)
@@ -60,10 +60,10 @@ It has a `Makefile` that first pre-processes the model:
         #for *.mod and *.o files
         mkdir -p objFiles
 ```
-This encodes the models, writing the weights and architecture to text files called `onnxModel.txt` and `onnxWeights.txt`.
+This encodes the models, writing the weights and architecture to text files called `onnxModel.txt` and `onnxWeights.txt` and creates a new `.f90` file called `modelCreator.f90`.
 Information about the model is also included in a library helper module `variable.fpp`.
 
-`make library` compiles the library into `libcorelib.a`, which is required to link other `*.o` files with the library.
+Then, in the same `/fLibrary` directory, run `make library`. This compiles the library into `libcorelib.a`, which is required to link other `*.o` files with the library. This library file is now ready to be integrated into any Fortran/C workflow.
 
 ## Fortran usage 
 
