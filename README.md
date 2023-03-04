@@ -49,8 +49,34 @@ pip install torch onnx numpy fypp onnxruntime
 
 ## Compiling roseNNa 
 
+roseNNa takes as input potentially two ONNX format files. After saving a model trained in PyTorch, Tensorflow, Keras, etc., that model must be converted into ONNX format. For example, for an LSTM (with a feedforward attached) developed in PyTorch, here is the conversion process. There are two conversion calls (one for the model structure where `do_constant_folding=True` and the other for preserving the order of weights stored internally where `do_constant_folding=False`). Sometimes, this may not be necessary and one would only need to construct the model structure file (usually for simpler layers such as feed forward, convolutional, or maxpool). Other conversion methods from other libraries can be found online (check out [ONNX's](https://onnx.ai/)) website. Additionally, an example pipeline on how to create these files can be found in the `goldenFiles/` folder. This example below is from `goldenFiles/lstm_gemm/`.
+
+```python
+torch.onnx.export(model,               # model being run
+                  (inp, hidden),                         # model input (or a tuple for multiple inputs)
+                  filePath+"lstm_gemm.onnx",   # where to save the model (can be a file or file-like object)
+                  export_params=True,        # store the trained parameter weights inside the model file
+                  opset_version=12,          # the ONNX version to export the model to
+                  do_constant_folding=True,  # whether to execute constant folding for optimization
+                  input_names = ['input', 'hidden_state','cell_state'],   # the model's input names
+                  output_names = ['output'], # the model's output names
+                  )
+
+torch.onnx.export(model,               # model being run
+                  (inp, hidden),                         # model input (or a tuple for multiple inputs)
+                  filePath+"lstm_gemm_weights.onnx",   # where to save the model (can be a file or file-like object)
+                  export_params=True,        # store the trained parameter weights inside the model file
+                  opset_version=12,          # the ONNX version to export the model to
+                  do_constant_folding=False,  # whether to execute constant folding for optimization
+                  input_names = ['input', 'hidden_state','cell_state'],   # the model's input names
+                  output_names = ['output'], # the model's output names
+                  )
+```
+
+Now, it is time to compile the library:
 `fLibrary/` holds the library files that recreate the model and run inference on it.
-It has a `Makefile` that first pre-processes the model. First, run `make preprocess args="path/to/model/structure path/to/weights/file"`.
+It has a `Makefile` that first pre-processes the model. First, run `make preprocess args="path/to/model/structure path/to/weights/file"`. These files are the inputs from the conversion calls above (the second option as mentioned above is optional for most use cases).
+
 ```make
     preprocess: modelParserONNX.py
         # arg1 = model structure file (.onnx format)
