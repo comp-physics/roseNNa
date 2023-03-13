@@ -49,9 +49,21 @@ pip install torch onnx numpy fypp onnxruntime
 
 ## Compiling roseNNa 
 
-roseNNa takes as input potentially two ONNX format files. After saving a model trained in PyTorch, Tensorflow, Keras, etc., that model must be converted into ONNX format. For example, for an LSTM (with a feedforward attached) developed in PyTorch, here is the conversion process. There are two conversion calls (one for the model structure where `do_constant_folding=True` and the other for preserving the order of weights stored internally where `do_constant_folding=False`). Sometimes, this may not be necessary and one would only need to construct the model structure file (usually for simpler layers such as feed forward, convolutional, or maxpool). Other conversion methods from other libraries can be found online (check out [ONNX's](https://onnx.ai/)) website. Additionally, an example pipeline on how to create these files can be found in the `goldenFiles/` folder. This example below is from `goldenFiles/lstm_gemm/`.
+1. **Save the neural network model that needs to be converted**
+
+    Make sure to refer to the specific library's documentation about how to save the model.
+
+2. **Convert the saved model to an ONNX format**
+
+    Details on how to convert a saved model to ONNX format can be found on their [website](https://onnx.ai/supported-tools.html#buildModel). 
+
+
+    **Converting an LSTM?**
+
+    One important thing to note is sometimes ONNX enables optimizations that will change how the weights are stored internally (this will happen specifically for LSTMs). When converting from any library to ONNX, one should load 2 files: one with optimization and one without. This may or may not apply to all library to ONNX conversions, but here is an example using pytorch (one with `do_constant_folding=True` and another with `do_constant_folding=False`.
 
 ```python
+#MODEL STRUCTURE FILE
 torch.onnx.export(model,               # model being run
                   (inp, hidden),                         # model input (or a tuple for multiple inputs)
                   filePath+"lstm_gemm.onnx",   # where to save the model (can be a file or file-like object)
@@ -62,6 +74,7 @@ torch.onnx.export(model,               # model being run
                   output_names = ['output'], # the model's output names
                   )
 
+#MODEL WEIGHTS FILE
 torch.onnx.export(model,               # model being run
                   (inp, hidden),                         # model input (or a tuple for multiple inputs)
                   filePath+"lstm_gemm_weights.onnx",   # where to save the model (can be a file or file-like object)
@@ -73,23 +86,13 @@ torch.onnx.export(model,               # model being run
                   )
 ```
 
-Now, it is time to compile the library:
-`fLibrary/` holds the library files that recreate the model and run inference on it.
-It has a `Makefile` that first pre-processes the model. First, run `make preprocess args="path/to/model/structure path/to/weights/file"`. These files are the inputs from the conversion calls above (the second option as mentioned above is optional for most use cases).
+3. **Preprocess the model**
 
-```make
-    preprocess: modelParserONNX.py
-        # arg1 = model structure file (.onnx format)
-        # arg2 (optional) = weights file (.onnx format)
-        python3 modelParserONNX.py -f $(args)
+    `fLibrary/` holds the library files that recreate the model and run inference on it. It contains a `Makefile` that first pre-processes the model. First, run `make preprocess args="path/to/model/structure path/to/weights/file"`. From the example above, the command would be `make preprocess args=lstm_gemm.onnx lstm_gemm_weights.onnx`. 
 
-        #for *.mod and *.o files
-        mkdir -p objFiles
-```
-This encodes the models, writing the weights and architecture to text files called `onnxModel.txt` and `onnxWeights.txt` and creates a new `.f90` file called `modelCreator.f90`.
-Information about the model is also included in a library helper module `variable.fpp`.
+4. **Compiling the library**
 
-Then, in the same `/fLibrary` directory, run `make library`. This compiles the library into `libcorelib.a`, which is required to link other `*.o` files with the library. This library file is now ready to be integrated into any Fortran/C workflow.
+    Then, in the same `/fLibrary` directory, run `make library`. This compiles the library into `libcorelib.a`, which is required to link other `*.o` files with the library. This library file is now ready to be integrated into any Fortran/C workflow.
 
 ## Fortran usage 
 
