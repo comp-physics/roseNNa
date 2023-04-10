@@ -115,7 +115,7 @@ torch.onnx.export(model,               # model being run
 
 3. **Preprocess the model**
 
-    `fLibrary/` holds the library files that recreate the model and run inference on it. It contains a `Makefile` that first pre-processes the model. First, run `make preprocess args="path/to/model/structure path/to/weights/file"`. From the example above, the command would be `make preprocess args=lstm_gemm.onnx lstm_gemm_weights.onnx`. 
+    `fLibrary/` holds the library files that recreate the model and run inference on it. Run `python3 modelParserONNX.py -f path/to/model/structure -w path/to/weights/file` to reconstruct the model.
 
 4. **Compiling the library**
 
