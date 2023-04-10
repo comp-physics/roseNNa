@@ -16,15 +16,15 @@ output: $(COMP) $(OBJ2)
 	$(FC) $(FFLAGS) -c $< -o $@
 
 
-preprocess: modelParserONNX.py
+#preprocess: modelParserONNX.py
    	# arg1 = model structure file (.onnx format)
    	# arg2 (optional) = weights file (.onnx format)
-	python3 modelParserONNX.py -f $(args)
+	#python3 modelParserONNX.py -f $(args)
 
    	#for *.mod and *.o files
-	mkdir -p objFiles
 
 library: output
+	mkdir -p objFiles
 	ar crv libcorelib.a $(COMP) $(OBJ2)
 
 clean:

@@ -11,6 +11,9 @@ program name
 
     CALL use_model(inputs, output)
 
+    open(1, file = "test.txt")
+    WRITE(1, *) SHAPE(output)
+    WRITE(1, *) PACK(RESHAPE(output,(/SIZE(output, dim = 2), SIZE(output, dim = 1)/), order = [2, 1]),.true.)
     print *, output
 
 end program name

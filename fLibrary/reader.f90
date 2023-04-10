@@ -34,7 +34,7 @@ module reader
     INTEGER :: readOrNot
 
     contains
-    
+
     subroutine initialize() bind(c,name="initialize") !add arguments for location of onnxModel.txt and onnxWeights.txt
         INTEGER :: Reason
         CHARACTER(len = 10), ALLOCATABLE, DIMENSION(:) :: name
@@ -50,7 +50,7 @@ module reader
         open(11, file = "onnxWeights.txt")
 
         read(10, *) numLayers
-        
+
         readloop: DO i = 1, numLayers
             read(10, *, IOSTAT=Reason) layerName
             if (Reason < 0) then
@@ -93,7 +93,7 @@ module reader
             end if
 
 
-            
+
         END DO readloop
 
     end subroutine
@@ -185,16 +185,16 @@ module reader
         read(file2, *) largeWeights
         conv(1)%weights = largeWeights
         DEALLOCATE(largeWeights)
-        
 
-        
+
+
         read(file1, *) w_dim1
         ALLOCATE(biases(w_dim1))
         read(file2, *) biases
         conv(1)%biases = biases
         DEALLOCATE(biases)
 
-        
+
         convLayers = [convLayers, conv]
 
         DEALLOCATE(conv)
@@ -211,13 +211,13 @@ module reader
         read(file2, *) midWeights
         lstm(1)%wih = midWeights
         DEALLOCATE(midWeights)
-        
+
         read(file1, *) w_dim1, w_dim2, w_dim3
         ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
         read(file2, *) midWeights
         lstm(1)%whh = midWeights
         DEALLOCATE(midWeights)
-        
+
 
         read(file1, *) w_dim1
         ALLOCATE(biases(w_dim1))
@@ -230,7 +230,7 @@ module reader
         read(file2, *) biases
         lstm(1)%bhh = biases
         DEALLOCATE(biases)
-        
+
         if (readOrNot .eq. 1) then
             read(file1, *) w_dim1, w_dim2, w_dim3
             ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
@@ -244,7 +244,7 @@ module reader
             lstm(1)%cell = midWeights
             DEALLOCATE(midWeights)
         endif
-        
+
 
 
         lstmLayers = [lstmLayers, lstm]
@@ -287,6 +287,5 @@ module reader
     end subroutine
 
 
-        
-end module
 
+end module

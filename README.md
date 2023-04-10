@@ -44,7 +44,34 @@ We have minimal dependencies.
 For example, on MacOS you can get away with just
 ```
 brew install wget make cmake coreutils gcc
-pip install torch onnx numpy fypp onnxruntime
+pip install torch onnx numpy fypp onnxruntime pandas
+```
+## Basic Example
+Here is a quick example of how **roseNNa** works. With just a few steps, you can see how to convert a basic feed-forward neural network originally built with PyTorch into usable, accurate code in Fortran.
+
+First `cd` into the `fLibrary/` directory.
+
+``` bash
+#file to create pytorch model and convert to ONNX
+python3 ../goldenFiles/gemm_small/gemm_small.py
+```
+``` bash
+#read and interpret the correspoding output files from last step
+python3 modelParserONNX.py -w ../goldenFiles/gemm_samll/gemm_small.onnx -f ../goldenFiles/gemm_samll/gemm_small_weights.onnx
+```
+``` bash
+#compile the library
+make library
+```
+``` bash
+#compile "source files" (capiTester.f90), link to the library file created, and run
+gfortran -c ../examples/capiTester.f90 -IobjFiles/
+gfortran -o flibrary libcorelib.a capiTester.o
+./flibrary
+```
+``` bash
+#check whether python output from PyTorch model = roseNNa's output
+python3 ../test/testChecker.py
 ```
 
 ## Compiling roseNNa 

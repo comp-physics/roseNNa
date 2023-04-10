@@ -4,6 +4,14 @@ import sys
 import os
 import timeit
 import numpy as np
+import pathlib
+import sys, getopt
+
+opts, args = getopt.getopt(sys.argv[1:],"n")
+produce = True
+for opt, _ in opts:
+    if opt == "-n":
+        produce = False
 class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
@@ -30,16 +38,16 @@ class NN(nn.Module):
 
 model = NN()
 inp = torch.ones(1,2)
-
-with open("inputs.fpp",'w') as f:
-    inputs = inp.flatten().tolist()
-    inpShapeDict = {'inputs': list(inp.shape)}
-    inpDict = {'inputs':inputs}
-    f.write(f"""#:set inpShape = {inpShapeDict}""")
-    f.write("\n")
-    f.write(f"""#:set arrs = {inpDict}""")
-    f.write("\n")
-    f.write("a")
+if produce:
+    with open("inputs.fpp",'w') as f:
+        inputs = inp.flatten().tolist()
+        inpShapeDict = {'inputs': list(inp.shape)}
+        inpDict = {'inputs':inputs}
+        f.write(f"""#:set inpShape = {inpShapeDict}""")
+        f.write("\n")
+        f.write(f"""#:set arrs = {inpDict}""")
+        f.write("\n")
+        f.write("a")
 
 def stringer(mat):
     s = ""
