@@ -57,7 +57,7 @@ python3 ../goldenFiles/gemm_small/gemm_small.py
 ```
 ``` bash
 #read and interpret the correspoding output files from last step
-python3 modelParserONNX.py -w ../goldenFiles/gemm_samll/gemm_small.onnx -f ../goldenFiles/gemm_small/gemm_small_weights.onnx
+python3 modelParserONNX.py -w ../goldenFiles/gemm_small/gemm_small.onnx -f ../goldenFiles/gemm_small/gemm_small_weights.onnx
 ```
 ``` bash
 #compile the library
