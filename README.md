@@ -57,7 +57,7 @@ python3 ../goldenFiles/gemm_small/gemm_small.py
 ```
 ``` bash
 #read and interpret the correspoding output files from last step
-python3 modelParserONNX.py -w ../goldenFiles/gemm_samll/gemm_small.onnx -f ../goldenFiles/gemm_samll/gemm_small_weights.onnx
+python3 modelParserONNX.py -w ../goldenFiles/gemm_samll/gemm_small.onnx -f ../goldenFiles/gemm_small/gemm_small_weights.onnx
 ```
 ``` bash
 #compile the library
@@ -71,7 +71,7 @@ gfortran -o flibrary libcorelib.a capiTester.o
 ```
 ``` bash
 #check whether python output from PyTorch model = roseNNa's output
-python3 ../test/testChecker.py
+python3 ../test/testChecker.py gemm_small
 ```
 
 ## Compiling roseNNa 
