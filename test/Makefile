@@ -37,7 +37,7 @@ capi: capi.c modelCreator.o
 
 ex1: $(DIR)/modelParserONNX.py
 	python3 $(MAIN)goldenFiles/$(case)/$(case).py
-	python3 $(DIR)/modelParserONNX.py -f $(MAIN)goldenFiles/$(case)/$(case).onnx -w $(MAIN)goldenFiles/$(case)/$(case)_weights.onnx -i $(MAIN)goldenFiles/$(case)/$(case)_inferred.onnx 1>/dev/null
+	python3 $(DIR)/modelParserONNX.py -f $(MAIN)goldenFiles/$(case)/$(case).onnx -w $(MAIN)goldenFiles/$(case)/$(case)_weights.onnx -i $(MAIN)goldenFiles/$(case)/$(case)_inferred.onnx
 
 
 graphs: output
