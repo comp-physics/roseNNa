@@ -403,10 +403,11 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
         elif layer == "AveragePool":
             f.write(layer)
             f.write("\n")
-            names = [n.name for n in node.attribute]
-            attributes = [node.attribute[0].i if 'ceil_mode' in names else 0,
-                          node.attribute[2].ints if 'pads' in names else [0,0,0,0],
-                          node.attribute[3].ints if 'strides' in names else [1,1]]
+            #https://onnx.ai/onnx/api/mapping.html#l-onnx-types-mapping
+            names = {n.name:n.i if n.type==2 else n.ints for n in node.attribute}
+            attributes = [names.get('ceil_mode', 0),
+                          names.get('pads', [0,0,0,0]),
+                          names.get('strides', [1,1])]
             modelArch.append(("AveragePool", [ioMap[node.input[0]]], attributes)) #(ceil_mode, pads, strides)
             f.write(str(node.attribute[1].ints[0]))
             f.write("\n")
