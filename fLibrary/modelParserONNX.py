@@ -403,8 +403,11 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
         elif layer == "AveragePool":
             f.write(layer)
             f.write("\n")
-            print(node.attribute)
-            modelArch.append(("AveragePool", [ioMap[node.input[0]]], [node.attribute[0].i, node.attribute[2].ints, node.attribute[3].ints])) #(ceil_mode, pads, strides)
+            names = [n.name for n in node.attribute]
+            attributes = [node.attribute[0].i if 'ceil_mode' in names else 0,
+                          node.attribute[2].ints if 'pads' in names else [0,0,0,0],
+                          node.attribute[3].ints if 'strides' in names else [1,1]]
+            modelArch.append(("AveragePool", [ioMap[node.input[0]]], attributes)) #(ceil_mode, pads, strides)
             f.write(str(node.attribute[1].ints[0]))
             f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
