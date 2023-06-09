@@ -57,7 +57,7 @@ python3 ../goldenFiles/gemm_small/gemm_small.py
 ```
 ``` bash
 #read and interpret the correspoding output files from last step
-python3 modelParserONNX.py -w ../goldenFiles/gemm_samll/gemm_small.onnx -f ../goldenFiles/gemm_samll/gemm_small_weights.onnx
+python3 modelParserONNX.py -w ../goldenFiles/gemm_small/gemm_small.onnx -f ../goldenFiles/gemm_small/gemm_small_weights.onnx
 ```
 ``` bash
 #compile the library
@@ -71,7 +71,7 @@ gfortran -o flibrary libcorelib.a capiTester.o
 ```
 ``` bash
 #check whether python output from PyTorch model = roseNNa's output
-python3 ../test/testChecker.py
+python3 ../test/testChecker.py gemm_small
 ```
 
 ## Compiling roseNNa 
@@ -115,7 +115,7 @@ torch.onnx.export(model,               # model being run
 
 3. **Preprocess the model**
 
-    `fLibrary/` holds the library files that recreate the model and run inference on it. It contains a `Makefile` that first pre-processes the model. First, run `make preprocess args="path/to/model/structure path/to/weights/file"`. From the example above, the command would be `make preprocess args=lstm_gemm.onnx lstm_gemm_weights.onnx`. 
+    `fLibrary/` holds the library files that recreate the model and run inference on it. Run `python3 modelParserONNX.py -f path/to/model/structure -w path/to/weights/file` to reconstruct the model.
 
 4. **Compiling the library**
 
