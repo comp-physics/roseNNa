@@ -153,7 +153,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
     f.write("\n")
     for node in nodes:
         layer = node.op_type
-        
+
         for index,x in enumerate(node.output):
             if x in out:
                 outShape.append([x,out[x]])
@@ -221,7 +221,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 ioMap[node.output[0]] = "output" + extra
                 extra = str(int(extra)+1)
                 ioMap[node.output[1]] = ioMap[node.input[-2]]
-                
+
                 ioMap[node.output[2]] = ioMap[node.input[-1]]
             else:
                 ioMap[node.output[0]] = "output" + extra
@@ -403,6 +403,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
         elif layer == "AveragePool":
             f.write(layer)
             f.write("\n")
+            print(node.attribute)
             modelArch.append(("AveragePool", [ioMap[node.input[0]]], [node.attribute[0].i, node.attribute[2].ints, node.attribute[3].ints])) #(ceil_mode, pads, strides)
             f.write(str(node.attribute[1].ints[0]))
             f.write("\n")
