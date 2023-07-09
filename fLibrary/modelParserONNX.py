@@ -160,7 +160,14 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
         if layer == "Transpose": #for this, make sure order is set to tuple[2] and shape is set accordingly
             f.write(layer)
             f.write("\n")
-            modelArch.append(("Transpose",[ioMap[node.input[0]]], [list(map(lambda x: x+1,node.attribute[0].ints))])) #"order"
+            names = {n.name:n.i if n.type==2 else n.ints for n in node.attribute}
+            try:
+                default = [x for x in range(len(intermediateShapes[node.input[0]])-1,-1,-1)]
+            except:
+                default = [x for x in range(len(input_shapes[node.input[0]])-1,-1,-1)]
+            attributes = names.get('perm', default)
+            #make sure there is a node.attribute[0], otherwise default is to reverse all the dimensions
+            modelArch.append(("Transpose",[ioMap[node.input[0]]], [list(map(lambda x: x+1,attributes))])) #"order"
 
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
@@ -238,7 +245,10 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
         elif layer == "Gemm":
             f.write(layer)
             f.write("\n")
-            modelArch.append(("Gemm", [ioMap[node.input[0]],node.attribute[2].i], None))
+            #only need default for node.attribute[2].i for transInput/B=0
+            names = {n.name:n.i if n.type==2 else n.ints for n in node.attribute}
+            attributes = names.get('transB', 0)
+            modelArch.append(("Gemm", [ioMap[node.input[0]],attributes], None))
             numzs = 0
             #check if bias exists
             if len(node.input) < 3:
@@ -279,9 +289,20 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             f.write(layer)
             f.write("\n")
             try:
+                modelArch.append(("Squeeze", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [ioMap[node.input[1]]])) #axes to be squeezed
+            except:
+                pass
+            try:
+                #do default here. right now, there is no attributes for squeeze. but, onnx sometimes does it.
                 modelArch.append(("Squeeze", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [node.attribute[0].ints])) #axes to be squeezed
             except:
+                pass
+            try:
                 modelArch.append(("Squeeze", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [findWeightsInitializer(node.input[1]).tolist()])) #axes to be squeezed
+            except:
+                att = [x for x in range(len(intermediateShapes[node.input[0]])) if x == 1]
+                modelArch.append(("Squeeze", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [att])) #axes to be squeezed
+
             inputs.append(["output"+extra, len(intermediateShapes[node.output[0]])])
             ioMap[node.output[0]] = "output" + extra
             extra = str(int(extra)+1)
@@ -289,6 +310,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
 
         #check notion summer start
         elif layer == "Reshape": #changes shape
+            #no default changes needed
             f.write(layer)
             f.write("\n")
             try:
@@ -334,9 +356,10 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                         attributes['pads'] = [pad+1,pad+1,pad,pad]
                 else:
                     attributes['pads'] = [pad]*4
-            modelArch.append(("Conv", [ioMap[node.input[0]]], [attributes['dilations'], attributes['kernel_shape'], attributes['pads'], attributes['strides']])) #(dilations, kernel_shape, pads, strides)
+            names = {n.name:n.i if n.type==2 else n.ints for n in node.attribute}
+            modelArch.append(("Conv", [ioMap[node.input[0]]], [names.get('dilations', [1,1]), attributes['kernel_shape'], attributes['pads'], names.get('strides', [1,1])])) #(dilations, kernel_shape, pads, strides)
 
-            if len(node.input) < 3:
+            if len(node.input) < 3: #if bias does not exist, default = 0s
                 numzs = 0
                 for inp in node.input[1:]:
                     numzs = initializer[inp][0][0]
@@ -367,6 +390,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "MaxPool":
+            #no default changes needed
             f.write(layer)
             f.write("\n")
             attributes = {}
@@ -414,6 +438,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "Add":
+            #no default changes needed
             f.write(layer)
             f.write("\n")
             fourd = fourDTransform(intermediateShapes[node.input[0]],findWeightsInitializer(node.input[-1]).shape)
@@ -431,6 +456,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "MatMul":
+            #no default changes needed
             try:
                 f.write(layer)
                 f.write("\n")
