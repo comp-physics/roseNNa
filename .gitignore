@@ -25,3 +25,7 @@ graph_scripts/
 fLibrary/*.txt
 goldenFiles/*/*.txt
 randomStuff/
+fLibrary/modelCreator.f90
+fLibrary/variables.fpp
+test/modelCreator.f90
+test/variables.fpp
