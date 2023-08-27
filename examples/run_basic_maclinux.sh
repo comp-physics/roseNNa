@@ -9,7 +9,7 @@ make library
 
 #compile "source files" (capiTester.f90), link to the library file created, and run
 gfortran -c ../examples/capiTester.f90 -IobjFiles/
-gfortran -o flibrary libcorelib.a capiTester.o
+gfortran -o flibrary capiTester.o libcorelib.a
 ./flibrary
 
 #check whether python output from PyTorch model = roseNNa's output

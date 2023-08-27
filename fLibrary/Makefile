@@ -15,14 +15,6 @@ output: $(COMP) $(OBJ2)
 %.o: %.f90
 	$(FC) $(FFLAGS) -c $< -o $@
 
-
-#preprocess: modelParserONNX.py
-   	# arg1 = model structure file (.onnx format)
-   	# arg2 (optional) = weights file (.onnx format)
-	#python3 modelParserONNX.py -f $(args)
-
-   	#for *.mod and *.o files
-
 library: output
 	mkdir -p objFiles
 	ar crv libcorelib.a $(COMP) $(OBJ2)
