@@ -51,28 +51,30 @@ pip install torch onnx numpy fypp onnxruntime pandas
 ## Basic Example
 Here is a quick example of how **roseNNa** works. With just a few steps, you can see how to convert a basic feed-forward neural network originally built with PyTorch into usable, accurate code in Fortran.
 
-First `cd` into the `fLibrary/` directory.
+First, `cd` into the `fLibrary/` directory.
 
+Then, create PyTorch model and convert to ONNX:
 ``` bash
-#file to create pytorch model and convert to ONNX
 python3 ../goldenFiles/gemm_small/gemm_small.py
 ```
+
+Read and interpret the corresponding output files from the last step via
 ``` bash
-#read and interpret the correspoding output files from last step
 python3 modelParserONNX.py -w ../goldenFiles/gemm_small/gemm_small.onnx -f ../goldenFiles/gemm_small/gemm_small_weights.onnx
 ```
+and compile the library
 ``` bash
-#compile the library
 make library
 ```
+
+Compile the "source files" (`capiTester.f90`) and link to the library file created:
 ``` bash
-#compile "source files" (capiTester.f90), link to the library file created, and run
 gfortran -c ../examples/capiTester.f90 -IobjFiles/
 gfortran -o flibrary libcorelib.a capiTester.o
 ./flibrary
 ```
+and finally check if the output from PyTorch model matches roseNNa's output
 ``` bash
-#check whether python output from PyTorch model = roseNNa's output
 python3 ../test/testChecker.py gemm_small
 ```
 
