@@ -15,8 +15,10 @@
 
 RoseNNa is a fast, portable, and minimally-intrusive library for neural network inference.
 It can run inference on neural networks in [ONNX](https://onnx.ai/) format, which is universal and can be used with PyTorch, TensorFlow, Keras, and more.
-RoseNNa's intended use case is large Fortran- and C-based HPC codebases. 
-It currently supports RNNs, CNNs, and MLPs.
+__RoseNNa's intended use case is in Fortran- and C-based HPC codebases.__
+You simply compile RoseNNa and link it to your existing code, and then you can evaluate your neural network at Fortran/C speeds.
+
+RoseNNa currently supports RNNs, CNNs, and MLPs.
 The library is optimized Fortran and outperforms PyTorch (by a factor between 2 and 5x) for the relatively small neural networks used in physics applications, like CFD.
 It is described in detail in the following manuscript: <a href="http://arxiv.org/abs/2307.16322">A. Bati, S. H. Bryngelson (2024) Comp. Phys. Comm., 296, 109052.</a>.
 
