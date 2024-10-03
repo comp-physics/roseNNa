@@ -122,11 +122,11 @@ torch.onnx.export(model,               # model being run
 
 3. **Preprocess the model**
 
-    `fLibrary/` holds the library files that recreate and run inference on the model. Run `python modelParserONNX.py -f path/to/model/structure -w path/to/weights/file` to reconstruct the model.
+`fLibrary/` holds the library files that recreate and run inference on the model. Run `python modelParserONNX.py -f path/to/model/structure -w path/to/weights/file` to reconstruct the model.
 
 4. **Compiling the library**
 
-    Then, in the same `/fLibrary` directory, run `make library`. This compiles the library into `libcorelib.a`, which is required to link other `*.o` files with the library. This library file is now ready to be integrated into any Fortran/C workflow.
+Then, in the same `/fLibrary` directory, run `make library`. This compiles the library into `libcorelib.a`, which is required to link other `*.o` files with the library. This library file is now ready to be integrated into any Fortran/C workflow.
 
 ## Fortran use
 
@@ -140,8 +140,8 @@ gfortran -o flibrary path/to/libcorelib.a *.o
 
 ## C use
 
-One can call roseNNA from C painlessly. 
-Compile the library, then use the following C program as an example:
+One can readily call roseNNa from C. 
+Compile roseNNa, then use the following C program as an example:
 ```c
 void use_model(double * i0, double * o0);
 void initialize(char * model_file, char * weights_file);
