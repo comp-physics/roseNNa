@@ -47,7 +47,7 @@ jobs:
 
       - name: Sym Link
         run: |
-          ln -s /usr/local/bin/gfortran-14 /usr/local/bin/gfortran
+          ln -s /opt/homebrew/bin/gfortran-14 /usr/local/bin/gfortran
 
       - name: Checking F90 Version
         run: |
