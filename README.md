@@ -2,9 +2,6 @@
   <img src="doc/rosenna.png" alt="roseNNa banner" width="600"/></center>
 </p>
 <p align="center"> 
-<a href="https://github.com/comp-physics/roseNNa/actions">
-  <img src="https://github.com/comp-physics/roseNNa/actions/workflows/CI.yml/badge.svg" />
-</a>
 <a href="https://lbesson.mit-license.org/">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" />
 </a>
