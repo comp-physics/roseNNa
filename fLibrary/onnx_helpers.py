@@ -52,3 +52,21 @@ def spreadInfo(trueShape, toBeTransformedShape):
             ret.append(index + 1)
             ret.append(trueShape[index])
     return ret
+
+
+# ONNX stores LSTM gates as (input, output, forget, cell); roseNNa's
+# lstm_cell consumes PyTorch order (input, forget, gate/cell, output).
+ONNX_TO_ROSENNA_GATES = [0, 2, 3, 1]
+
+
+def regateLSTM(arr, axis=0):
+    """Reorder the 4 gate blocks of an ONNX LSTM W/R/B tensor along `axis`."""
+    n = arr.shape[axis]
+    if n % 4 != 0:
+        raise ValueError(f"LSTM gate axis {axis} has length {n}, not a multiple of 4")
+    h = n // 4
+    blocks = [
+        np.take(arr, range(g * h, (g + 1) * h), axis=axis)
+        for g in ONNX_TO_ROSENNA_GATES
+    ]
+    return np.concatenate(blocks, axis=axis)

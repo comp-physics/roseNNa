@@ -11,12 +11,13 @@ import sys
 from onnx_helpers import (
     stranspose, stringer, reshapeParser,
     fourDTransform, fakeFourD, spreadInfo,
+    regateLSTM,
 )
 
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--onnxfile',"-f", required=True, help="Please provide .onnx file of your pretrained model.")
-parser.add_argument('--weights',"-w", help="(Optional) Please provide .onnx file of your pretrained model without any optimizations (do_constant_folding = False).")
+parser.add_argument('--weights',"-w", help="(Deprecated, ignored) A second unoptimized .onnx export is no longer needed; weights are read by name from the file given to -f.")
 parser.add_argument('--inferred',"-i", help="(Optional) Please provide .onnx file that has inferred shapes")
 
 
@@ -29,13 +30,9 @@ inferred = args.inferred
 
 onnxModel = onnx.load(file)
 
-#lstm files require external weights file (unparsed onnx file, look up for details)
-externalWeightsFile = True
-try:
-    onnxModel_weights = onnx.load(weights)
-except:
-    onnxModel_weights = onnxModel
-    externalWeightsFile = False
+if weights is not None:
+    print("note: --weights/-w is no longer needed and is ignored; "
+          "weights are now read by name from the structure file.")
 
 #sometimes the inferred shapes is too big, so we need to store an external file of the precomputed inferred shapes
 try:
@@ -78,7 +75,12 @@ extra = "0"
 def findWeightsInitializer(input_name):
     if input_name in initializer:
         return initializer[input_name][1]
-    return constants[input_name]
+    if input_name in constants:
+        return constants[input_name]
+    raise KeyError(
+        f"no weights found for '{input_name}'; it is neither an initializer "
+        f"nor a Constant node output"
+    )
 
 
 #ONNX parser
@@ -90,13 +92,7 @@ def findWeightsInitializer(input_name):
 
 #modelArch => (layer_name, input_list[], parameters) to call respective subroutines in fypp
 print("starting to write weights..")
-# with open('onnxWeights.txt', 'w') as f2:
-#     for w in onnxModel_weights.graph.initializer:
-#         f2.write(stranspose(numpy_helper.to_array(w)))
-#         f2.write("\n")
 print("starting parsing...")
-true_index = 0
-true_weights = onnxModel_weights.graph.initializer
 for node in nodes:
     print(node.op_type)
 with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
@@ -139,24 +135,17 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             for inp in node.input[1:3]: #represents ONNX's locations of weights
                 for dim in initializer[inp][0]:
                     f.write(str(dim)+" ")
-                if externalWeightsFile:
-                    f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
-                    true_index+=1
-                else:
-                    f2.write(stranspose(findWeightsInitializer(inp)))
+                f2.write(stranspose(regateLSTM(findWeightsInitializer(inp), axis=1)))
                 f2.write("\n")
                 f.write("\n")
             #check if bias exists
-            if not externalWeightsFile:
-                split = np.split(findWeightsInitializer(node.input[3]),2,axis=1)
-            for x in range(2):
+            # ONNX packs Wb and Rb into one (num_directions, 8*hidden) tensor;
+            # split into the two halves first, then regate each half.
+            wb, rb = np.split(findWeightsInitializer(node.input[3]), 2, axis=1)
+            for half in (wb, rb):
                 f.write(str(int(initializer[node.input[3]][0][1]/2)))
                 f.write("\n")
-                if externalWeightsFile:
-                    f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
-                    true_index+=1
-                else:
-                    f2.write(stranspose(split[x]))
+                f2.write(stranspose(regateLSTM(half, axis=1)))
                 f2.write("\n")
             if writeHCs:
                 inpShape = intermediateShapes[node.input[0]]
@@ -207,11 +196,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                     numzs = initializer[inp][0][0]
                     for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
-                    if externalWeightsFile:
-                        f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
-                        true_index+=1
-                    else:
-                        f2.write(stranspose(findWeightsInitializer(inp)))
+                    f2.write(stranspose(findWeightsInitializer(inp)))
                     f2.write("\n")
                     f.write("\n")
                 f.write(str(numzs))
@@ -222,11 +207,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 for inp in node.input[1:3]:
                     for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
-                    if externalWeightsFile:
-                        f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
-                        true_index+=1
-                    else:
-                        f2.write(stranspose(findWeightsInitializer(inp)))
+                    f2.write(stranspose(findWeightsInitializer(inp)))
                     f2.write("\n")
                     f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
@@ -316,11 +297,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                     numzs = initializer[inp][0][0]
                     for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
-                    if externalWeightsFile:
-                        f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
-                        true_index+=1
-                    else:
-                        f2.write(stranspose(findWeightsInitializer(inp)))
+                    f2.write(stranspose(findWeightsInitializer(inp)))
                     f2.write("\n")
                     f.write("\n")
                 f.write(str(numzs))
@@ -331,11 +308,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 for inp in node.input[1:3]:
                     for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
-                    if externalWeightsFile:
-                        f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
-                        true_index+=1
-                    else:
-                        f2.write(stranspose(findWeightsInitializer(inp)))
+                    f2.write(stranspose(findWeightsInitializer(inp)))
                     f2.write("\n")
                     f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
@@ -402,11 +375,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             for dim in fourd:
                 f.write(str(dim) + " ")
             f.write("\n")
-            if externalWeightsFile:
-                f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
-                true_index+=1
-            else:
-                f2.write(stranspose(findWeightsInitializer(node.input[1])))
+            f2.write(stranspose(findWeightsInitializer(node.input[1])))
             f2.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
@@ -426,11 +395,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                     numzs = initializer[inp][0][0]
                     for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
-                    if externalWeightsFile:
-                        f2.write(stranspose(numpy_helper.to_array(true_weights[true_index])))
-                        true_index+=1
-                    else:
-                        f2.write(stranspose(findWeightsInitializer(inp)))
+                    f2.write(stranspose(findWeightsInitializer(inp)))
                     f2.write("\n")
                     f.write("\n")
                 f.write(str(numzs))

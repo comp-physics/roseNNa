@@ -63,7 +63,7 @@ python ../goldenFiles/gemm_small/gemm_small.py
 
 Read and interpret the corresponding output files from the last step via
 ``` bash
-python modelParserONNX.py -w ../goldenFiles/gemm_small/gemm_small.onnx -f ../goldenFiles/gemm_small/gemm_small_weights.onnx
+python modelParserONNX.py -f ../goldenFiles/gemm_small/gemm_small.onnx
 ```
 and compile the library
 ``` bash
@@ -94,10 +94,15 @@ python ../test/testChecker.py gemm_small
 
     **Converting an LSTM?**
 
-    One important thing to note is sometimes ONNX enables optimizations that will change how the weights are stored internally (this will happen specifically for LSTMs). When converting from any library to ONNX, one should load 2 files: one with optimization and one without. This may or may not apply to all library to ONNX conversions, but here is an example using PyTorch (one with `do_constant_folding=True` and another with `do_constant_folding=False`.
+    ONNX's constant folding renames an LSTM's weight initializers and stores the
+    four gates in ONNX's `iofc` order, while roseNNa's `lstm_cell` consumes
+    PyTorch's `ifgo` order. The parser now remaps the gates internally and looks
+    every weight up by name, so a single `do_constant_folding=True` export is all
+    that is needed. Earlier versions required a second, unoptimized
+    (`do_constant_folding=False`) export passed via `-w`; that flag is now
+    accepted but ignored.
 
 ```python
-#MODEL STRUCTURE FILE
 torch.onnx.export(model,               # model being run
                   (inp, hidden),                         # model input (or a tuple for multiple inputs)
                   filePath+"lstm_gemm.onnx",   # where to save the model (can be a file or file-like object)
@@ -107,22 +112,11 @@ torch.onnx.export(model,               # model being run
                   input_names = ['input', 'hidden_state','cell_state'],   # the model's input names
                   output_names = ['output'], # the model's output names
                   )
-
-#MODEL WEIGHTS FILE
-torch.onnx.export(model,               # model being run
-                  (inp, hidden),                         # model input (or a tuple for multiple inputs)
-                  filePath+"lstm_gemm_weights.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True,        # store the trained parameter weights inside the model file
-                  opset_version=12,          # the ONNX version to export the model to
-                  do_constant_folding=False,  # whether to execute constant folding for optimization
-                  input_names = ['input', 'hidden_state','cell_state'],   # the model's input names
-                  output_names = ['output'], # the model's output names
-                  )
 ```
 
 3. **Preprocess the model**
 
-`fLibrary/` holds the library files that recreate and run inference on the model. Run `python modelParserONNX.py -f path/to/model/structure -w path/to/weights/file` to reconstruct the model.
+`fLibrary/` holds the library files that recreate and run inference on the model. Run `python modelParserONNX.py -f path/to/model.onnx` to reconstruct the model.
 
 4. **Compiling the library**
 
