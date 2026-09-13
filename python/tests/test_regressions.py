@@ -262,6 +262,32 @@ def test_truncated_weights_file_returns_a_status(tmp_path, golden_model, lang):
 
 # --- item 10 / verification 3: generated code must compile warning-free ----
 
+# A diagnostic about the generated source carries a <file>:<line>: location.
+# A driver-level notice instead names the tool as its "location" -- for
+# example Apple clang on the macOS CI runner prints, on every invocation and
+# whatever the source,
+#   clang: warning: overriding deployment version from '16.0' to '26.0' [-Woverriding-deployment-version]
+# which is about the SDK versus the deployment target and nothing to do with
+# our C (ruling R21). gfortran's own multi-line diagnostics keep their
+# `<file>:<line>:<col>:` header and a bare `Warning: ...` line, neither of
+# which this pattern matches, so they survive.
+_DRIVER_NOTICE = re.compile(r"^[^\s:]+: (warning|note): ")
+
+
+def _source_diagnostics(stderr: str):
+    """Split compiler stderr into (about the source, driver-level noise)."""
+    kept, dropped = [], []
+    for line in stderr.splitlines():
+        (dropped if _DRIVER_NOTICE.match(line) else kept).append(line)
+    return "\n".join(kept).strip(), "\n".join(dropped).strip()
+
+
+def _assert_warning_free(lang: str, stderr: str) -> None:
+    kept, dropped = _source_diagnostics(stderr)
+    assert kept == "", (f"{lang}: diagnostics about the generated source:\n{kept}\n"
+                        f"(driver-level notices ignored: {dropped or 'none'})")
+
+
 def _compile_warnings(tmp_path, onnx_path, name, dtype="f64"):
     plan = build_plan(load_graph(onnx_path), dtype=dtype)
     work = tmp_path / f"{name}_{dtype}"
@@ -283,16 +309,40 @@ def _compile_warnings(tmp_path, onnx_path, name, dtype="f64"):
 def test_weight_free_model_compiles_without_warnings(tmp_path):
     path = _relu_only_model(tmp_path)
     f_err, c_err = _compile_warnings(tmp_path, path, "relunan")
-    assert f_err == "", f_err
-    assert c_err == "", c_err
+    _assert_warning_free("gfortran", f_err)
+    _assert_warning_free("gcc", c_err)
 
 
 @pytest.mark.parametrize("name", DENSE)
 @pytest.mark.parametrize("dtype", ["f32", "f64"])
 def test_dense_models_compile_without_warnings(tmp_path, golden_model, name, dtype):
     f_err, c_err = _compile_warnings(tmp_path, golden_model(name), name, dtype=dtype)
-    assert f_err == "", f_err
-    assert c_err == "", c_err
+    _assert_warning_free("gfortran", f_err)
+    _assert_warning_free("gcc", c_err)
+
+
+def test_source_diagnostics_filter_keeps_real_warnings_and_drops_driver_noise():
+    clang_noise = ("clang: warning: overriding deployment version from '16.0' to '26.0' "
+                   "[-Woverriding-deployment-version]")
+    c_warning = "foo.c:3:5: warning: unused variable 'x' [-Wunused-variable]"
+    kept, dropped = _source_diagnostics(clang_noise + "\n" + c_warning + "\n")
+    assert kept == c_warning
+    assert dropped == clang_noise
+
+    # gfortran's multi-line form: the located header and the bare Warning line
+    # both survive, so a real Fortran warning still fails the assertion.
+    gfortran_warning = ("m.f90:65:23:\n\n   65 |         integer :: i, j\n"
+                        "      |                       1\n"
+                        "Warning: Unused variable 'j' declared at (1) [-Wunused-variable]\n")
+    kept, dropped = _source_diagnostics(clang_noise + "\n" + gfortran_warning)
+    assert "Warning: Unused variable 'j'" in kept and "m.f90:65:23:" in kept
+    assert dropped == clang_noise
+
+    # Only the noise: nothing about the source remains.
+    assert _source_diagnostics(clang_noise + "\n") == ("", clang_noise)
+    with pytest.raises(AssertionError, match=r"(?s)unused variable 'x'.*ignored: clang"):
+        _assert_warning_free("gcc", clang_noise + "\n" + c_warning + "\n")
+    _assert_warning_free("gcc", clang_noise + "\n")
 
 
 # --- ruling R20: generated Fortran must respect the 132-column free-form limit
