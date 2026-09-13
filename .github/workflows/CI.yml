@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Every branch: the original workflow ran on all pushes (it filtered by path,
+  # not by branch), and a feature branch with no CI is how the maxpool bug
+  # survived unnoticed.
   push:
-    branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
   workflow_dispatch:
