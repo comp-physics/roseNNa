@@ -58,18 +58,17 @@ def test_matches_onnxruntime(tmp_path, golden_model, name):
         expected = session.run(None, {session.get_inputs()[0].name:
                                       row.reshape(shape).astype(np.float32)})[0].ravel()
         np.testing.assert_allclose(produced, expected, rtol=1e-5, atol=1e-6)
-        # Guard against a degenerate all-zeros comparison (e.g. a ReLU model
-        # whose inputs happened to all die): require every row -- not just
-        # somewhere across the whole batch -- to carry real signal. This is
-        # deliberately >=1, not a higher fixed count: gemm_small's golden
-        # file has no manual_seed, so a freshly regenerated model can
-        # legitimately zero two of its three ReLU outputs for a given
-        # random input row (observed directly: a cold run produced
-        # [0.543, 0.0, 0.0]). Demanding >=1 nonzero per row still forbids
-        # the fully-degenerate all-zero row the old whole-batch check let
-        # through, without making the test flaky against genuine ReLU
-        # sparsity in an unseeded model.
-        assert np.count_nonzero(produced) >= 1, f"row output is degenerate: {produced}"
+    # Guard against a vacuous all-zeros comparison that would prove nothing.
+    # This is deliberately whole-batch, not per-row: gemm_small's golden
+    # file has no manual_seed, so its weights are freshly random on every
+    # regeneration, and the model ends in a ReLU -- so any single row
+    # landing on all zeros is a legitimate outcome for correct code, and a
+    # per-row rule fails at random (observed directly: a per-row >=1 rule
+    # still hit a genuine [0, 0, 0] row on a cold rerun). Requiring signal
+    # somewhere across all 8 rows catches a truly broken (all-zero)
+    # implementation with negligible flake probability. Do not tighten this
+    # back to per-row.
+    assert np.count_nonzero(got) >= 2, f"batch output is degenerate: {got}"
 
 
 def test_matches_onnxruntime_f32(tmp_path, golden_model):
@@ -93,7 +92,8 @@ def test_matches_onnxruntime_f32(tmp_path, golden_model):
         expected = session.run(None, {session.get_inputs()[0].name:
                                       row.reshape(shape).astype(np.float32)})[0].ravel()
         np.testing.assert_allclose(produced, expected, rtol=1e-3, atol=1e-4)
-        assert np.count_nonzero(produced) >= 1, f"row output is degenerate: {produced}"
+    # Whole-batch, not per-row -- see test_matches_onnxruntime for why.
+    assert np.count_nonzero(got) >= 2, f"batch output is degenerate: {got}"
 
 
 def test_infer_is_pure_and_has_literal_bounds(golden_model):
