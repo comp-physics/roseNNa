@@ -12,6 +12,7 @@ from onnx_helpers import (
     fourDTransform, fakeFourD, spreadInfo,
     regateLSTM, sanitize,
     checkSupported, checkPadIsNoop,
+    checkLSTMSupported, checkGemmBias,
 )
 
 parser = argparse.ArgumentParser()
@@ -119,6 +120,18 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "LSTM": #changes shape
+            # reject attributes that lstm_cell does not implement; absent ones take the ONNX defaults
+            lstmAttrs = {}
+            for attr in node.attribute:
+                if attr.name == "direction":
+                    lstmAttrs["direction"] = attr.s.decode("ASCII")
+                elif attr.name == "activations":
+                    lstmAttrs["activations"] = [a.decode("ASCII") for a in attr.strings]
+                elif attr.name == "clip":
+                    lstmAttrs["clip"] = attr.f
+                elif attr.name in ("input_forget", "layout"):
+                    lstmAttrs[attr.name] = attr.i
+            checkLSTMSupported(lstmAttrs)
             f.write(layer)
             f.write("\n")
             writeHCs = False
@@ -180,6 +193,9 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
                 extra = str(int(extra)+1)
 
         elif layer == "Gemm":
+            if len(node.input) >= 3:
+                # read_linear reads a rank-1 bias; check before anything is written
+                checkGemmBias(np.shape(findWeightsInitializer(node.input[2])))
             f.write(layer)
             f.write("\n")
             #only need default for node.attribute[2].i for transInput/B=0

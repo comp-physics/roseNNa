@@ -155,6 +155,56 @@ def test_pad_is_rejected_unless_identity():
     check(not raises(lambda: H.checkPadIsNoop([0]*8)),
           "accepts an all-zero Pad node")
 
+def _raises(fn):
+    try:
+        fn()
+    except NotImplementedError:
+        return True
+    return False
+
+def test_same_padding_requires_unit_stride():
+    # SAME padding is computed as kernel-1, which is only right for stride 1
+    for op in ("Conv", "MaxPool"):
+        for mode in ("SAME_UPPER", "SAME_LOWER"):
+            check(_raises(lambda: H.checkSupported(op, {"kernel_shape": [3, 3], "pads": [1]*4, "strides": [2, 2], "auto_pad": mode})),
+                  f"rejects {op} auto_pad={mode} with strides [2, 2]")
+        check(_raises(lambda: H.checkSupported(op, {"kernel_shape": [3, 3], "pads": [1]*4, "strides": [1, 2], "auto_pad": "SAME_UPPER"})),
+              f"rejects {op} auto_pad=SAME_UPPER with strides [1, 2]")
+        check(not _raises(lambda: H.checkSupported(op, {"kernel_shape": [3, 3], "pads": [1]*4, "strides": [1, 1], "auto_pad": "SAME_UPPER"})),
+              f"accepts {op} auto_pad=SAME_UPPER with strides [1, 1]")
+        check(not _raises(lambda: H.checkSupported(op, {"kernel_shape": [3, 3], "pads": [0]*4, "strides": [2, 2], "auto_pad": "NOTSET"})),
+              f"accepts {op} explicit auto_pad=NOTSET with strides [2, 2]")
+        check(not _raises(lambda: H.checkSupported(op, {"kernel_shape": [3, 3], "pads": [0]*4, "strides": [2, 2], "auto_pad": "VALID"})),
+              f"accepts {op} auto_pad=VALID with strides [2, 2]")
+
+def test_lstm_rejects_unimplemented_attrs():
+    check(_raises(lambda: H.checkLSTMSupported({"direction": "bidirectional"})),
+          "rejects LSTM direction=bidirectional")
+    check(_raises(lambda: H.checkLSTMSupported({"direction": "reverse"})),
+          "rejects LSTM direction=reverse")
+    check(_raises(lambda: H.checkLSTMSupported({"activations": ["Relu", "Tanh", "Tanh"]})),
+          "rejects LSTM non-default activations")
+    check(_raises(lambda: H.checkLSTMSupported({"clip": 3.0})),
+          "rejects LSTM clip")
+    check(_raises(lambda: H.checkLSTMSupported({"input_forget": 1})),
+          "rejects LSTM input_forget=1")
+    check(_raises(lambda: H.checkLSTMSupported({"layout": 1})),
+          "rejects LSTM layout=1")
+    check(not _raises(lambda: H.checkLSTMSupported({})),
+          "accepts LSTM with every attribute absent (what PyTorch exports)")
+    check(not _raises(lambda: H.checkLSTMSupported({"direction": "forward", "activations": ["Sigmoid", "Tanh", "Tanh"], "input_forget": 0, "layout": 0})),
+          "accepts LSTM with the explicit defaults")
+    check(not _raises(lambda: H.checkLSTMSupported({"activations": ["sigmoid", "TANH", "tanh"]})),
+          "accepts LSTM default activations in any letter case")
+
+def test_gemm_bias_must_be_rank_one():
+    check(_raises(lambda: H.checkGemmBias((1, 4))),
+          "rejects a Gemm bias of shape (1, 4)")
+    check(_raises(lambda: H.checkGemmBias(())),
+          "rejects a scalar Gemm bias")
+    check(not _raises(lambda: H.checkGemmBias((4,))),
+          "accepts a rank-1 Gemm bias")
+
 if __name__ == "__main__":
     test_stranspose_is_column_major()
     test_stringer()
@@ -167,5 +217,8 @@ if __name__ == "__main__":
     test_check_supported_rejects_unimplemented_attrs()
     test_check_supported_required_kernel_and_pooling_padding()
     test_pad_is_rejected_unless_identity()
+    test_same_padding_requires_unit_stride()
+    test_lstm_rejects_unimplemented_attrs()
+    test_gemm_bias_must_be_rank_one()
     print(f"PARSER TESTS: {len(failures)} failure(s)")
     sys.exit(1 if failures else 0)

@@ -124,6 +124,14 @@ def checkSupported(op, attrs):
             f"Conv: group={attrs.get('group')} (grouped or depthwise convolution) "
             f"is not supported by roseNNa")
 
+    auto_pad = attrs.get("auto_pad", "NOTSET")
+    strides = list(attrs.get("strides", [1, 1]))
+    if op in ("Conv", "MaxPool") and auto_pad in ("SAME_UPPER", "SAME_LOWER") \
+            and any(int(s) != 1 for s in strides):
+        raise NotImplementedError(
+            f"{op}: auto_pad={auto_pad} with strides={strides} is not supported by "
+            f"roseNNa, which computes SAME padding as kernel-1 (correct only for stride 1)")
+
     if op == "AveragePool" and attrs.get("auto_pad", "NOTSET") not in ("NOTSET", "VALID"):
         raise NotImplementedError(
             f"AveragePool: auto_pad={attrs.get('auto_pad')} is not supported by roseNNa")
@@ -162,3 +170,49 @@ def checkPadIsNoop(pads):
     pads = list(pads)
     if any(p != 0 for p in pads):
         raise NotImplementedError(f"Pad: pads={pads} is not supported by roseNNa")
+
+
+def checkLSTMSupported(attrs):
+    """Raise NotImplementedError for LSTM attributes roseNNa does not implement.
+
+    `attrs` maps attribute names to decoded values; absent attributes take the
+    ONNX defaults. roseNNa computes one forward direction with the default
+    Sigmoid/Tanh/Tanh activations, no clipping, uncoupled gates, and the
+    sequence-first layout.
+    """
+    direction = attrs.get("direction", "forward")
+    if direction != "forward":
+        raise NotImplementedError(
+            f"LSTM: direction={direction} is not supported by roseNNa; "
+            f"only one forward direction is computed")
+
+    activations = attrs.get("activations")
+    if activations is not None and [a.lower() for a in activations] != ["sigmoid", "tanh", "tanh"]:
+        raise NotImplementedError(
+            f"LSTM: activations={list(activations)} is not supported by roseNNa; "
+            f"only the default Sigmoid, Tanh, Tanh is implemented")
+
+    if attrs.get("clip") is not None:
+        raise NotImplementedError(
+            f"LSTM: clip={attrs.get('clip')} is not supported by roseNNa")
+
+    if int(attrs.get("input_forget", 0)) != 0:
+        raise NotImplementedError(
+            f"LSTM: input_forget={attrs.get('input_forget')} is not supported by roseNNa")
+
+    if int(attrs.get("layout", 0)) != 0:
+        raise NotImplementedError(
+            f"LSTM: layout={attrs.get('layout')} (batch-first) is not supported by roseNNa")
+
+
+def checkGemmBias(shape):
+    """Raise NotImplementedError unless a Gemm bias C is rank 1.
+
+    reader.f90 reads a Gemm bias with a single dimension, so any other rank
+    would desynchronise the model file.
+    """
+    shape = list(shape)
+    if len(shape) != 1:
+        raise NotImplementedError(
+            f"Gemm: bias C of shape {shape} (rank {len(shape)}) is not supported by "
+            f"roseNNa; only a rank-1 bias is")
