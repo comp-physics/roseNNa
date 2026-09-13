@@ -3,6 +3,7 @@ module reader
     USE derived_types
     USE activation_functions
     use iso_c_binding
+    use iso_fortran_env, only: error_unit
 
     implicit none
 
@@ -35,9 +36,34 @@ module reader
 
     contains
 
-    subroutine initialize() bind(c,name="initialize") !add arguments for location of onnxModel.txt and onnxWeights.txt
-        INTEGER :: Reason
-        CHARACTER(len = 10), ALLOCATABLE, DIMENSION(:) :: name
+    function c_to_f_string(s) result(str)
+        character(kind=c_char, len=1), intent(in) :: s(*)
+        character(len=:), allocatable :: str
+        integer :: i, n
+        n = 0
+        do
+            if (s(n+1) == c_null_char) exit
+            n = n + 1
+            if (n > 4096) exit
+        end do
+        allocate(character(len=n) :: str)
+        do i = 1, n
+            str(i:i) = s(i)
+        end do
+    end function
+
+    subroutine initialize(model_file, weights_file) bind(c,name="initialize")
+        character(kind=c_char, len=1), intent(in), optional :: model_file(*)
+        character(kind=c_char, len=1), intent(in), optional :: weights_file(*)
+        INTEGER :: Reason, ios
+        INTEGER :: modelUnit, weightsUnit
+        character(len=:), allocatable :: mpath, wpath
+
+        mpath = "onnxModel.txt"
+        wpath = "onnxWeights.txt"
+        if (present(model_file))   mpath = c_to_f_string(model_file)
+        if (present(weights_file)) wpath = c_to_f_string(weights_file)
+
         ALLOCATE(lstmLayers(0))
         ALLOCATE(linLayers(0))
         ALLOCATE(convLayers(0))
@@ -46,39 +72,51 @@ module reader
         ALLOCATE(addLayers(0))
         ALLOCATE(reshapeLayers(0))
 
-        open(10, file = "onnxModel.txt")
-        open(11, file = "onnxWeights.txt")
+        open(newunit=modelUnit, file=mpath, status='old', action='read', iostat=ios)
+        if (ios /= 0) then
+            write(error_unit,'(a)') "roseNNa: cannot open model file '"//mpath//"'"
+            error stop 1
+        end if
+        open(newunit=weightsUnit, file=wpath, status='old', action='read', iostat=ios)
+        if (ios /= 0) then
+            write(error_unit,'(a)') "roseNNa: cannot open weights file '"//wpath//"'"
+            error stop 1
+        end if
 
-        read(10, *) numLayers
+        read(modelUnit, *, iostat=ios) numLayers
+        if (ios /= 0) then
+            write(error_unit,'(a)') "roseNNa: '"//mpath//"' is empty or malformed"
+            error stop 1
+        end if
 
         readloop: DO i = 1, numLayers
-            read(10, *, IOSTAT=Reason) layerName
+            read(modelUnit, *, IOSTAT=Reason) layerName
             if (Reason < 0) then
                 exit readloop
             end if
             if (layerName .eq.  "LSTM") then
-                read(10,*) readOrNot
-                CALL read_lstm(10, 11, readOrNot)
+                read(modelUnit,*) readOrNot
+                CALL read_lstm(modelUnit, weightsUnit, readOrNot)
             else if (layerName .eq. "Gemm") then
-                CALL read_linear(10, 11)
+                CALL read_linear(modelUnit, weightsUnit)
             else if (layerName .eq. "Conv") then
-                CALL read_conv(10, 11)
+                CALL read_conv(modelUnit, weightsUnit)
             else if (layerName .eq. "MaxPool") then
-                CALL read_maxpool(10, 11)
+                CALL read_maxpool(modelUnit, weightsUnit)
             else if (layerName .eq. "AveragePool") then
-                CALL read_avgpool(10, 11)
+                CALL read_avgpool(modelUnit, weightsUnit)
             else if (layerName .eq. "Add") then
-                CALL read_add(10, 11)
+                CALL read_add(modelUnit, weightsUnit)
             else if (layerName .eq. "MatMul") then
                 cycle
             else if (layerName .eq. "Reshape") then
-                read(10, *) readOrNot
+                read(modelUnit, *) readOrNot
                 if (readOrNot .eq. 2) then
-                    CALL read_reshape2d(10, 11)
+                    CALL read_reshape2d(modelUnit, weightsUnit)
                 else if (readOrNot .eq. 3) then
-                    CALL read_reshape3d(10, 11)
+                    CALL read_reshape3d(modelUnit, weightsUnit)
                 else if (readOrNot .eq. 4) then
-                    CALL read_reshape4d(10, 11)
+                    CALL read_reshape4d(modelUnit, weightsUnit)
                 endif
             else if (layerName .eq. "Transpose") then
                 cycle
@@ -96,6 +134,8 @@ module reader
 
         END DO readloop
 
+        close(modelUnit)
+        close(weightsUnit)
     end subroutine
 
     subroutine read_reshape2d(file1, file2)

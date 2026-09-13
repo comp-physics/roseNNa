@@ -151,6 +151,8 @@ gfortran -o flibrary path/to/libcorelib.a *.o
 ./flibrary
 ```
 
+**Memory layout.** `use_model` expects inputs in Fortran (column-major) order. A C caller with a row-major array must transpose it first; a Fortran caller building an array from a row-major literal should use `RESHAPE(..., order=[2,1])`, as `examples/capiTester.f90` does.
+
 ## C use
 
 One can readily call roseNNa from C. 
