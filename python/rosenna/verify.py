@@ -150,6 +150,25 @@ int main(void) {{
 """
 
 
+def _run(step: str, backend: str, args: list, **kwargs) -> subprocess.CompletedProcess:
+    """Run a subprocess step, turning a failure into a VerificationError with full context.
+
+    A raw CalledProcessError reaches the user as an opaque Python traceback, with the
+    compiler's own diagnostic buried inside `.stderr` where nothing prints it. For a
+    command whose entire job is compiling and running generated code against a user's
+    own model, that diagnostic -- not a traceback -- is the useful thing on screen. Wrap
+    the call here, where the step name and backend are known, so `verify_model`'s caller
+    (`cli.main`) can report it the same way as `UnsupportedModel`: `rosenna: <message>`,
+    non-zero exit, no traceback.
+    """
+    try:
+        return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
+    except subprocess.CalledProcessError as e:
+        raise VerificationError(
+            f"{backend}: {step} failed running `{' '.join(args)}` "
+            f"(exit {e.returncode}):\n{e.stderr}") from e
+
+
 def _run_backend(backend: str, plan, workdir: Path, inputs):
     name = plan.model
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
@@ -157,23 +176,22 @@ def _run_backend(backend: str, plan, workdir: Path, inputs):
     if backend == "fortran":
         (workdir / f"{name}_model.f90").write_text(emit_fortran(plan))
         (workdir / "verify_main.f90").write_text(_fortran_driver(name, n_in, n_out, dtype))
-        subprocess.run(
-            ["gfortran", "-O2", "-Wall", "-Wextra", "-o", "verify_run",
-             f"{name}_model.f90", "verify_main.f90"],
-            cwd=workdir, check=True, capture_output=True, text=True)
+        _run("compile/link", backend,
+             ["gfortran", "-O2", "-Wall", "-Wextra", "-o", "verify_run",
+              f"{name}_model.f90", "verify_main.f90"],
+             cwd=workdir)
     elif backend == "c":
         source, header = emit_c(plan)
         (workdir / f"{name}.c").write_text(source)
         (workdir / f"{name}.h").write_text(header)
         (workdir / "verify_main.c").write_text(_c_driver(name, n_in, n_out, dtype))
-        subprocess.run(
-            ["gcc", "-O2", "-Wall", "-Wextra", "-std=c11", "-o", "verify_run",
-             f"{name}.c", "verify_main.c", "-lm"],
-            cwd=workdir, check=True, capture_output=True, text=True)
+        _run("compile/link", backend,
+             ["gcc", "-O2", "-Wall", "-Wextra", "-std=c11", "-o", "verify_run",
+              f"{name}.c", "verify_main.c", "-lm"],
+             cwd=workdir)
     else:
         raise ValueError(f"unknown backend {backend!r}")
 
     stdin = f"{len(inputs)}\n" + "\n".join(" ".join(repr(float(v)) for v in row) for row in inputs)
-    out = subprocess.run(["./verify_run"], cwd=workdir, input=stdin,
-                         capture_output=True, text=True, check=True).stdout
+    out = _run("run", backend, ["./verify_run"], cwd=workdir, input=stdin).stdout
     return np.array([[float(v) for v in line.split()] for line in out.strip().splitlines()])
