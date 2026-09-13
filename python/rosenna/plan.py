@@ -1,6 +1,7 @@
 """Lower a validated graph into an explicit plan: ops, buffers, weight layout."""
 import hashlib
 import json
+import re
 from dataclasses import dataclass, asdict
 
 import numpy as np
@@ -10,6 +11,23 @@ from .validate import validate
 
 _ACTIVATIONS = {"Relu": "relu", "Tanh": "tanh", "Sigmoid": "sigmoid"}
 _ITEMSIZE = {"f32": 4, "f64": 8}
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def validate_model_name(name: str) -> None:
+    """Reject a model name that cannot be interpolated into a Fortran/C identifier.
+
+    The name reaches the emitters inside `module <name>_model`, `#ifndef
+    ROSENNA_<NAME>_H` and every public function name, and it defaults to the
+    ONNX file stem -- which routinely carries dots and hyphens
+    (`my-model.v2.onnx`). Catching it here turns a gfortran syntax error on
+    generated code into one sentence naming the remedy.
+    """
+    if not _IDENTIFIER.match(name):
+        raise UnsupportedModel(
+            f"model name '{name}' is not a valid Fortran/C identifier; it is interpolated "
+            f"into module and function names, so it must match [A-Za-z_][A-Za-z0-9_]* -- "
+            f"pass --name with a usable name")
 
 
 @dataclass(frozen=True)

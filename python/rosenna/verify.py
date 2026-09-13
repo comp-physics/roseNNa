@@ -9,10 +9,11 @@ import onnxruntime as ort
 from .emit_c import emit_c
 from .emit_fortran import emit_fortran
 from .frontend import load_graph
-from .plan import build_plan
+from .plan import build_plan, validate_model_name
 from .weights import write_weights
 
 _TOL = {"f32": (1e-5, 1e-6), "f64": (1e-9, 1e-12)}
+_NUMPY = {"f32": np.float32, "f64": np.float64}
 _SEED = 0
 _MAX_ATTEMPTS = 10
 
@@ -56,15 +57,20 @@ def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir) 
     workdir = Path(workdir)
     graph = load_graph(model_path)
     plan = build_plan(graph, dtype=dtype)
+    validate_model_name(plan.model)
+
+    # Model's own dtype, read before --precision is applied: this is what onnxruntime
+    # actually computes the reference in, regardless of what precision we generate.
+    # It also fixes the element type onnxruntime will accept in the input feed: a
+    # genuine float64 model rejects a float32 array outright, so the drawn inputs are
+    # cast to the model's dtype rather than unconditionally to float32.
+    model_dtype = graph.values[graph.inputs[0]].dtype
 
     session = ort.InferenceSession(str(model_path))
     shape = session.get_inputs()[0].shape
-    inputs, expected = _live_inputs(session, shape, cases, model_path)
+    inputs, expected = _live_inputs(session, shape, cases, model_path, _NUMPY[model_dtype])
 
     backends = ["fortran", "c"] if lang == "both" else [lang]
-    # Model's own dtype, read before --precision is applied: this is what onnxruntime
-    # actually computes the reference in, regardless of what precision we generate.
-    model_dtype = graph.values[graph.inputs[0]].dtype
     rtol, atol = _TOL[model_dtype]
     results = []
     for backend in backends:
@@ -80,7 +86,7 @@ def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir) 
     return results
 
 
-def _live_inputs(session, shape, cases: int, model_path):
+def _live_inputs(session, shape, cases: int, model_path, np_dtype):
     """Resample input batches (fixed seed) until the onnxruntime reference is alive.
 
     See verify_model's docstring: a dead reference is a property of the model's own
@@ -91,9 +97,9 @@ def _live_inputs(session, shape, cases: int, model_path):
     n = int(np.prod(shape))
     for attempt in range(_MAX_ATTEMPTS):
         rng = np.random.default_rng(_SEED + attempt)
-        inputs = rng.uniform(-2, 2, (cases, n)).astype(np.float32)
+        inputs = rng.uniform(-2, 2, (cases, n)).astype(np_dtype)
         expected = np.array([
-            session.run(None, {input_name: row.reshape(shape).astype(np.float32)})[0].ravel()
+            session.run(None, {input_name: row.reshape(shape).astype(np_dtype)})[0].ravel()
             for row in inputs
         ])
         if np.count_nonzero(expected) >= 2:
@@ -167,6 +173,13 @@ def _run(step: str, backend: str, args: list, **kwargs) -> subprocess.CompletedP
         raise VerificationError(
             f"{backend}: {step} failed running `{' '.join(args)}` "
             f"(exit {e.returncode}):\n{e.stderr}") from e
+    except FileNotFoundError as e:
+        # A compiler that is simply not installed, or not on PATH, is the most
+        # common first-run failure of all; without this arm it escapes as a
+        # traceback naming a file the user never asked about.
+        raise VerificationError(
+            f"{backend}: {step} could not run `{args[0]}`: {e.strerror}. "
+            f"Is it installed and on PATH?") from e
 
 
 def _run_backend(backend: str, plan, workdir: Path, inputs):

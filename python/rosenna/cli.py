@@ -4,10 +4,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+from google.protobuf.message import DecodeError
+
 from .emit_c import emit_c
 from .emit_fortran import emit_fortran
 from .frontend import UnsupportedModel, load_graph
-from .plan import build_plan
+from .plan import build_plan, validate_model_name
 from .verify import VerificationError, verify_model
 from .weights import write_weights
 
@@ -60,6 +62,7 @@ def _describe_ops(graph) -> list:
 def _cmd_generate(args) -> int:
     graph = load_graph(args.model, name=args.name)
     plan = build_plan(graph, dtype=_dtype_from_precision(args.precision))
+    validate_model_name(plan.model)
     outdir = Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)
     name = plan.model
@@ -126,5 +129,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"rosenna: {e}", file=sys.stderr)
         return 1
     except VerificationError as e:
+        print(f"rosenna: {e}", file=sys.stderr)
+        return 1
+    except (OSError, DecodeError) as e:
+        # A mistyped path (FileNotFoundError, an OSError) and a file that is not
+        # a protobuf at all (DecodeError) are first-run mistakes, not bugs; they
+        # belong on stderr as one sentence, not as a traceback.
         print(f"rosenna: {e}", file=sys.stderr)
         return 1
