@@ -10,7 +10,7 @@ import sys
 from onnx_helpers import (
     stranspose, reshapeParser,
     fourDTransform, fakeFourD, spreadInfo,
-    regateLSTM,
+    regateLSTM, sanitize,
 )
 
 parser = argparse.ArgumentParser()
@@ -49,7 +49,7 @@ inputs = [] #general inputs to the model (including intermediary stuff needed fo
 input_shapes = {} #shapes of inputs
 constants = {} #constants and initalizer weights are the places where weights of the model could be stored
 for inp in onnxModel.graph.input:
-    ioMap[inp.name] = inp.name
+    ioMap[inp.name] = sanitize(inp.name)
     input_shapes[inp.name] = [d.dim_value for d in inp.type.tensor_type.shape.dim]
 
 for inter in value_info:
@@ -102,7 +102,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
 
         for index,x in enumerate(node.output):
             if x in out:
-                outShape.append([x,out[x]])
+                outShape.append([sanitize(x),out[x]])
         if layer == "Transpose": #for this, make sure order is set to tuple[2] and shape is set accordingly
             f.write(layer)
             f.write("\n")
@@ -444,8 +444,8 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 f"Model architecture parsed so far: {modelArch}")
     for x in list(ioMap.keys()):
         if x in out:
-            outputs[x] = ioMap[x]
-    trueInputs = [[x.name, [a.dim_value if a.dim_value!=0 else 1 for a in x.type.tensor_type.shape.dim]] for x in onnxModel.graph.input if x.name not in initializer]
+            outputs[sanitize(x)] = ioMap[x]
+    trueInputs = [[sanitize(x.name), [a.dim_value if a.dim_value!=0 else 1 for a in x.type.tensor_type.shape.dim]] for x in onnxModel.graph.input if x.name not in initializer]
     print(modelArch)
 
 

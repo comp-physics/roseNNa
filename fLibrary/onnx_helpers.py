@@ -1,5 +1,7 @@
 """Pure helpers shared by modelParserONNX.py. No side effects at import."""
 import itertools
+import hashlib
+import re
 import numpy as np
 
 
@@ -81,3 +83,26 @@ def regateLSTM(arr, axis=0):
         for g in ONNX_TO_ROSENNA_GATES
     ]
     return np.concatenate(blocks, axis=axis)
+
+
+_LOWER_IDENT = re.compile(r"^[a-z][a-z0-9_]{0,60}$")
+
+
+def sanitize(name):
+    """Map an ONNX tensor name onto a Fortran identifier that cannot collide.
+
+    Every result starts with ``v_``. No identifier in the library, the model
+    template, or the drivers uses that prefix, so an emitted name can never
+    clash with a generated local (``i0``, ``o0``, ``output0``, ``T1``), a
+    called procedure (``conv``, ``lstm``), or an intrinsic (``reshape``).
+
+    Fortran identifiers are case-insensitive, so a name that is not already a
+    valid all-lowercase identifier is lowercased and given a short digest of the
+    original. ``Input`` and ``input`` therefore map to different identifiers.
+    Results stay within Fortran's 63-character limit.
+    """
+    if _LOWER_IDENT.match(name):
+        return "v_" + name
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "_", name).lower()
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
+    return f"v_{cleaned[:48]}_{digest}"

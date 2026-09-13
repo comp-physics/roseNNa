@@ -66,6 +66,27 @@ def test_four_d_transform_right_aligns():
     check(H.fourDTransform([1,4,3,3], (1,4,1,1)) == [1,4,1,1],
           "fourDTransform passes through an already-4D shape")
 
+def test_sanitize_produces_fortran_identifiers():
+    import re
+    ident = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,62}$")
+    for raw in ["onnx::Gemm_0", "3", "/layer1/Gemm_output_0", "input", "a.b.c", "", "x" * 200]:
+        got = H.sanitize(raw)
+        check(bool(ident.match(got)), f"sanitize({raw[:30]!r}) -> {got!r} is a valid Fortran identifier")
+    check(H.sanitize("input") == "v_input", "sanitize prefixes a valid lowercase name")
+    check(H.sanitize("onnx::Gemm_0") != H.sanitize("onnx::Gemm_1"),
+          "sanitize keeps distinct names distinct")
+
+def test_sanitize_avoids_fortran_collisions():
+    # Fortran identifiers are case-insensitive and share one scope with the
+    # generated locals and the procedures the generated body calls.
+    check(H.sanitize("Input").lower() != H.sanitize("input").lower(),
+          "sanitize separates names that differ only by case")
+    reserved = {"i0", "o0", "output0", "t1", "t2", "conv", "lstm", "linear_layer", "max_pool",
+                "avgpool", "reshape", "size", "transpose", "relu2d", "sigmoid2d", "tanhh2d"}
+    for raw in ["i0", "o0", "output0", "T1", "t2", "conv", "reshape", "relu2d", "LSTM"]:
+        check(H.sanitize(raw).lower() not in reserved,
+              f"sanitize({raw!r}) avoids a generated or called name")
+
 if __name__ == "__main__":
     test_stranspose_is_column_major()
     test_stringer()
@@ -73,5 +94,7 @@ if __name__ == "__main__":
     test_regate_lstm_reorders_iofc_to_ifgo()
     test_regate_lstm_handles_direction_axis()
     test_four_d_transform_right_aligns()
+    test_sanitize_produces_fortran_identifiers()
+    test_sanitize_avoids_fortran_collisions()
     print(f"PARSER TESTS: {len(failures)} failure(s)")
     sys.exit(1 if failures else 0)
