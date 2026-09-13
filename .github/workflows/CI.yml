@@ -36,6 +36,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Python package tests
+        run: |
+          pip install -e python
+          cd python && python3 -m pytest tests -v
+
       - name: Run test cases
         run: |
           mkdir -p fLibrary/objFiles
