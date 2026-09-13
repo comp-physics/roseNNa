@@ -41,6 +41,10 @@ def read_weights(path):
         raise ValueError(f"{path}: version {version}, expected {VERSION}")
     if endian != ENDIAN_MARKER:
         raise ValueError(f"{path}: endian marker {endian:#x}")
+    if dtype_code not in _CODE_DTYPE:
+        raise ValueError(
+            f"{path}: unknown dtype code {dtype_code}; expected one of "
+            f"{sorted(_CODE_DTYPE)} ({', '.join(f'{v}={k}' for k, v in DTYPE_CODE.items())})")
 
     # Check plan hash and TOC length marker (32 + 4 = 36 bytes after header)
     if len(blob) < 60:
