@@ -270,7 +270,10 @@ def _compile_warnings(tmp_path, onnx_path, name, dtype="f64"):
     source, header = emit_c(plan)
     (work / f"{name}.c").write_text(source)
     (work / f"{name}.h").write_text(header)
-    f = subprocess.run(["gfortran", "-O2", "-Wall", "-Wextra", "-c", f"{name}_model.f90"],
+    # -std=f2008 makes every gfortran enforce the 132-column limit (ruling R20)
+    # and anything else non-standard, rather than only the CI compiler.
+    f = subprocess.run(["gfortran", "-std=f2008", "-O2", "-Wall", "-Wextra", "-c",
+                        f"{name}_model.f90"],
                        cwd=work, capture_output=True, text=True, check=True)
     c = subprocess.run(["gcc", "-O2", "-Wall", "-Wextra", "-std=c11", "-c", f"{name}.c"],
                        cwd=work, capture_output=True, text=True, check=True)
@@ -290,3 +293,36 @@ def test_dense_models_compile_without_warnings(tmp_path, golden_model, name, dty
     f_err, c_err = _compile_warnings(tmp_path, golden_model(name), name, dtype=dtype)
     assert f_err == "", f_err
     assert c_err == "", c_err
+
+
+# --- ruling R20: generated Fortran must respect the 132-column free-form limit
+
+_FORTRAN_MAX_COLS = 132
+
+
+def _over_long_fortran_lines(src):
+    return [(n, len(l)) for n, l in enumerate(src.splitlines(), 1) if len(l) > _FORTRAN_MAX_COLS]
+
+
+@pytest.mark.parametrize("name", DENSE)
+@pytest.mark.parametrize("dtype", ["f32", "f64"])
+def test_generated_fortran_fits_in_132_columns(golden_model, name, dtype):
+    # Free-form Fortran source is limited to 132 columns. gfortran 15 accepts a
+    # longer line silently; gfortran 13 (CI) rejects it with -Werror=line-truncation,
+    # and so does any gfortran under -std=f2008. The expected_hash constructor
+    # alone was 553 columns. This check must not depend on which gfortran is
+    # installed, so it is on the emitted text.
+    src = emit_fortran(build_plan(load_graph(golden_model(name)), dtype=dtype))
+    assert _over_long_fortran_lines(src) == []
+
+
+def test_generated_fortran_fits_in_132_columns_with_a_long_tensor_name(tmp_path):
+    # The name buffer is plan-derived now, so a 176-character initializer name
+    # becomes a 176-character case label unless the literal is continued.
+    src = emit_fortran(build_plan(load_graph(_long_name_model(tmp_path)), dtype="f64"))
+    assert _over_long_fortran_lines(src) == []
+    # Wrapped, not dropped: the literal is continued across lines, so the
+    # head of the name is still there and the tail follows a leading `&`.
+    assert "case ('" + _LONG_NAME[:20] in src
+    assert _LONG_NAME[-12:] + "')" in src
+    assert any(l.strip().startswith("&") for l in src.splitlines())
