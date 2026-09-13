@@ -44,7 +44,7 @@ class Plan:
     weights: tuple
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"), default=list)
+        return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
 
     def hash(self) -> str:
         return hashlib.sha256(self.to_json().encode("ascii")).hexdigest()
@@ -56,13 +56,13 @@ def _length(t: Tensor) -> int:
 
 def build_plan(graph: Graph, dtype: str | None = None) -> Plan:
     validate(graph)
-    dtype = dtype or graph.values[graph.inputs[0]].dtype
-    if dtype not in _ITEMSIZE:
-        raise UnsupportedModel(f"dtype {dtype} is not supported")
     if len(graph.inputs) != 1 or len(graph.outputs) != 1:
         raise UnsupportedModel(
             f"this generator handles one input and one output; "
             f"got {len(graph.inputs)} and {len(graph.outputs)}")
+    dtype = dtype or graph.values[graph.inputs[0]].dtype
+    if dtype not in _ITEMSIZE:
+        raise UnsupportedModel(f"dtype {dtype} is not supported")
 
     ops, weights, offset, widx = [], [], 0, 0
     for node in graph.nodes:
@@ -80,7 +80,7 @@ def build_plan(graph: Graph, dtype: str | None = None) -> Plan:
         if node.op == "Gemm" and len(node.inputs) > 2:
             b = graph.initializers[node.inputs[2]]
             bsym = f"b{widx}"
-            weights.append(WeightSpec(node.inputs[2], bsym, (int(b.size),), offset,
+            weights.append(WeightSpec(node.inputs[2], bsym, tuple(int(d) for d in b.shape), offset,
                                       b.size * _ITEMSIZE[dtype]))
             offset += weights[-1].nbytes
         ops.append(Op("gemm", node.outputs[0], node.inputs[0], wsym, bsym, int(n_in), int(n_out)))
@@ -95,7 +95,12 @@ def build_plan(graph: Graph, dtype: str | None = None) -> Plan:
 
 
 def _assign_buffers(graph: Graph, ops, flat_in: Tensor, flat_out: Tensor):
-    """Give the input and output dedicated buffers; rotate intermediates through a pool."""
+    """Give the input and output dedicated buffers; rotate intermediates through a pool.
+
+    Assumes: every op has a single main input and no branching or merging,
+    so each produced value has exactly one consumer. If the op set grows a branching
+    op, the free-list logic needs revisiting.
+    """
     buffers = {"x": flat_in.shape[0], "y": flat_out.shape[0]}
     assignment = {flat_in.name: "x", flat_out.name: "y"}
     last_use = {}
