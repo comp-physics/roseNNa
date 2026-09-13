@@ -84,7 +84,12 @@ def test_infer_is_pure_and_has_literal_bounds(golden_model):
     plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64")
     source, header = emit_c(plan)
     assert "void gemm_small_infer(const double *restrict x, double *restrict y) {" in source
-    assert "double t0[2];" in source
+    # The scratch buffers come from plan.buffers now (ruling R13), not from a
+    # second allocator private to this emitter: gemm_small's t0 is reused by
+    # both gemms, so the plan sizes it at the larger of the two (3), and the
+    # Fortran backend declares exactly the same set.
+    assert "double t0[3];" in source
+    assert "double t1[2];" in source
     assert "malloc" not in source
     assert "restrict" in header
 

@@ -47,66 +47,6 @@ def _weight_index_c(weight_by_symbol: dict, symbol: str, n_in: int, n_out: int) 
         f"weight {symbol}: shape {spec.shape} matches neither n_in={n_in} nor n_out={n_out}")
 
 
-def _fuse(ops):
-    """Fuse each gemm with an immediately-following activation that consumes it.
-
-    Producing a fused pair's intermediate (the gemm's own raw output) as a
-    separate buffer would be legal but wasteful: nothing else ever reads it.
-    Folding the activation into the same loop that computes the gemm's
-    accumulator (as in the brief's gemm_small example) means the buffer
-    assignment pass below never has to allocate storage for it at all.
-    """
-    steps, i, n = [], 0, len(ops)
-    while i < n:
-        op = ops[i]
-        if op.kind == "gemm":
-            nxt = ops[i + 1] if i + 1 < n else None
-            if nxt is not None and nxt.kind in _ACT_C and nxt.inp == op.out:
-                steps.append({"kind": "gemm", "out": nxt.out, "inp": op.inp, "length": op.n_out,
-                              "weight": op.weight, "bias": op.bias, "n_in": op.n_in,
-                              "n_out": op.n_out, "act": nxt.kind})
-                i += 2
-                continue
-            steps.append({"kind": "gemm", "out": op.out, "inp": op.inp, "length": op.n_out,
-                          "weight": op.weight, "bias": op.bias, "n_in": op.n_in,
-                          "n_out": op.n_out, "act": None})
-            i += 1
-        else:
-            prev_len = steps[-1]["length"] if steps else None
-            steps.append({"kind": "act", "out": op.out, "inp": op.inp, "length": prev_len,
-                          "act": op.kind})
-            i += 1
-    return steps
-
-
-def _assign_buffers_c(plan: Plan, steps: list) -> tuple:
-    """Same free-list scheme as plan._assign_buffers, run over the fused steps.
-
-    Fusing folds each gemm+activation pair into a single step whose output
-    name is the activation's, so a gemm's own raw output never gets a buffer
-    of its own -- only the final name of each step does.
-    """
-    buffers = {"x": plan.input.shape[0], "y": plan.output.shape[0]}
-    assignment = {plan.input.name: "x", plan.output.name: "y"}
-    last_use = {}
-    for i, s in enumerate(steps):
-        last_use[s["inp"]] = i
-    free, pool = [], 0
-    for i, s in enumerate(steps):
-        if s["out"] not in assignment:
-            if free:
-                sym = free.pop()
-            else:
-                sym = f"t{pool}"
-                pool += 1
-            assignment[s["out"]] = sym
-            buffers[sym] = max(buffers.get(sym, 0), s["length"])
-        if (s["inp"] in assignment and assignment[s["inp"]].startswith("t")
-                and last_use.get(s["inp"]) == i):
-            free.append(assignment[s["inp"]])
-    return buffers, assignment
-
-
 def emit_c(plan: Plan) -> tuple:
     ctype = _CTYPE[plan.dtype]
     header = _emit_header(plan, ctype)
@@ -221,37 +161,47 @@ def _emit_init(plan: Plan) -> list:
 
 
 def _emit_infer(plan: Plan, ctype: str) -> list:
+    """Emit the inference loop nest straight from plan.buffers / plan.assignment.
+
+    There is deliberately no fusion pass and no private allocator here. The
+    plan already owns the buffer assignment, one allocator serves both
+    backends, and the plan hash covers what it produced. A second allocator
+    with narrower assumptions (ruling R13) crashed on models validate accepts
+    and the Fortran backend handles: a graph whose first node is an activation
+    had no preceding gemm to take a length from, and a gemm output with two
+    consumers lost its buffer to fusion and then could not be looked up.
+    Fusion, if ever wanted, belongs in plan.py where one allocator serves both
+    backends and the hash covers it.
+    """
     m = plan.model
     n_in = plan.input.shape[0]
     weight_by_symbol = {w.symbol: w for w in plan.weights}
-    steps = _fuse(plan.ops)
-    buffers, assignment = _assign_buffers_c(plan, steps)
-    scratch = sorted((s for s in buffers if s not in ("x", "y")), key=lambda s: int(s[1:]))
+    scratch = sorted((s for s in plan.buffers if s not in ("x", "y")),
+                     key=lambda s: int(s[1:]))
 
     lines = [f"void {m}_infer(const {ctype} *restrict x, {ctype} *restrict y) {{"]
     for sym in scratch:
-        lines.append(f"    {ctype} {sym}[{buffers[sym]}];")
+        lines.append(f"    {ctype} {sym}[{plan.buffers[sym]}];")
 
     cur_len = n_in
-    for s in steps:
-        dst, src = assignment[s["out"]], assignment[s["inp"]]
-        if s["kind"] == "gemm":
-            idx_expr = _weight_index_c(weight_by_symbol, s["weight"], s["n_in"], s["n_out"])
-            lines.append(f"    for (int i = 0; i < {s['n_out']}; ++i) {{")
-            bias_init = f"{s['bias']}[i]" if s["bias"] else "0.0"
+    for op in plan.ops:
+        dst, src = plan.assignment[op.out], plan.assignment[op.inp]
+        if op.kind == "gemm":
+            idx_expr = _weight_index_c(weight_by_symbol, op.weight, op.n_in, op.n_out)
+            bias_init = f"{op.bias}[i]" if op.bias else "0.0"
+            lines.append(f"    for (int i = 0; i < {op.n_out}; ++i) {{")
             lines.append(f"        {ctype} acc = {bias_init};")
             lines.append(
-                f"        for (int j = 0; j < {s['n_in']}; ++j) acc += {src}[j] * {s['weight']}[{idx_expr}];")
-            if s["act"]:
-                expr = _ACT_C[s["act"]].format(v="acc")
-                lines.append(f"        {dst}[i] = {expr};")
-            else:
-                lines.append(f"        {dst}[i] = acc;")
+                f"        for (int j = 0; j < {op.n_in}; ++j) "
+                f"acc += {src}[j] * {op.weight}[{idx_expr}];")
+            lines.append(f"        {dst}[i] = acc;")
             lines.append("    }")
-            cur_len = s["n_out"]
-        else:
-            expr = _ACT_C[s["act"]].format(v=f"{src}[i]")
+            cur_len = op.n_out
+        elif op.kind in _ACT_C:
+            expr = _ACT_C[op.kind].format(v=f"{src}[i]")
             lines.append(f"    for (int i = 0; i < {cur_len}; ++i) {dst}[i] = {expr};")
+        else:
+            raise AssertionError(f"unhandled op kind {op.kind!r}")
 
     lines.append("}")
     lines.append("")
