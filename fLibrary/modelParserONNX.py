@@ -3,13 +3,12 @@ import torch.nn as nn
 import numpy as np
 import torch.onnx
 import onnx
-import itertools
 from onnx import numpy_helper
 import argparse
 import sys
 
 from onnx_helpers import (
-    stranspose, stringer, reshapeParser,
+    stranspose, reshapeParser,
     fourDTransform, fakeFourD, spreadInfo,
     regateLSTM,
 )
@@ -38,7 +37,7 @@ if weights is not None:
 try:
     inferred = onnx.load(inferred)
     value_info = inferred.graph.value_info
-except:
+except (TypeError, FileNotFoundError, onnx.checker.ValidationError):
     value_info = onnx.shape_inference.infer_shapes(onnxModel).graph.value_info
 
 nodes = onnxModel.graph.node #all layers of model that will be parsed
@@ -110,7 +109,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             names = {n.name:n.i if n.type==2 else n.ints for n in node.attribute}
             try:
                 default = [x for x in range(len(intermediateShapes[node.input[0]])-1,-1,-1)]
-            except:
+            except KeyError:
                 default = [x for x in range(len(input_shapes[node.input[0]])-1,-1,-1)]
             attributes = names.get('perm', default)
             #make sure there is a node.attribute[0], otherwise default is to reverse all the dimensions
@@ -126,7 +125,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 modelArch.append(("LSTM", [ioMap[node.input[0]], ioMap[node.input[5]], ioMap[node.input[6]]], ["output"+extra], [0])) #input = ["input", "hidden_state", "cell_state"]
                 f.write("0")
                 f.write("\n")
-            except:
+            except (KeyError, IndexError):
                 modelArch.append(("LSTM", [ioMap[node.input[0]], "output"+str(int(extra)+1),"output"+str(int(extra)+2)], ["output"+extra], [1])) #input = ["input", "hidden_state", "cell_state"]
                 writeHCs = True
                 f.write("1")
@@ -222,27 +221,23 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
 
         #check notion summer start
         elif layer == "Squeeze": #changes shape
-            #note for squeeze and for reshape:
-            #look at onnx.shape_inference.infer_shapes(onnxModel).graph.value_info. make a map of {"name":dimensions}.
-            #then when you arrive at squeeze, look at map[node.input[0]]'s shape and encode that information into the input
-            #the input should look like this: {"output" + extra: shape/num_dimensions}
             f.write(layer)
             f.write("\n")
-            try:
-                modelArch.append(("Squeeze", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [ioMap[node.input[1]]])) #axes to be squeezed
-            except:
-                pass
-            try:
-                #do default here. right now, there is no attributes for squeeze. but, onnx sometimes does it.
-                modelArch.append(("Squeeze", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [node.attribute[0].ints])) #axes to be squeezed
-            except:
-                pass
-            try:
-                modelArch.append(("Squeeze", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [findWeightsInitializer(node.input[1]).tolist()])) #axes to be squeezed
-            except:
-                att = [x for x in range(len(intermediateShapes[node.input[0]])) if x == 1]
-                modelArch.append(("Squeeze", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [att])) #axes to be squeezed
-
+            rank = len(intermediateShapes[node.input[0]])
+            axes = None
+            if len(node.input) > 1:
+                axes = findWeightsInitializer(node.input[-1]).tolist()
+            else:
+                for attr in node.attribute:
+                    if attr.name == "axes":
+                        axes = list(attr.ints)
+                        break
+            if axes is None:
+                # ONNX default: squeeze every axis of extent 1
+                axes = [i for i, d in enumerate(intermediateShapes[node.input[0]]) if d == 1]
+            axes = [a if a >= 0 else a + rank for a in axes]
+            modelArch.append(("Squeeze", (ioMap[node.input[0]], rank),
+                              ["output" + extra], [axes]))
             inputs.append(["output"+extra, len(intermediateShapes[node.output[0]])])
             ioMap[node.output[0]] = "output" + extra
             extra = str(int(extra)+1)
@@ -257,7 +252,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 modelArch.append(("Reshape", (ioMap[node.input[0]], len(intermediateShapes[node.input[0]])),["output" + extra], [reshapeParser(findWeightsInitializer(node.input[-1]).tolist(), intermediateShapes[node.input[0]])],[0])) #new shape
                 f.write("0")
                 f.write("\n")
-            except:
+            except KeyError:
                 modelArch.append(("Reshape", (ioMap[node.input[0]], len(initializer[node.input[0]][0])),["output" + extra], [reshapeParser(findWeightsInitializer(node.input[-1]).tolist(), initializer[node.input[0]][0])], [1])) #new shape
                 f.write(str(len(initializer[node.input[0]][0])))
                 f.write("\n")
@@ -390,10 +385,10 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
         elif layer == "MatMul":
             #no default changes needed
             try:
+                modelArch.append(("MatMul",[ioMap[node.input[0]],ioMap[node.input[1]]], [len(intermediateShapes[node.input[0]])])) #[trueshape, need to be broadcasted and added SHAPE]
                 f.write(layer)
                 f.write("\n")
-                modelArch.append(("MatMul",[ioMap[node.input[0]],ioMap[node.input[1]]], [len(intermediateShapes[node.input[0]])])) #[trueshape, need to be broadcasted and added SHAPE]
-            except:
+            except KeyError:
                 f.write("Gemm")
                 f.write("\n")
                 modelArch.append(("Gemm", [ioMap[node.input[0]],1], None))
@@ -444,10 +439,9 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             f.write("\n")
             continue
         else:
-            print(modelArch)
-            print(f'{layer} NOT SUPPORTED BY RoseNNa CURRENTLY!')
-            ioMap[node.output[0]] = ioMap[node.input[0]]
-            continue
+            raise NotImplementedError(
+                f"{layer} is not supported by roseNNa. "
+                f"Model architecture parsed so far: {modelArch}")
     for x in list(ioMap.keys()):
         if x in out:
             outputs[x] = ioMap[x]
