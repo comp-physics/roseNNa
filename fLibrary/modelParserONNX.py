@@ -396,11 +396,12 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
             except KeyError:
                 f.write("Gemm")
                 f.write("\n")
-                modelArch.append(("Gemm", [ioMap[node.input[0]],1], None))
+                # MatMul is Y = A*B with B stored as (in, out), so transB=0
+                modelArch.append(("Gemm", [ioMap[node.input[0]],0], None))
                 numzs = 0
                 #check if bias exists
                 for inp in node.input[1:]:
-                    numzs = initializer[inp][0][0]
+                    numzs = initializer[inp][0][1] # the zero bias has the output width
                     for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
                     f2.write(np.asarray(findWeightsInitializer(inp), dtype='<f8').flatten(order='F').tobytes())
