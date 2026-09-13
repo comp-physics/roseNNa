@@ -169,7 +169,7 @@ int main(void) {
     double a[2] = {1, 1};
     double b[3];
 
-    initialize("onnxModel.txt", "onnxWeights.txt");
+    initialize("onnxModel.txt", "onnxWeights.bin");
     use_model(a, b);
 
     for (int i = 0; i < 3; i++) {
@@ -185,6 +185,9 @@ gcc -c *.c
 gfortran -o capi *.o path/to/libcorelib.a
 ./capi
 ```
+
+By default, weights are read from a binary `onnxWeights.bin` file; a legacy `onnxWeights.txt` file is still read
+if its path is passed explicitly to `initialize`.
 
 ## Further documentation
 

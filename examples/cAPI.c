@@ -9,7 +9,7 @@ int main(void) {
     double a[2] = {1, 1};
     double b[3];
 
-    initialize("onnxModel.txt", "onnxWeights.txt");
+    initialize("onnxModel.txt", "onnxWeights.bin");
     use_model(a, b);
 
     for (int i = 0; i < 3; i++) {

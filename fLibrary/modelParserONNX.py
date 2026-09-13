@@ -85,7 +85,7 @@ def findWeightsInitializer(input_name):
 
 #ONNX parser
 #onnxModel.txt => holds model structure
-#onnxWeights.txt => holds model's weights in corresponding order
+#onnxWeights.bin => holds model's weights, as float64 in column-major order, as a raw binary stream
 
 #ioMap => dictionary that maps (outputs) -> (inputs)
 #initializer => holds weights dims
@@ -95,7 +95,7 @@ print("starting to write weights..")
 print("starting parsing...")
 for node in nodes:
     print(node.op_type)
-with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
+with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
     f.write(str(len(nodes)))
     f.write("\n")
     for node in nodes:
@@ -135,8 +135,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             for inp in node.input[1:3]: #represents ONNX's locations of weights
                 for dim in initializer[inp][0]:
                     f.write(str(dim)+" ")
-                f2.write(stranspose(regateLSTM(findWeightsInitializer(inp), axis=1)))
-                f2.write("\n")
+                f2.write(np.asarray(regateLSTM(findWeightsInitializer(inp), axis=1), dtype='<f8').flatten(order='F').tobytes())
                 f.write("\n")
             #check if bias exists
             # ONNX packs Wb and Rb into one (num_directions, 8*hidden) tensor;
@@ -145,8 +144,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             for half in (wb, rb):
                 f.write(str(int(initializer[node.input[3]][0][1]/2)))
                 f.write("\n")
-                f2.write(stranspose(regateLSTM(half, axis=1)))
-                f2.write("\n")
+                f2.write(np.asarray(regateLSTM(half, axis=1), dtype='<f8').flatten(order='F').tobytes())
             if writeHCs:
                 inpShape = intermediateShapes[node.input[0]]
                 batch_size = inpShape[1]
@@ -161,9 +159,8 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 for x in range(2):
                     for s in shape:
                         f.write(str(s)+" ")
-                    f2.write(stranspose(np.zeros(shape)))
+                    f2.write(np.asarray(np.zeros(shape), dtype='<f8').flatten(order='F').tobytes())
                     f.write("\n")
-                    f2.write("\n")
             if not writeHCs:
                 ioMap[node.output[0]] = "output" + extra
                 extra = str(int(extra)+1)
@@ -204,19 +201,16 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                     numzs = initializer[inp][0][0]
                     for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
-                    f2.write(stranspose(findWeightsInitializer(inp)))
-                    f2.write("\n")
+                    f2.write(np.asarray(findWeightsInitializer(inp), dtype='<f8').flatten(order='F').tobytes())
                     f.write("\n")
                 f.write(str(numzs))
                 f.write("\n")
-                f2.write(stranspose(np.zeros(numzs)))
-                f2.write("\n")
+                f2.write(np.asarray(np.zeros(numzs), dtype='<f8').flatten(order='F').tobytes())
             else:
                 for inp in node.input[1:3]:
                     for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
-                    f2.write(stranspose(findWeightsInitializer(inp)))
-                    f2.write("\n")
+                    f2.write(np.asarray(findWeightsInitializer(inp), dtype='<f8').flatten(order='F').tobytes())
                     f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
@@ -260,8 +254,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 for dim in initializer[node.input[0]][0]:
                     f.write(str(dim)+ " ")
                 f.write("\n")
-                f2.write(stranspose(findWeightsInitializer(node.input[0])))
-                f2.write("\n")
+                f2.write(np.asarray(findWeightsInitializer(node.input[0]), dtype='<f8').flatten(order='F').tobytes())
             inputs.append(["output"+extra, len(intermediateShapes[node.output[0]])])
             ioMap[node.output[0]] = "output" + extra
             extra = str(int(extra)+1)
@@ -309,19 +302,16 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                     numzs = initializer[inp][0][0]
                     for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
-                    f2.write(stranspose(findWeightsInitializer(inp)))
-                    f2.write("\n")
+                    f2.write(np.asarray(findWeightsInitializer(inp), dtype='<f8').flatten(order='F').tobytes())
                     f.write("\n")
                 f.write(str(numzs))
                 f.write("\n")
-                f2.write(stranspose(np.zeros(numzs)))
-                f2.write("\n")
+                f2.write(np.asarray(np.zeros(numzs), dtype='<f8').flatten(order='F').tobytes())
             else:
                 for inp in node.input[1:3]:
                     for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
-                    f2.write(stranspose(findWeightsInitializer(inp)))
-                    f2.write("\n")
+                    f2.write(np.asarray(findWeightsInitializer(inp), dtype='<f8').flatten(order='F').tobytes())
                     f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
@@ -394,8 +384,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             for dim in fourd:
                 f.write(str(dim) + " ")
             f.write("\n")
-            f2.write(stranspose(findWeightsInitializer(node.input[1])))
-            f2.write("\n")
+            f2.write(np.asarray(findWeightsInitializer(node.input[1]), dtype='<f8').flatten(order='F').tobytes())
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "MatMul":
@@ -414,13 +403,11 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                     numzs = initializer[inp][0][0]
                     for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
-                    f2.write(stranspose(findWeightsInitializer(inp)))
-                    f2.write("\n")
+                    f2.write(np.asarray(findWeightsInitializer(inp), dtype='<f8').flatten(order='F').tobytes())
                     f.write("\n")
                 f.write(str(numzs))
                 f.write("\n")
-                f2.write(stranspose(np.zeros(numzs)))
-                f2.write("\n")
+                f2.write(np.asarray(np.zeros(numzs), dtype='<f8').flatten(order='F').tobytes())
 
 
             ioMap[node.output[0]] = ioMap[node.input[0]]

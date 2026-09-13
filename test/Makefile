@@ -63,4 +63,4 @@ clean:
 	rm -rf c_default_paths_run
 	rm -f $(DIR)/*.o
 	rm -f modelCreator.f90 userTesting.f90 variables.fpp inputs.fpp
-	rm -f test.txt outputCase.txt onnxModel.txt onnxWeights.txt
+	rm -f test.txt outputCase.txt onnxModel.txt onnxWeights.txt onnxWeights.bin

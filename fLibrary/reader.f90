@@ -44,9 +44,10 @@ module reader
         CHARACTER(LEN = 100) :: layerName
         INTEGER :: i
         INTEGER :: readOrNot
+        LOGICAL :: binary
 
         mpath = "onnxModel.txt"
-        wpath = "onnxWeights.txt"
+        wpath = "onnxWeights.bin"
         if (present(model_file))   mpath = c_to_f_string(model_file)
         if (present(weights_file)) wpath = c_to_f_string(weights_file)
 
@@ -64,7 +65,15 @@ module reader
             flush(error_unit)
             error stop 1
         end if
-        open(newunit=weightsUnit, file=wpath, status='old', action='read', iostat=ios)
+        ! .txt weights are the legacy list-directed format; anything else is float64 stream
+        binary = .true.
+        if (len(wpath) >= 4) binary = wpath(len(wpath)-3:) /= '.txt'
+        if (binary) then
+            open(newunit=weightsUnit, file=wpath, status='old', action='read', access='stream', &
+                form='unformatted', iostat=ios)
+        else
+            open(newunit=weightsUnit, file=wpath, status='old', action='read', iostat=ios)
+        end if
         if (ios /= 0) then
             write(error_unit,'(a)') "roseNNa: cannot open weights file '"//wpath//"'"
             flush(error_unit)
@@ -85,27 +94,27 @@ module reader
             end if
             if (layerName .eq.  "LSTM") then
                 read(modelUnit,*) readOrNot
-                CALL read_lstm(modelUnit, weightsUnit, readOrNot)
+                CALL read_lstm(modelUnit, weightsUnit, readOrNot, binary)
             else if (layerName .eq. "Gemm") then
-                CALL read_linear(modelUnit, weightsUnit)
+                CALL read_linear(modelUnit, weightsUnit, binary)
             else if (layerName .eq. "Conv") then
-                CALL read_conv(modelUnit, weightsUnit)
+                CALL read_conv(modelUnit, weightsUnit, binary)
             else if (layerName .eq. "MaxPool") then
                 CALL read_maxpool(modelUnit, weightsUnit)
             else if (layerName .eq. "AveragePool") then
                 CALL read_avgpool(modelUnit, weightsUnit)
             else if (layerName .eq. "Add") then
-                CALL read_add(modelUnit, weightsUnit)
+                CALL read_add(modelUnit, weightsUnit, binary)
             else if (layerName .eq. "MatMul") then
                 cycle
             else if (layerName .eq. "Reshape") then
                 read(modelUnit, *) readOrNot
                 if (readOrNot .eq. 2) then
-                    CALL read_reshape2d(modelUnit, weightsUnit)
+                    CALL read_reshape2d(modelUnit, weightsUnit, binary)
                 else if (readOrNot .eq. 3) then
-                    CALL read_reshape3d(modelUnit, weightsUnit)
+                    CALL read_reshape3d(modelUnit, weightsUnit, binary)
                 else if (readOrNot .eq. 4) then
-                    CALL read_reshape4d(modelUnit, weightsUnit)
+                    CALL read_reshape4d(modelUnit, weightsUnit, binary)
                 endif
             else if (layerName .eq. "Transpose") then
                 cycle
@@ -127,9 +136,10 @@ module reader
         close(weightsUnit)
     end subroutine
 
-    subroutine read_reshape2d(file1, file2)
+    subroutine read_reshape2d(file1, file2, binary)
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
+        LOGICAL, INTENT(IN) :: binary
         TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshape
         REAL (c_double), ALLOCATABLE, DIMENSION(:,:) :: weights
         INTEGER :: w_dim1
@@ -137,16 +147,21 @@ module reader
         ALLOCATE(reshape(1))
         read(file1, *) w_dim1, w_dim2
         ALLOCATE(weights(w_dim1, w_dim2))
-        read(file2, *) weights
+        if (binary) then
+            read(file2) weights
+        else
+            read(file2, *) weights
+        end if
         reshape(1)%reshape2d = weights
         DEALLOCATE(weights)
         reshapeLayers = [reshapeLayers, reshape]
         DEALLOCATE(reshape)
     end subroutine
 
-    subroutine read_reshape3d(file1, file2)
+    subroutine read_reshape3d(file1, file2, binary)
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
+        LOGICAL, INTENT(IN) :: binary
         TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshape
         REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
         INTEGER :: w_dim1
@@ -155,16 +170,21 @@ module reader
         ALLOCATE(reshape(1))
         read(file1, *) w_dim1, w_dim2, w_dim3
         ALLOCATE(midWeights(w_dim1, w_dim2, w_dim3))
-        read(file2, *) midWeights
+        if (binary) then
+            read(file2) midWeights
+        else
+            read(file2, *) midWeights
+        end if
         reshape(1)%reshape3d = midWeights
         DEALLOCATE(midWeights)
         reshapeLayers = [reshapeLayers, reshape]
         DEALLOCATE(reshape)
     end subroutine
 
-    subroutine read_reshape4d(file1, file2)
+    subroutine read_reshape4d(file1, file2, binary)
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
+        LOGICAL, INTENT(IN) :: binary
         TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshape
         REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
         INTEGER :: w_dim1
@@ -174,16 +194,21 @@ module reader
         ALLOCATE(reshape(1))
         read(file1, *) w_dim1, w_dim2, w_dim3, w_dim4
         ALLOCATE(largeWeights(w_dim1, w_dim2, w_dim3, w_dim4))
-        read(file2, *) largeWeights
+        if (binary) then
+            read(file2) largeWeights
+        else
+            read(file2, *) largeWeights
+        end if
         reshape(1)%reshape4d = largeWeights
         DEALLOCATE(largeWeights)
         reshapeLayers = [reshapeLayers, reshape]
         DEALLOCATE(reshape)
     end subroutine
 
-    subroutine read_add(file1, file2)
+    subroutine read_add(file1, file2, binary)
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
+        LOGICAL, INTENT(IN) :: binary
         TYPE(addLayer), ALLOCATABLE, DIMENSION(:) :: add
         REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
         INTEGER :: w_dim1
@@ -193,7 +218,11 @@ module reader
         ALLOCATE(add(1))
         read(file1, *) w_dim1, w_dim2, w_dim3, w_dim4
         ALLOCATE(largeWeights(w_dim1, w_dim2, w_dim3, w_dim4))
-        read(file2, *) largeWeights
+        if (binary) then
+            read(file2) largeWeights
+        else
+            read(file2, *) largeWeights
+        end if
         add(1)%adder = largeWeights
         DEALLOCATE(largeWeights)
         addLayers = [addLayers, add]
@@ -223,9 +252,10 @@ module reader
         maxpoolLayers = [maxpoolLayers, maxpool]
         DEALLOCATE(maxpool)
     end subroutine
-    subroutine read_conv(file1, file2)
+    subroutine read_conv(file1, file2, binary)
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
+        LOGICAL, INTENT(IN) :: binary
         TYPE(convLayer), ALLOCATABLE, DIMENSION(:) :: conv
         REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
         REAL (c_double), ALLOCATABLE, DIMENSION(:) :: biases
@@ -236,7 +266,11 @@ module reader
         ALLOCATE(conv(1))
         read(file1, *) w_dim1, w_dim2, w_dim3, w_dim4
         ALLOCATE(largeWeights(w_dim1, w_dim2, w_dim3, w_dim4))
-        read(file2, *) largeWeights
+        if (binary) then
+            read(file2) largeWeights
+        else
+            read(file2, *) largeWeights
+        end if
         conv(1)%weights = largeWeights
         DEALLOCATE(largeWeights)
 
@@ -244,7 +278,11 @@ module reader
 
         read(file1, *) w_dim1
         ALLOCATE(biases(w_dim1))
-        read(file2, *) biases
+        if (binary) then
+            read(file2) biases
+        else
+            read(file2, *) biases
+        end if
         conv(1)%biases = biases
         DEALLOCATE(biases)
 
@@ -254,10 +292,11 @@ module reader
         DEALLOCATE(conv)
     end subroutine
 
-    subroutine read_lstm(file1, file2, readOrNot)
+    subroutine read_lstm(file1, file2, readOrNot, binary)
         INTEGER, INTENT(IN) :: readOrNot
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
+        LOGICAL, INTENT(IN) :: binary
         TYPE(lstmLayer), ALLOCATABLE, DIMENSION(:) :: lstm
         REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
         REAL (c_double), ALLOCATABLE, DIMENSION(:) :: biases
@@ -267,39 +306,63 @@ module reader
         ALLOCATE(lstm(1))
         read(file1, *) w_dim1, w_dim2, w_dim3
         ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
-        read(file2, *) midWeights
+        if (binary) then
+            read(file2) midWeights
+        else
+            read(file2, *) midWeights
+        end if
         lstm(1)%wih = midWeights
         DEALLOCATE(midWeights)
 
         read(file1, *) w_dim1, w_dim2, w_dim3
         ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
-        read(file2, *) midWeights
+        if (binary) then
+            read(file2) midWeights
+        else
+            read(file2, *) midWeights
+        end if
         lstm(1)%whh = midWeights
         DEALLOCATE(midWeights)
 
 
         read(file1, *) w_dim1
         ALLOCATE(biases(w_dim1))
-        read(file2, *) biases
+        if (binary) then
+            read(file2) biases
+        else
+            read(file2, *) biases
+        end if
         lstm(1)%bih = biases
         DEALLOCATE(biases)
 
         read(file1, *) w_dim1
         ALLOCATE(biases(w_dim1))
-        read(file2, *) biases
+        if (binary) then
+            read(file2) biases
+        else
+            read(file2, *) biases
+        end if
         lstm(1)%bhh = biases
         DEALLOCATE(biases)
 
         if (readOrNot .eq. 1) then
             read(file1, *) w_dim1, w_dim2, w_dim3
             ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
-            read(file2, *) midWeights
+            if (binary) then
+                read(file2) midWeights
+            else
+                read(file2, *) midWeights
+            end if
             lstm(1)%hid = midWeights
             DEALLOCATE(midWeights)
 
             read(file1, *) w_dim1, w_dim2, w_dim3
             ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
-            read(file2, *) midWeights
+            if (binary) then
+                read(file2) midWeights
+            else
+                read(file2, *) midWeights
+            end if
             lstm(1)%cell = midWeights
             DEALLOCATE(midWeights)
         endif
@@ -310,9 +373,10 @@ module reader
         DEALLOCATE(lstm)
     end subroutine
 
-    subroutine read_linear(file1, file2)
+    subroutine read_linear(file1, file2, binary)
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
+        LOGICAL, INTENT(IN) :: binary
         TYPE(linLayer), ALLOCATABLE,DIMENSION(:) :: lin
         REAL (c_double), ALLOCATABLE, DIMENSION(:,:) :: weights
         REAL (c_double), ALLOCATABLE, DIMENSION(:) :: biases
@@ -322,11 +386,19 @@ module reader
         ALLOCATE(lin(1))
         read(file1, *) w_dim1, w_dim2
         ALLOCATE(weights(w_dim1,w_dim2))
-        read(file2, *) weights
+        if (binary) then
+            read(file2) weights
+        else
+            read(file2, *) weights
+        end if
 
         read(file1, *) w_dim1
         ALLOCATE(biases(w_dim1))
-        read(file2, *) biases
+        if (binary) then
+            read(file2) biases
+        else
+            read(file2, *) biases
+        end if
 
         lin(1)%weights = weights
         lin(1)%biases = biases

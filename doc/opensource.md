@@ -2,7 +2,7 @@
 This project is ongoing and does not contain functionality of every layer available in ONNX. In order to embed new layers into roseNNa, certain steps must be followed:
 
 ## Parsing in modelParserONNX.py
-This file reads in the ONNX interpretation of the model. At a higher level, it iterattes over all the layers in the ONNX model (called nodes in the graph), parses its contents by (1) sending some of its options to be parsed in f90 via fypp and (2) finding the weights that correspond to this layer and writing their dimensions to 'onnxModel.txt' and the weights to `onnxWeights.txt`. These two files will be read in by Fortran so it can store the weights and layers. Here is a pseudocode example from the "GEMM" layer in ONNX:
+This file reads in the ONNX interpretation of the model. At a higher level, it iterattes over all the layers in the ONNX model (called nodes in the graph), parses its contents by (1) sending some of its options to be parsed in f90 via fypp and (2) finding the weights that correspond to this layer and writing their dimensions to 'onnxModel.txt' and the weights to `onnxWeights.bin`. These two files will be read in by Fortran so it can store the weights and layers. Here is a pseudocode example from the "GEMM" layer in ONNX:
 
 ```python
 #an additional if statement must be added so the parser knows to parse this layer
@@ -57,7 +57,7 @@ END FUNCTION tanhh
 ```
 
 ## Reading layer in reader.f90
-In order to read in the weights and layers from the files `onnxModel.txt` and `onnxWeights.txt`, the file [reader.f90](https://github.com/comp-physics/roseNNa/blob/master/fLibrary/reader.f90) has to include the new layer/activation function. First, we will create an array of derived types for the new layer. This will allow us to store multiple of the same layer if the model contains it (we make it allocatable so it can be appended to with no dimension restrictions). Then, we create a new subroutine for the layer, which defines how we will read in the weights/dimensions (this will depend based on how you wrote the dimensions to the files in the first place). Here is an example:
+In order to read in the weights and layers from the files `onnxModel.txt` and `onnxWeights.bin`, the file [reader.f90](https://github.com/comp-physics/roseNNa/blob/master/fLibrary/reader.f90) has to include the new layer/activation function. First, we will create an array of derived types for the new layer. This will allow us to store multiple of the same layer if the model contains it (we make it allocatable so it can be appended to with no dimension restrictions). Then, we create a new subroutine for the layer, which defines how we will read in the weights/dimensions (this will depend based on how you wrote the dimensions to the files in the first place). Here is an example:
 
 ``` fortran
 !subroutine definition for GEMM/MLP layer (file1=dimensions, file2=weights)
@@ -187,5 +187,5 @@ This is an example of the **variables.fpp** file. it contains
 
 
 ## Important Updates needed:
-1. Currently the onnxModel.txt and onnxWeights.txt must be in the same folder as all other files, but it will be changed ASAP
+1. `initialize` takes the model-file and weights-file paths as optional arguments (defaulting to `onnxModel.txt` and `onnxWeights.bin` in the working directory), so `onnxModel.txt` and `onnxWeights.bin` no longer need to live alongside all other files
 2. LSTM different activation functions
