@@ -1,74 +1,43 @@
-# # This is a basic workflow to help you get started with Actions
+name: CI
 
-# name: CI
+on:
+  # all branches
+  push:
+  pull_request:
+    branches: [ "master" ]
+  workflow_dispatch:
 
-# # Controls when the workflow will run
-# on:
-#   # Triggers the workflow on push or pull request events but only for the "master" branch
-#   push:
-#     paths:
-#       - '**.f90'
-#       - '**.fpp'
-#       - '**.sh'
-#       - '**.py'
-#       - '**Makefile'
-#       - '**makefile'
-#       - '**yml'
-    
-#   pull_request:
-#     branches: [ "master" ]
+jobs:
+  CI_test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
-#   # Allows you to run this workflow manually from the Actions tab
-#   workflow_dispatch:
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
 
-# # A workflow run is made up of one or more jobs that can run sequentially or in parallel
-# jobs:
-#   # This workflow contains a single job called "build"
-#   CI_test:
-#     # The type of runner that the job will run on
-#     runs-on: macos-latest
+      - name: Set up gfortran
+        uses: fortran-lang/setup-fortran@v1
+        with:
+          compiler: gcc
+          version: 13
 
-#     # Steps represent a sequence of tasks that will be executed as part of the job
-#     steps:
-#       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-#       - name: Clone RoseNNa
-#         uses: actions/checkout@v3
+      - name: Check gfortran version
+        run: gfortran --version
 
-#       # Runs a single command using the runners shell
-#       - name: Permissions
-#         run: |
-#           chmod +x test/run.sh
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-#       # Runs a set of commands using the runners shell
-#       - name: Installing Core Dependencies (brew)
-#         run: |
-#           brew install wget make make cmake coreutils
-#           brew install gcc
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-#       - name: Sym Link
-#         run: |
-#           ln -s /opt/homebrew/bin/gfortran-14 /usr/local/bin/gfortran
-
-#       - name: Checking F90 Version
-#         run: |
-#           gfortran --version
-
-#       - name: Set up Python 3.8
-#         uses: actions/setup-python@v2
-#         with:
-#           python-version: 3.8
-#       - name: Install dependencies
-#         run: |
-#           pip3 -v
-#           pip3 install torch
-#           pip3 install onnx
-#           pip3 install numpy
-#           pip3 install fypp
-#           pip3 install onnxruntime
-
-
-#       - name: Running Test Cases
-#         run: |
-#           mkdir -p fLibrary/objFiles/
-#           cd test/
-#           ./run.sh
+      - name: Run test cases
+        run: |
+          mkdir -p fLibrary/objFiles
+          chmod +x test/run.sh
+          cd test && ./run.sh

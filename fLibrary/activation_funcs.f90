@@ -54,13 +54,13 @@ contains
     FUNCTION tanhh(x) result(output)
         REAL (c_double), intent(in) :: x(:)
         REAL (c_double) :: output(size(x))
-        output = (exp(x)-exp(-1*x))/(exp(x)+exp(-1*x))
+        output = tanh(x)
     END FUNCTION tanhh
 
     FUNCTION tanhh2d(x) result(output)
         REAL (c_double), intent(in) :: x(:,:)
         REAL (c_double) :: output(size(x,1),size(x,2))
-        output = (exp(x)-exp(-1*x))/(exp(x)+exp(-1*x))
+        output = tanh(x)
     END FUNCTION tanhh2d
     
 end module activation_functions

@@ -3,16 +3,36 @@ import torch.nn as nn
 import torch.onnx
 import onnx
 from onnx import numpy_helper
+import timeit
+import numpy as np
+SETUP_CODE = '''
+import torch
+import torch.nn as nn
+import sys
+import os
+import timeit
+torch.set_num_threads(1)
 class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
-        self.conv = nn.Conv2d(2,3,3, padding=[2,3], stride=2)
+        self.maxpool = nn.MaxPool2d(2)
 
     def forward(self, inp):
-        return self.conv(inp)
+        return self.maxpool(inp)
 
 model = NN()
-inp = torch.rand(1,2,6,6)
+inp = torch.rand(3,2,4,4)
+'''
+class NN(nn.Module):
+    def __init__(self):
+        super(NN, self).__init__()
+        self.maxpool = nn.MaxPool2d(2)
+
+    def forward(self, inp):
+        return self.maxpool(inp)
+
+model = NN()
+inp = torch.rand(3,2,4,4)
 
 with open("inputs.fpp",'w') as f1:
     inputs = inp.flatten().tolist()
@@ -29,10 +49,18 @@ def stringer(mat):
     for elem in mat:
         s += str(elem) + " "
     return s.strip()
+TEST_CODE = '''
+with torch.jit.optimized_execution(False):
+    logits = model(inp)'''
+times = timeit.repeat(setup = SETUP_CODE,
+                          stmt = TEST_CODE,
+                          repeat = 10,
+                          number = 1)
+print(f"Median is: {np.median(np.array(times))}")
 logits = model(inp)
 
-filePath = "../goldenFiles/conv_padding-stride/"
-with open(filePath+"conv_padding-stride.txt", "w") as f2:
+filePath = "../goldenFiles/pool_batch/"
+with open(filePath+"pool_batch.txt", "w") as f2:
     f2.write(stringer(list(logits.shape)))
     f2.write("\n")
     f2.write(stringer(logits.flatten().tolist()))
@@ -40,7 +68,7 @@ print(logits.flatten().tolist())
 
 torch.onnx.export(model,
                   inp,
-                  filePath+"conv_padding-stride.onnx",
+                  filePath+"pool_batch.onnx",
                   export_params=True, dynamo=False,
                   opset_version=10,
                   do_constant_folding=True,
@@ -50,7 +78,7 @@ torch.onnx.export(model,
 
 torch.onnx.export(model,
                   inp,
-                  filePath+"conv_padding-stride_weights.onnx",
+                  filePath+"pool_batch_weights.onnx",
                   export_params=True, dynamo=False,
                   opset_version=10,
                   do_constant_folding=False,

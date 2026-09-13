@@ -20,12 +20,6 @@ library: output
 	ar crv libcorelib.a $(COMP) $(OBJ2)
 
 clean:
-	rm *.o objFiles/*.mod
-	rm modelCreator.f90
-	rm libcorelib.a
-# testing: ex1 outputs
-#     # runs userTesting/main file provided by user
-#     ./output
-#
-#     # checks outputs from F90 and python
-#     python3 -Wi goldenFiles/testChecker.py $(case)
+	rm -f *.o objFiles/*.mod
+	rm -f modelCreator.f90 variables.fpp
+	rm -f libcorelib.a

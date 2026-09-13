@@ -18,16 +18,6 @@ class NN(nn.Module):
             nn.Linear(40,1),
             nn.Sigmoid()
         )
-#nn.Linear(2, 20, bias=False),
-            # nn.Linear(20, 30),
-            # nn.Sigmoid(),
-            # nn.Linear(30, 30),
-            # nn.ReLU(),
-            # nn.Linear(30,40),
-            # nn.Tanh(),
-            # nn.Linear(40,1),
-            # nn.Sigmoid()
-#TRY LATER
     def forward(self, x):
         logits = self.linear_relu_stack(x)
         return logits
@@ -59,22 +49,22 @@ with open(filePath+"gemm_big.txt", "w") as f2:
     f2.write(stringer(logits.flatten().tolist()))
 print(logits.flatten().tolist())
 
-torch.onnx.export(model,               # model being run
-                  inp,                         # model input (or a tuple for multiple inputs)
-                  filePath+"gemm_big.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True,        # store the trained parameter weights inside the model file
-                  opset_version=10,          # the ONNX version to export the model to
-                  do_constant_folding=True,  # whether to execute constant folding for optimization
-                  input_names = ['input'],   # the model's input names
-                  output_names = ['output'], # the model's output names
+torch.onnx.export(model,
+                  inp,
+                  filePath+"gemm_big.onnx",
+                  export_params=True, dynamo=False,
+                  opset_version=10,
+                  do_constant_folding=True,
+                  input_names = ['input'],
+                  output_names = ['output'],
                   )
 
-torch.onnx.export(model,               # model being run
-                  inp,                         # model input (or a tuple for multiple inputs)
-                  filePath+"gemm_big_weights.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True,        # store the trained parameter weights inside the model file
-                  opset_version=10,          # the ONNX version to export the model to
-                  do_constant_folding=False,  # whether to execute constant folding for optimization
-                  input_names = ['input'],   # the model's input names
-                  output_names = ['output'], # the model's output names
+torch.onnx.export(model,
+                  inp,
+                  filePath+"gemm_big_weights.onnx",
+                  export_params=True, dynamo=False,
+                  opset_version=10,
+                  do_constant_folding=False,
+                  input_names = ['input'],
+                  output_names = ['output'],
                   )

@@ -12,23 +12,24 @@ produce = True
 for opt, _ in opts:
     if opt == "-n":
         produce = False
+
+torch.manual_seed(0)
+
+# bias=False exports MatMul; rectangular layers, no final ReLU
 class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
-        self.linear_relu_stack = nn.Sequential(
-            nn.Linear(2, 2),
-            nn.ReLU(),
-            nn.Linear(2,3),
-            nn.ReLU()
+        self.linear_stack = nn.Sequential(
+            nn.Linear(3, 4, bias=False),
+            nn.Linear(4, 2, bias=False),
         )
 
     def forward(self, inp):
-        hid = self.linear_relu_stack(inp)
-        return hid
+        return self.linear_stack(inp)
 
 
 model = NN()
-inp = torch.ones(1,2)
+inp = torch.randn(1,3)
 if produce:
     with open("inputs.fpp",'w') as f:
         inputs = inp.flatten().tolist()
@@ -47,8 +48,8 @@ def stringer(mat):
     return s.strip()
 
 logits = model(inp)
-filePath = "../goldenFiles/gemm_small/"
-with open(filePath+"gemm_small.txt", "w") as f:
+filePath = "../goldenFiles/gemm_nobias/"
+with open(filePath+"gemm_nobias.txt", "w") as f:
     f.write(stringer(list(logits.shape)))
     f.write("\n")
     f.write(stringer(logits.flatten().tolist()))
@@ -56,7 +57,7 @@ print(logits.flatten().tolist())
 
 torch.onnx.export(model,
                   inp,
-                  filePath+"gemm_small.onnx",
+                  filePath+"gemm_nobias.onnx",
                   export_params=True, dynamo=False,
                   opset_version=10,
                   do_constant_folding=True,
@@ -66,7 +67,7 @@ torch.onnx.export(model,
 
 torch.onnx.export(model,
                   inp,
-                  filePath+"gemm_small_weights.onnx",
+                  filePath+"gemm_nobias_weights.onnx",
                   export_params=True, dynamo=False,
                   opset_version=10,
                   do_constant_folding=False,
