@@ -2,7 +2,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import onnx
 from onnx import numpy_helper, shape_inference
 
@@ -16,7 +15,7 @@ class UnsupportedModel(ValueError):
 @dataclass(frozen=True)
 class Tensor:
     name: str
-    shape: tuple
+    shape: tuple[int, ...]
     dtype: str
 
 
@@ -24,8 +23,8 @@ class Tensor:
 class Node:
     op: str
     name: str
-    inputs: tuple
-    outputs: tuple
+    inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
     attrs: dict
 
 
@@ -35,24 +34,30 @@ class Graph:
     nodes: tuple
     values: dict
     initializers: dict
-    inputs: tuple
-    outputs: tuple
+    inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
 
 
-def _attr_value(a):
+def _attr_value(a, node_name: str):
     if a.type == onnx.AttributeProto.INT:
         return int(a.i)
     if a.type == onnx.AttributeProto.FLOAT:
         return float(a.f)
     if a.type == onnx.AttributeProto.STRING:
-        return a.s.decode("ascii")
+        try:
+            return a.s.decode("ascii")
+        except UnicodeDecodeError:
+            raise UnsupportedModel(f"node '{node_name}' attribute '{a.name}': non-ASCII string")
     if a.type == onnx.AttributeProto.INTS:
         return tuple(int(v) for v in a.ints)
     if a.type == onnx.AttributeProto.FLOATS:
         return tuple(float(v) for v in a.floats)
     if a.type == onnx.AttributeProto.STRINGS:
-        return tuple(s.decode("ascii") for s in a.strings)
-    raise UnsupportedModel(f"attribute {a.name}: unsupported attribute type {a.type}")
+        try:
+            return tuple(s.decode("ascii") for s in a.strings)
+        except UnicodeDecodeError:
+            raise UnsupportedModel(f"node '{node_name}' attribute '{a.name}': non-ASCII string")
+    raise UnsupportedModel(f"node '{node_name}' attribute '{a.name}': unsupported attribute type {a.type}")
 
 
 def _shape(vi):
@@ -85,15 +90,17 @@ def load_graph(path, name: str | None = None) -> Graph:
         values[vi.name] = Tensor(vi.name, _shape(vi), _dtype(vi))
     nodes = []
     for i, n in enumerate(g.node):
+        node_name = n.name or f"{n.op_type}#{i}"
         nodes.append(Node(
             op=n.op_type,
-            name=n.name or f"{n.op_type}#{i}",
+            name=node_name,
             inputs=tuple(n.input),
             outputs=tuple(n.output),
-            attrs={a.name: _attr_value(a) for a in n.attribute},
+            attrs={a.name: _attr_value(a, node_name) for a in n.attribute},
         ))
     inputs = tuple(vi.name for vi in g.input if vi.name not in initializers)
     outputs = tuple(vi.name for vi in g.output)
+    # Defensive check: catch outputs whose names collide with initializers.
     missing = [v for v in inputs + outputs if v not in values]
     if missing:
         raise UnsupportedModel(f"shape inference produced no shape for {missing}")
