@@ -38,6 +38,7 @@ capi: $(COMP) modelCreator.o
 	./capi
 
 ex1: $(DIR)/modelParserONNX.py
+	rm -f modelCreator.f90 modelCreator.o userTesting.f90 userTesting.o output
 	python3 $(MAIN)goldenFiles/$(case)/$(case).py
 	python3 $(DIR)/modelParserONNX.py -f $(MAIN)goldenFiles/$(case)/$(case).onnx -i $(MAIN)goldenFiles/$(case)/$(case)_inferred.onnx
 
