@@ -35,13 +35,24 @@ def fakeFourD(inp):
 
 
 def fourDTransform(trueshape, toBeTransformedShape):
+    """Right-align `toBeTransformedShape` into 4 dimensions, per ONNX broadcasting.
+
+    Every axis of the result must be either 1 or equal to the corresponding
+    axis of `trueshape`, otherwise the two do not broadcast.
+    """
+    t = list(toBeTransformedShape)
+    if len(t) > 4:
+        raise ValueError(f"cannot broadcast a {len(t)}-D tensor into 4 dimensions")
     new = [1, 1, 1, 1]
-    for dim in toBeTransformedShape:
-        try:
-            find = trueshape.index(dim)
-            new[find - len(trueshape)] = dim
-        except ValueError:
-            pass
+    for i, d in enumerate(reversed(t)):
+        new[3 - i] = d
+    true4d = fakeFourD(list(trueshape))
+    for i, (a, b) in enumerate(zip(true4d, new)):
+        if b != 1 and b != a:
+            raise ValueError(
+                f"axis {i}: cannot broadcast {toBeTransformedShape} "
+                f"against {trueshape} ({b} vs {a})"
+            )
     return new
 
 
