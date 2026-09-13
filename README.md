@@ -186,8 +186,9 @@ gfortran -o capi *.o path/to/libcorelib.a
 ./capi
 ```
 
-By default, weights are read from a binary `onnxWeights.bin` file; a legacy `onnxWeights.txt` file is still read
-if its path is passed explicitly to `initialize`.
+A weights path ending in `.txt` (in any letter case, trailing blanks ignored) is read as the legacy text format;
+any other path is read as little-endian float64 binary, which must match the model exactly, or `initialize`
+stops with an error.
 
 ## Further documentation
 

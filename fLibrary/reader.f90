@@ -3,7 +3,7 @@ module reader
     USE derived_types
     USE activation_functions
     use iso_c_binding
-    use iso_fortran_env, only: error_unit
+    use iso_fortran_env, only: error_unit, int64
 
     implicit none
 
@@ -45,6 +45,9 @@ module reader
         INTEGER :: i
         INTEGER :: readOrNot
         LOGICAL :: binary
+        character(len=4) :: ext
+        integer :: k, wlen
+        integer(int64) :: wpos, wsize
 
         mpath = "onnxModel.txt"
         wpath = "onnxWeights.bin"
@@ -65,9 +68,16 @@ module reader
             flush(error_unit)
             error stop 1
         end if
-        ! .txt weights are the legacy list-directed format; anything else is float64 stream
+        ! a path ending in .txt (any case, trailing blanks ignored) is the legacy text format
+        wlen = len_trim(wpath)
         binary = .true.
-        if (len(wpath) >= 4) binary = wpath(len(wpath)-3:) /= '.txt'
+        if (wlen >= 4) then
+            ext = wpath(wlen-3:wlen)
+            do k = 1, 4
+                if (ext(k:k) >= 'A' .and. ext(k:k) <= 'Z') ext(k:k) = achar(iachar(ext(k:k)) + 32)
+            end do
+            binary = ext /= '.txt'
+        end if
         if (binary) then
             open(newunit=weightsUnit, file=wpath, status='old', action='read', access='stream', &
                 form='unformatted', iostat=ios)
@@ -131,6 +141,16 @@ module reader
 
 
         END DO readloop
+
+        if (binary) then
+            inquire(unit=weightsUnit, pos=wpos, size=wsize)
+            if (wpos /= wsize + 1) then
+                write(error_unit,'(a,i0,a,i0,a)') "roseNNa: weights file '"//trim(wpath)//"' has ", wsize, &
+                    " bytes but the model consumed ", wpos - 1, "; the weights do not match the model"
+                flush(error_unit)
+                error stop 1
+            end if
+        end if
 
         close(modelUnit)
         close(weightsUnit)
