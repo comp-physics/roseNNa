@@ -18,6 +18,11 @@
 - **Do not regenerate `goldenFiles/mnist/mnist.onnx`.** It is the only committed `.onnx` (explicitly allowlisted) and is not reproducible from `mnist.py`, which only runs inference against it.
 - **Golden-file `.txt` expectations are regenerated on every run** (`goldenFiles/*/*.txt` is gitignored), so a test "passes" only by agreeing with a freshly-run PyTorch. Never hand-edit them.
 - **fypp resolves `#:include` relative to the include path, not the source file.** `fypp -I<dir>` is required whenever the `.fpp` and its `variables.fpp` live in different directories (verified: without `-I`, fypp 3.2 fails with `include file 'variables.fpp' not found`).
+- **Never run any command from the main checkout.** All work happens in the worktree; every
+  path in this plan is relative to it. `git clean -fdX` appears in most tasks and deletes ALL
+  gitignored files, so no scratch state may live inside the worktree. The SDD workspace is at
+  `/Users/spencer/Downloads/rosenna/.sdd-workspace`, deliberately outside it. (`-e` does NOT
+  protect a path from `-X`; it adds to the ignore rules, which makes `-X` delete it.)
 - **Line numbers in this plan are from the pre-task tree and drift as tasks land.** Tasks 10 and 18 both edit `layers.f90` above other cited regions. Always locate code by the surrounding subroutine name and the quoted text, and treat `file:line` as a hint. Verify with `grep -n` before editing.
 - **Baseline before any work:** `cd test && ./run.sh` reports `1 out of 17`. After Task 1 it must report `14 out of 17`. After Task 4 it must report `17 out of 17`. Every later task must keep it at 17+ (plus whatever new cases that task adds).
 - **ONNX LSTM gate order is `i, o, f, c`.** roseNNa's `lstm_cell` consumes `i, f, g, o` (PyTorch order). The remap index list is `[0, 2, 3, 1]`. Verified empirically against `lstm_cell.onnx`.
@@ -110,7 +115,7 @@ Expected: `ModuleNotFoundError: No module named 'onnxscript'`
 - [ ] **Step 2: Pin the legacy exporter in every golden script**
 
 ```bash
-cd /Users/spencer/Downloads/rosenna
+cd "$(git rev-parse --show-toplevel)"
 for f in goldenFiles/*/*.py; do
   sed -i '' 's/export_params=True,/export_params=True, dynamo=False,/' "$f"
 done
@@ -1461,7 +1466,7 @@ import torch
 m = torch.nn.Sequential(torch.nn.Linear(2,3), torch.nn.ReLU())
 torch.onnx.export(m, torch.rand(1,2), 'unnamed.onnx', opset_version=10, dynamo=False)
 print('exported')"
-cd /Users/spencer/Downloads/rosenna/fLibrary && python3 modelParserONNX.py -f /private/tmp/unnamed.onnx >/dev/null && \
+cd fLibrary && python3 modelParserONNX.py -f /private/tmp/unnamed.onnx >/dev/null && \
   fypp -I. modelCreator.fpp /private/tmp/mc.f90 && \
   grep -E "onnx::|:: 3$" /private/tmp/mc.f90 | head
 ```
@@ -1655,7 +1660,7 @@ Verified that gfortran accepts `optional` dummies in a `bind(c)` procedure, so o
 Run: `grep -n "bind(c,name=\"initialize\")" fLibrary/reader.f90 && grep -n "void initialize" examples/cAPI.c`
 Expected: a zero-argument Fortran definition against a two-argument C declaration.
 
-Run: `cd /private/tmp && mkdir -p emptydir && cd emptydir && cp /Users/spencer/Downloads/rosenna/fLibrary/*.f90 . && gfortran -c activation_funcs.f90 derived_types.f90 layers.f90 reader.f90 2>/dev/null && echo "compiles; missing-file behavior is an unhandled runtime error"`
+Run: `cd /private/tmp && mkdir -p emptydir && cd emptydir && cp "$(git rev-parse --show-toplevel)"/fLibrary/*.f90 . && gfortran -c activation_funcs.f90 derived_types.f90 layers.f90 reader.f90 2>/dev/null && echo "compiles; missing-file behavior is an unhandled runtime error"`
 
 - [ ] **Step 2: Add a C-string helper and optional path arguments**
 
@@ -1779,7 +1784,7 @@ And the missing-file path:
 
 ```bash
 cd /private/tmp && mkdir -p nofiles && cd nofiles && \
-  cp /Users/spencer/Downloads/rosenna/fLibrary/libcorelib.a . 2>/dev/null; \
+  cp "$(git rev-parse --show-toplevel)"/fLibrary/libcorelib.a . 2>/dev/null; \
   echo "expect a clear 'cannot open model file' message rather than a crash"
 ```
 
