@@ -9,14 +9,20 @@ for d in ../goldenFiles/*/ ; do
     name=$(basename "$d")
     if [[ "$name" != "$skip" ]] && [[ "$name" != "vgg16" ]] && [[ "$name" != "gemm_huge" ]] && [[ "$name" != "turbulentShear" ]]; then
         echo "---------------- TEST #$testnum $name -------------------"
-        make test case="$name"
-        output=$(python3 -Wi testChecker.py "$name")
-        if [[ $? -eq 0 ]]; then
-            ((++npass))
+        if make test case="$name"; then
+            output=$(python3 -Wi testChecker.py "$name")
+            if [[ $? -eq 0 ]]; then
+                ((++npass))
+            else
+                ((++nfail))
+            fi
+            echo "$output"
         else
+            # a parser rejection or build failure leaves the previous case's
+            # test.txt behind, so never compare it
             ((++nfail))
+            echo "Fail!! make test failed for $name (parser rejection or build failure); outputs not compared"
         fi
-        echo "$output"
         echo -e "---------------- TEST #$testnum $name -------------------\n"
         ((++testnum))
     fi
