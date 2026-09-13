@@ -3,9 +3,9 @@ DIR = ../fLibrary
 MAIN = ../
 FFLAGS=-O2
 FFLAGS=-O3
-SRC=modelCreator.fpp userTesting.fpp
+SRC=userTesting.fpp
 SRCBASE=$(DIR)/activation_funcs.f90 $(DIR)/derived_types.f90 $(DIR)/layers.f90 $(DIR)/reader.f90
-OBJ2=${SRC:.fpp=.o}
+OBJ2=modelCreator.o ${SRC:.fpp=.o}
 COMP=${SRCBASE:.f90=.o}
 
 output: $(COMP) $(OBJ2)
@@ -13,7 +13,10 @@ output: $(COMP) $(OBJ2)
 
 .PRECIOUS : %.f90
 %.f90: %.fpp variables.fpp
-	fypp $< $*.f90
+	fypp -I. $< $*.f90
+
+modelCreator.f90: $(DIR)/modelCreator.fpp variables.fpp
+	fypp -I. $(DIR)/modelCreator.fpp modelCreator.f90
 
 %.o: %.f90
 	$(FC) $(FFLAGS) -o $@ -c $<
