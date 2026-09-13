@@ -32,27 +32,71 @@ def read_weights(path):
     blob = Path(path).read_bytes()
     if blob[:8] != MAGIC:
         raise ValueError(f"{path}: not a roseNNa weights file")
+
+    # Check header (24 bytes)
+    if len(blob) < 24:
+        raise ValueError(f"{path}: file truncated; header requires 24 bytes, got {len(blob)}")
     version, dtype_code, endian, count = struct.unpack("<iiii", blob[8:24])
     if version != VERSION:
         raise ValueError(f"{path}: version {version}, expected {VERSION}")
     if endian != ENDIAN_MARKER:
         raise ValueError(f"{path}: endian marker {endian:#x}")
+
+    # Check plan hash and TOC length marker (32 + 4 = 36 bytes after header)
+    if len(blob) < 60:
+        raise ValueError(f"{path}: file truncated; plan hash and TOC length require 60 bytes, got {len(blob)}")
     header = {"version": version, "dtype": _CODE_DTYPE[dtype_code],
               "plan_hash": blob[24:56].hex(), "count": count}
     toclen = struct.unpack("<i", blob[56:60])[0]
     data_start = 60 + toclen
+
+    # Check that table of contents fits
+    if len(blob) < data_start:
+        raise ValueError(f"{path}: file truncated; table of contents ({toclen} bytes) extends to byte {data_start}, got {len(blob)} total")
+
     tensors, pos = {}, 60
-    for _ in range(count):
-        namelen = struct.unpack("<i", blob[pos:pos + 4])[0]
-        pos += 4
-        name = blob[pos:pos + namelen].decode("ascii")
-        pos += namelen
-        rank = struct.unpack("<i", blob[pos:pos + 4])[0]
-        pos += 4
-        dims = struct.unpack(f"<{rank}q", blob[pos:pos + 8 * rank])
-        pos += 8 * rank
-        offset, length = struct.unpack("<qq", blob[pos:pos + 16])
-        pos += 16
-        raw = blob[data_start + offset:data_start + offset + length]
-        tensors[name] = np.frombuffer(raw, dtype=_NUMPY[header["dtype"]]).reshape(dims)
+    for tensor_idx in range(count):
+        try:
+            # Read name length
+            if pos + 4 > len(blob):
+                raise ValueError(f"{path}: tensor {tensor_idx}: file truncated reading name length at byte {pos}, need 4 bytes")
+            namelen = struct.unpack("<i", blob[pos:pos + 4])[0]
+            pos += 4
+
+            # Read name
+            if pos + namelen > len(blob):
+                raise ValueError(f"{path}: tensor {tensor_idx}: file truncated reading name ({namelen} bytes) at byte {pos}")
+            name = blob[pos:pos + namelen].decode("ascii")
+            pos += namelen
+
+            # Read rank
+            if pos + 4 > len(blob):
+                raise ValueError(f"{path}: tensor '{name}': file truncated reading rank at byte {pos}")
+            rank = struct.unpack("<i", blob[pos:pos + 4])[0]
+            pos += 4
+
+            # Read dimensions
+            if pos + 8 * rank > len(blob):
+                raise ValueError(f"{path}: tensor '{name}': file truncated reading {rank} dimensions ({8*rank} bytes) at byte {pos}")
+            dims = struct.unpack(f"<{rank}q", blob[pos:pos + 8 * rank])
+            pos += 8 * rank
+
+            # Read offset and length
+            if pos + 16 > len(blob):
+                raise ValueError(f"{path}: tensor '{name}': file truncated reading offset and length at byte {pos}")
+            offset, length = struct.unpack("<qq", blob[pos:pos + 16])
+            pos += 16
+
+            # Verify data is accessible
+            if data_start + offset + length > len(blob):
+                raise ValueError(f"{path}: tensor '{name}': data extends to byte {data_start + offset + length}, file has {len(blob)} bytes")
+
+            raw = blob[data_start + offset:data_start + offset + length]
+            tensors[name] = np.frombuffer(raw, dtype=_NUMPY[header["dtype"]]).reshape(dims)
+        except Exception as e:
+            # Re-raise our ValueError as-is, wrap struct.error
+            if isinstance(e, ValueError):
+                raise
+            raise ValueError(f"{path}: tensor {tensor_idx}: {e}") from e
+
     return tensors, header
