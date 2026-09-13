@@ -33,7 +33,7 @@ elif layer == "Gemm":
     ioMap[node.output[0]] = ioMap[node.input[0]]
 ```
 ## Adding Layer
-Most layers come with a set of parameters that are commonly manipulated (number of layers, activation functions, hidden state, etc.). This information can be integrated by creating a derived type of the layer in [derived_types.f90](https://github.com/comp-physics/roseNNa/blob/develop/derived_types.f90). Here is an example:
+Most layers come with a set of parameters that are commonly manipulated (number of layers, activation functions, hidden state, etc.). This information can be integrated by creating a derived type of the layer in [derived_types.f90](https://github.com/comp-physics/roseNNa/blob/master/fLibrary/derived_types.f90). Here is an example:
 
 ``` fortran
 TYPE lstmLayer
@@ -46,7 +46,7 @@ ENDTYPE lstmLayer
 The LSTM layer requires 4 types of hidden weights that are used while running through the layer. They are stored within the derived type. The layer dimensions cannot be changed later on.
 
 ## Adding activation function
-For any activation functions that need to be added will go in [activation_funcs.f90](https://github.com/comp-physics/roseNNa/blob/develop/activation_funcs.f90). To do so, just a function needs to be created. Here is an example:
+For any activation functions that need to be added will go in [activation_funcs.f90](https://github.com/comp-physics/roseNNa/blob/master/fLibrary/activation_funcs.f90). To do so, just a function needs to be created. Here is an example:
 
 ``` fortran
 FUNCTION tanhh(x) result(output)
@@ -57,7 +57,7 @@ END FUNCTION tanhh
 ```
 
 ## Reading layer in reader.f90
-In order to read in the weights and layers from the files `onnxModel.txt` and `onnxWeights.txt`, the file [reader.f90](https://github.com/comp-physics/roseNNa/blob/develop/readTester.f90) has to include the new layer/activation function. First, we will create an array of derived types for the new layer. This will allow us to store multiple of the same layer if the model contains it (we make it allocatable so it can be appended to with no dimension restrictions). Then, we create a new subroutine for the layer, which defines how we will read in the weights/dimensions (this will depend based on how you wrote the dimensions to the files in the first place). Here is an example:
+In order to read in the weights and layers from the files `onnxModel.txt` and `onnxWeights.txt`, the file [reader.f90](https://github.com/comp-physics/roseNNa/blob/master/fLibrary/reader.f90) has to include the new layer/activation function. First, we will create an array of derived types for the new layer. This will allow us to store multiple of the same layer if the model contains it (we make it allocatable so it can be appended to with no dimension restrictions). Then, we create a new subroutine for the layer, which defines how we will read in the weights/dimensions (this will depend based on how you wrote the dimensions to the files in the first place). Here is an example:
 
 ``` fortran
 !subroutine definition for GEMM/MLP layer (file1=dimensions, file2=weights)
@@ -95,7 +95,7 @@ end subroutine
 ```
 
 ## Fypp to call the layer/activation function
-After encoding the layer/activation function and reading it, fypp will construct the model. Fypp takes in the model architecture, inputs, outputs, and shapes, all of which have been written to an external fypp file. In [modelCreator.fpp](https://github.com/comp-physics/roseNNa/blob/master/modelCreator.fpp), there is a condition for each of the layers that need to be added. Here is an example for the multilayer perceptron layer (GEMM):
+After encoding the layer/activation function and reading it, fypp will construct the model. Fypp takes in the model architecture, inputs, outputs, and shapes, all of which have been written to an external fypp file. In [modelCreator.fpp](https://github.com/comp-physics/roseNNa/blob/master/fLibrary/modelCreator.fpp), there is a condition for each of the layers that need to be added. Here is an example for the multilayer perceptron layer (GEMM):
 
 ``` fortran
 #: if tup[0] == 'Gemm'
@@ -105,9 +105,9 @@ After encoding the layer/activation function and reading it, fypp will construct
 In this example, we call the `linear_layer` implemented in `layers.f90` and pass in arguments that come from the external fypp files. There is a for loop running through each layer in the model architecture (a list of tuples), and `tup` contains certain arguments that enables the tool to call the correct names and arguments. `linLayers` is defined in the reader file and stores information about the **i**th layer. One thing to make sure is to store the correct information in model architecture so it can be referenced during this stage.
 
 ## Running Tests
-To run current tests located in [goldenFiles](https://github.com/comp-physics/FyeNNa/tree/develop/goldenFiles), change permissions for [run.sh](https://github.com/comp-physics/FyeNNa/blob/develop/run.sh). Each time the tests are run, new weights are initialized for the given test's model. To look at the model architectures of each test, go to the same **goldenFiles** folder, view each test's folder, and go to the .py file.
+To run current tests located in [goldenFiles](https://github.com/comp-physics/roseNNa/tree/master/goldenFiles), change permissions for [run.sh](https://github.com/comp-physics/roseNNa/blob/master/test/run.sh). Each time the tests are run, new weights are initialized for the given test's model. To look at the model architectures of each test, go to the same **goldenFiles** folder, view each test's folder, and go to the .py file.
 
-To add a new test, go to the [goldenFiles](https://github.com/comp-physics/FyeNNa/tree/develop/goldenFiles) directory and create a new folder which will store information about the new test being created: python model (either an imported onnx file, h5 file, etc.) or an actual definition of a model (in PyTorch, Tensorflow, etc.). 
+To add a new test, go to the [goldenFiles](https://github.com/comp-physics/roseNNa/tree/master/goldenFiles) directory and create a new folder which will store information about the new test being created: python model (either an imported onnx file, h5 file, etc.) or an actual definition of a model (in PyTorch, Tensorflow, etc.). 
 
 After doing the above, there are a couple of files we need to create/write to:
 

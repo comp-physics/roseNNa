@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="doc/rosenna.png" alt="roseNNa banner" width="600"/></center>
+  <img src="doc/rosenna.png" alt="roseNNa banner" width="600"/>
 </p>
 <p align="center"> 
 <a href="https://github.com/comp-physics/roseNNa/actions/workflows/CI.yml">
@@ -8,8 +8,8 @@
 <a href="https://lbesson.mit-license.org/">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" />
 </a>
-<a href="http://doi.org/10.1016/j.cpc.2023.109052">
-  <img src="http://img.shields.io/badge/DOI-10.1016/j.cpc.2023.109052-B31B1B.svg" />
+<a href="https://doi.org/10.1016/j.cpc.2023.109052">
+  <img src="https://img.shields.io/badge/DOI-10.1016/j.cpc.2023.109052-B31B1B.svg" />
 </a>
 </p>
 
@@ -21,7 +21,7 @@ You can then evaluate your neural network from the PDE solver at Fortran/C speed
 
 RoseNNa currently supports RNNs, CNNs, and MLPs.
 The library is optimized Fortran and outperforms PyTorch (by a factor between 2 and 5x) for the relatively small neural networks used in physics applications, like computational fluid dynamics.
-RoseNNa is described in detail in <a href="http://arxiv.org/abs/2307.16322">A. Bati, S. H. Bryngelson (2024) Comp. Phys. Comm., 296, 109052.</a>.
+RoseNNa is described in detail in <a href="https://arxiv.org/abs/2307.16322">A. Bati, S. H. Bryngelson (2024) Comp. Phys. Comm., 296, 109052.</a>.
 
 ## Hello RoseNNa
 
@@ -158,25 +158,31 @@ gfortran -o flibrary path/to/libcorelib.a *.o
 One can readily call roseNNa from C. 
 Compile roseNNa, then use the following C program as an example:
 ```c
+#include <stdio.h>
+
 void use_model(double * i0, double * o0);
-void initialize(char * model_file, char * weights_file);
+void initialize(const char * model_file, const char * weights_file);
 
 int main(void) {
 
-    double input[1][2] = {1,1};
-    double out[1][3];
-    initialize("onnxModel.txt","onnxWeights.txt");
-    use_model(input, out);
+    /* roseNNa expects column-major (Fortran) ordering. */
+    double a[2] = {1, 1};
+    double b[3];
+
+    initialize("onnxModel.txt", "onnxWeights.txt");
+    use_model(a, b);
 
     for (int i = 0; i < 3; i++) {
-        printf("%f ",b[0][i]);
+        printf("%f ", b[i]);
     }
+    printf("\n");
+    return 0;
 }
 ```
 and compile it as
 ```shell
 gcc -c *.c
-gfortran -o capi path/to/libcorelib.a *.o
+gfortran -o capi *.o path/to/libcorelib.a
 ./capi
 ```
 
