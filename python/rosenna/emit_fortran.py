@@ -141,35 +141,30 @@ def _emit_infer(plan: Plan) -> list:
         lines.append(f"        real(wp) :: {sym}({plan.buffers[sym]})")
     lines.append("        integer :: i, j")
 
+    # Fusing an activation into its preceding gemm's loop would require the
+    # activation's output buffer to equal the gemm's output buffer. Task 4's
+    # _assign_buffers can never produce that: an op's output symbol is
+    # assigned before its input's symbol is returned to the free list, so no
+    # op -- activation or otherwise -- can ever share a buffer with its own
+    # input. That makes the fusion case unreachable by construction, not by
+    # coincidence, so there is no such branch here: every op gets its own
+    # loop, straight from plan.assignment and plan.buffers.
     ops = plan.ops
-    fused = set()
     cur_len = n_in
-    for idx, op in enumerate(ops):
-        if idx in fused:
-            continue
+    for op in ops:
         if op.kind == "gemm":
             dst = plan.assignment[op.out]
             src = plan.assignment[op.inp]
             idx_expr = _weight_index(weight_by_symbol, op.weight, op.n_in, op.n_out)
 
-            act = None
-            if (idx + 1 < len(ops) and ops[idx + 1].kind in _ACT
-                    and ops[idx + 1].inp == op.out
-                    and plan.assignment[ops[idx + 1].out] == dst):
-                act = ops[idx + 1]
-            out_sym = plan.assignment[act.out] if act else dst
-
             lines.append(f"        do i = 1, {op.n_out}")
             if op.bias:
-                lines.append(f"            {out_sym}(i) = {op.bias}(i)")
+                lines.append(f"            {dst}(i) = {op.bias}(i)")
             else:
-                lines.append(f"            {out_sym}(i) = 0.0_wp")
+                lines.append(f"            {dst}(i) = 0.0_wp")
             lines.append(f"            do j = 1, {op.n_in}")
-            lines.append(f"                {out_sym}(i) = {out_sym}(i) + {src}(j) * {op.weight}({idx_expr})")
+            lines.append(f"                {dst}(i) = {dst}(i) + {src}(j) * {op.weight}({idx_expr})")
             lines.append("            end do")
-            if act:
-                lines.append(f"            {out_sym}(i) = {_ACT[act.kind].format(v=f'{out_sym}(i)')}")
-                fused.add(idx + 1)
             lines.append("        end do")
             cur_len = op.n_out
         elif op.kind in _ACT:
