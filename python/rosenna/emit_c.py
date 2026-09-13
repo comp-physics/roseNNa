@@ -5,8 +5,20 @@ from .plan import Plan
 _CTYPE = {"f32": "float", "f64": "double"}
 _DTYPE_CODE = {"f32": 0, "f64": 1}
 
-_ACT_C = {"relu": "{v} > 0.0 ? {v} : 0.0", "tanh": "tanh({v})",
-          "sigmoid": "1.0 / (1.0 + exp(-({v})))"}
+# Activation expressions, per plan dtype. An f32 plan must call the float
+# intrinsics: tanh/exp on a float promote the whole expression to double, so
+# the C backend computed f32 models in double precision while Fortran's f32
+# path used the single-precision intrinsics, and the inner loop lost its
+# vectorization. relu is written `v < 0 ? 0 : v`, not `v > 0 ? v : 0`, so
+# that a NaN -- whose comparisons are all false -- comes out as itself
+# instead of being laundered into a plausible zero.
+_ACT_C = {
+    "f32": {"relu": "{v} < 0.0f ? 0.0f : {v}", "tanh": "tanhf({v})",
+            "sigmoid": "1.0f / (1.0f + expf(-({v})))"},
+    "f64": {"relu": "{v} < 0.0 ? 0.0 : {v}", "tanh": "tanh({v})",
+            "sigmoid": "1.0 / (1.0 + exp(-({v})))"},
+}
+_ZERO = {"f32": "0.0f", "f64": "0.0"}
 
 
 def _c_string(s: str) -> str:
@@ -210,6 +222,7 @@ def _emit_infer(plan: Plan, ctype: str) -> list:
     """
     m = plan.model
     n_in = plan.input.shape[0]
+    act = _ACT_C[plan.dtype]
     weight_by_symbol = {w.symbol: w for w in plan.weights}
     scratch = sorted((s for s in plan.buffers if s not in ("x", "y")),
                      key=lambda s: int(s[1:]))
@@ -223,7 +236,7 @@ def _emit_infer(plan: Plan, ctype: str) -> list:
         dst, src = plan.assignment[op.out], plan.assignment[op.inp]
         if op.kind == "gemm":
             idx_expr = _weight_index_c(weight_by_symbol, op)
-            bias_init = f"{op.bias}[i]" if op.bias else "0.0"
+            bias_init = f"{op.bias}[i]" if op.bias else _ZERO[plan.dtype]
             lines.append(f"    for (int i = 0; i < {op.n_out}; ++i) {{")
             lines.append(f"        {ctype} acc = {bias_init};")
             lines.append(
@@ -232,8 +245,8 @@ def _emit_infer(plan: Plan, ctype: str) -> list:
             lines.append(f"        {dst}[i] = acc;")
             lines.append("    }")
             cur_len = op.n_out
-        elif op.kind in _ACT_C:
-            expr = _ACT_C[op.kind].format(v=f"{src}[i]")
+        elif op.kind in act:
+            expr = act[op.kind].format(v=f"{src}[i]")
             lines.append(f"    for (int i = 0; i < {cur_len}; ++i) {dst}[i] = {expr};")
         else:
             raise AssertionError(f"unhandled op kind {op.kind!r}")

@@ -3,7 +3,11 @@ from .abi import name_capacity, rank_capacity, status_code_comment
 from .plan import Plan
 
 _KIND = {"f32": "real32", "f64": "real64"}
-_ACT = {"relu": "max({v}, 0.0_wp)", "tanh": "tanh({v})", "sigmoid": "1.0_wp / (1.0_wp + exp(-({v})))"}
+# relu is written as merge, not max: max(v, 0) returns 0 for a NaN input, and
+# this library is linked into solvers where a NaN out of a diverged run is the
+# signal. merge(0, v, v < 0) has a false mask for NaN and so returns v.
+_ACT = {"relu": "merge(0.0_wp, {v}, {v} < 0.0_wp)", "tanh": "tanh({v})",
+        "sigmoid": "1.0_wp / (1.0_wp + exp(-({v})))"}
 _DTYPE_CODE = {"f32": 0, "f64": 1}
 
 
