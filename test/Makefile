@@ -1,7 +1,6 @@
 FC=gfortran -I../fLibrary/objFiles/ -J../fLibrary/objFiles/
 DIR = ../fLibrary
 MAIN = ../
-FFLAGS=-O2
 FFLAGS=-O3
 SRC=userTesting.fpp
 SRCBASE=$(DIR)/activation_funcs.f90 $(DIR)/derived_types.f90 $(DIR)/layers.f90 $(DIR)/reader.f90
@@ -33,9 +32,9 @@ testing: ex1 compile user output
 	./output 2> outputCase.txt
 	python3 -Wi testChecker.py $(case)
 
-capi: capi.c modelCreator.o
-	gcc -c capi.c
-	gfortran -o capi modelCreator.o capi.o
+capi: $(COMP) modelCreator.o
+	gcc -c ../examples/cAPI.c -o cAPI.o
+	gfortran -o capi cAPI.o $(COMP) modelCreator.o
 	./capi
 
 ex1: $(DIR)/modelParserONNX.py
@@ -60,4 +59,8 @@ unit: $(COMP) unit_tests.o
 	rm -rf c_default_paths_run
 
 clean:
-	rm *.o *.mod output
+	rm -f *.o *.mod output unit_tests c_default_paths capi cAPI.o
+	rm -rf c_default_paths_run
+	rm -f $(DIR)/*.o
+	rm -f modelCreator.f90 userTesting.f90 variables.fpp inputs.fpp
+	rm -f test.txt outputCase.txt onnxModel.txt onnxWeights.txt
