@@ -46,29 +46,50 @@ end program
     return np.array([[float(v) for v in line.split()] for line in out.strip().splitlines()])
 
 
+def _live_reference(session, shape, dtype, seed=0, batch=8, max_attempts=10):
+    """Resample input batches until the onnxruntime reference itself is alive.
+
+    Non-degeneracy is a property of the randomly generated fixture, not of
+    the code under test: several golden models (e.g. gemm_small) have no
+    manual_seed, so their weights differ on every regeneration, and an
+    all-zero reference (a dead model, e.g. every pre-activation negative
+    into a final ReLU) is a property of that draw of weights -- correct
+    generated code reproducing a dead model must *also* be all zero, so no
+    assertion on our own output can tell the two cases apart. The fix
+    belongs here, on the reference, before we ever build or run anything.
+
+    Returns (inputs, expected) for the first batch whose reference has at
+    least two non-zero values across the whole batch, or (None, None) if
+    max_attempts batches all came back dead.
+    """
+    rng = np.random.default_rng(seed)
+    for _ in range(max_attempts):
+        inputs = rng.uniform(-2, 2, (batch, int(np.prod(shape)))).astype(dtype)
+        expected = np.array([
+            session.run(None, {session.get_inputs()[0].name:
+                                row.reshape(shape).astype(np.float32)})[0].ravel()
+            for row in inputs
+        ])
+        if np.count_nonzero(expected) >= 2:
+            return inputs, expected
+    return None, None
+
+
 @pytest.mark.parametrize("name", DENSE)
 def test_matches_onnxruntime(tmp_path, golden_model, name):
     onnx_path = golden_model(name)
     session = ort.InferenceSession(str(onnx_path))
     shape = session.get_inputs()[0].shape
-    rng = np.random.default_rng(0)
-    inputs = rng.uniform(-2, 2, (8, int(np.prod(shape)))).astype(np.float64)
+    inputs, expected = _live_reference(session, shape, np.float64)
+    if inputs is None:
+        pytest.skip(f"{name}: onnxruntime reference is all-zero across 10 resampled "
+                    f"batches; its golden-file weights produced a dead model")
     got = _build_and_run(tmp_path, onnx_path, name, inputs)
-    for row, produced in zip(inputs, got):
-        expected = session.run(None, {session.get_inputs()[0].name:
-                                      row.reshape(shape).astype(np.float32)})[0].ravel()
-        np.testing.assert_allclose(produced, expected, rtol=1e-5, atol=1e-6)
-    # Guard against a vacuous all-zeros comparison that would prove nothing.
-    # This is deliberately whole-batch, not per-row: gemm_small's golden
-    # file has no manual_seed, so its weights are freshly random on every
-    # regeneration, and the model ends in a ReLU -- so any single row
-    # landing on all zeros is a legitimate outcome for correct code, and a
-    # per-row rule fails at random (observed directly: a per-row >=1 rule
-    # still hit a genuine [0, 0, 0] row on a cold rerun). Requiring signal
-    # somewhere across all 8 rows catches a truly broken (all-zero)
-    # implementation with negligible flake probability. Do not tighten this
-    # back to per-row.
-    assert np.count_nonzero(got) >= 2, f"batch output is degenerate: {got}"
+    # Compare every row, including any that individually landed on zero
+    # inside an otherwise-live batch -- degenerate rows are not filtered
+    # out, only a fully dead batch is resampled away.
+    for produced, exp_row in zip(got, expected):
+        np.testing.assert_allclose(produced, exp_row, rtol=1e-5, atol=1e-6)
 
 
 def test_matches_onnxruntime_f32(tmp_path, golden_model):
@@ -85,15 +106,17 @@ def test_matches_onnxruntime_f32(tmp_path, golden_model):
     onnx_path = golden_model(name)
     session = ort.InferenceSession(str(onnx_path))
     shape = session.get_inputs()[0].shape
-    rng = np.random.default_rng(0)
-    inputs = rng.uniform(-2, 2, (8, int(np.prod(shape)))).astype(np.float32)
+    # See _live_reference: non-degeneracy is checked on the onnxruntime
+    # reference, with resampling, not on our own output -- a dead model's
+    # all-zero reference is a fixture property (gemm_big also has no
+    # manual_seed), and correct code reproducing it is also all zero.
+    inputs, expected = _live_reference(session, shape, np.float32)
+    if inputs is None:
+        pytest.skip(f"{name}: onnxruntime reference is all-zero across 10 resampled "
+                    f"batches; its golden-file weights produced a dead model")
     got = _build_and_run(tmp_path, onnx_path, name, inputs, dtype="f32")
-    for row, produced in zip(inputs, got):
-        expected = session.run(None, {session.get_inputs()[0].name:
-                                      row.reshape(shape).astype(np.float32)})[0].ravel()
-        np.testing.assert_allclose(produced, expected, rtol=1e-3, atol=1e-4)
-    # Whole-batch, not per-row -- see test_matches_onnxruntime for why.
-    assert np.count_nonzero(got) >= 2, f"batch output is degenerate: {got}"
+    for produced, exp_row in zip(got, expected):
+        np.testing.assert_allclose(produced, exp_row, rtol=1e-3, atol=1e-4)
 
 
 def test_infer_is_pure_and_has_literal_bounds(golden_model):
