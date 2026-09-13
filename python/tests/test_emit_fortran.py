@@ -147,3 +147,23 @@ end program
                    cwd=tmp_path, check=True, capture_output=True, text=True)
     out = subprocess.run(["./run"], cwd=tmp_path, capture_output=True, text=True, check=True)
     assert out.stdout.split() == ["6"]      # plan hash mismatch
+
+
+def test_case_labels_escape_quotes(tmp_path):
+    """A quote in a tensor name must be doubled, not left to break the source."""
+    import onnx
+    from onnx import helper, numpy_helper, TensorProto
+    quoted = "layer.0'weight"
+    w = numpy_helper.from_array(np.zeros((2, 2), np.float32), quoted)
+    node = helper.make_node("MatMul", ["x", quoted], ["y"], name="mm")
+    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 2])
+    y = helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 2])
+    g = helper.make_graph([node], "quoted", [x], [y], initializer=[w])
+    m = helper.make_model(g, opset_imports=[helper.make_opsetid("", 13)])
+    path = tmp_path / "quoted.onnx"
+    onnx.save(m, path)
+    src = emit_fortran(build_plan(load_graph(path), dtype="f64"))
+    assert "case ('layer.0''weight')" in src
+    (tmp_path / "quoted_model.f90").write_text(src)
+    subprocess.run(["gfortran", "-O2", "-Wall", "-Wextra", "-c", "quoted_model.f90"],
+                   cwd=tmp_path, check=True, capture_output=True, text=True)

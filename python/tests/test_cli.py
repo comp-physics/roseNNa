@@ -73,3 +73,55 @@ def test_generate_rejects_unsupported_model(tmp_path, capsys, golden_model):
     rc = main(["generate", str(onnx_path), "--out", str(tmp_path)])
     assert rc == 1
     assert "rosenna:" in capsys.readouterr().err
+
+
+def test_missing_model_file_is_reported_not_traced(capsys):
+    # A mistyped path used to escape as a FileNotFoundError traceback.
+    rc = main(["info", "no/such/model.onnx"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "rosenna:" in err
+    assert "model.onnx" in err
+
+
+def test_non_onnx_file_is_reported_not_traced(tmp_path, capsys):
+    # A protobuf DecodeError used to escape as a traceback.
+    bogus = tmp_path / "notes.onnx"
+    bogus.write_text("this is not a protobuf\n")
+    rc = main(["info", str(bogus)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "rosenna:" in err
+
+
+def test_missing_compiler_is_reported_not_traced(capsys, monkeypatch, golden_model):
+    # verify._run caught CalledProcessError but not FileNotFoundError, so a
+    # gfortran that is simply not on PATH reached the user as a traceback.
+    onnx_path = golden_model("gemm_small")
+    monkeypatch.setenv("PATH", "")
+    rc = main(["verify", str(onnx_path), "--lang", "fortran", "--cases", "2"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "rosenna:" in err
+    assert "gfortran" in err
+
+
+def test_generate_rejects_a_name_that_is_not_an_identifier(tmp_path, capsys, golden_model):
+    # The name is interpolated into `module <name>_model` and function names.
+    onnx_path = golden_model("gemm_small")
+    rc = main(["generate", str(onnx_path), "--out", str(tmp_path), "--name", "my-model.v2"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "rosenna:" in err
+    assert "--name" in err
+
+
+def test_generate_rejects_a_dotted_file_stem(tmp_path, capsys, golden_model):
+    # The default name is the file stem, and dotted ONNX filenames are routine.
+    onnx_path = golden_model("gemm_small")
+    dotted = tmp_path / "my-model.v2.onnx"
+    dotted.write_bytes(onnx_path.read_bytes())
+    rc = main(["generate", str(dotted), "--out", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "--name" in err

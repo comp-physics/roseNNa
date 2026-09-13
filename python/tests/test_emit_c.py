@@ -133,3 +133,34 @@ def test_both_backends_agree(tmp_path, golden_model):
     c_out = _build_and_run(tmp_path / "c", onnx_path, name, inputs)
     f_out = _fortran_build_and_run(tmp_path / "f", onnx_path, name, inputs)
     np.testing.assert_allclose(c_out, f_out, rtol=1e-12, atol=1e-14)
+
+
+def test_f32_plan_uses_single_precision_math(golden_model):
+    """An f32 build must call tanhf/expf, not promote every activation to double."""
+    plan = build_plan(load_graph(golden_model("gemm_big")), dtype="f32")
+    source, _ = emit_c(plan)
+    assert "tanhf(" in source
+    assert "expf(" in source
+    assert "0.0f" in source
+    body = "\n".join(l for l in source.splitlines() if "_infer" not in l)
+    assert " tanh(" not in body and "=tanh(" not in body
+    assert " exp(" not in body and "(exp(" not in body
+
+
+def test_both_backends_agree_f32(tmp_path, golden_model):
+    # The f64 agreement test above uses a Relu-only path; this one exercises
+    # gemm_big's tanh and sigmoid in single precision, where the C backend
+    # used to compute in double while Fortran computed in single.
+    (tmp_path / "c").mkdir()
+    (tmp_path / "f").mkdir()
+    name = "gemm_big"
+    onnx_path = golden_model(name)
+    session = ort.InferenceSession(str(onnx_path))
+    shape = session.get_inputs()[0].shape
+    inputs, expected = _live_reference(session, shape, np.float32, seed=3)
+    if inputs is None:
+        pytest.skip(f"{name}: onnxruntime reference is all-zero across 10 resampled "
+                    f"batches; its golden-file weights produced a dead model")
+    c_out = _build_and_run(tmp_path / "c", onnx_path, name, inputs, dtype="f32")
+    f_out = _fortran_build_and_run(tmp_path / "f", onnx_path, name, inputs, dtype="f32")
+    np.testing.assert_allclose(c_out, f_out, rtol=1e-6, atol=1e-7)

@@ -110,3 +110,17 @@ def test_all_golden_models_validate_and_write(tmp_path, golden_model):
         tensors, header = read_weights(out)
         assert len(tensors) == len(p.weights)
         assert header["plan_hash"] == p.hash()
+
+
+def test_unknown_dtype_code_is_a_named_value_error(tmp_path, golden_model):
+    """An out-of-range dtype code must name the file and the code, not KeyError."""
+    _, _, path = _write(tmp_path, golden_model)
+    blob = bytearray(path.read_bytes())
+    blob[12:16] = (99).to_bytes(4, "little", signed=True)   # dtype code field
+    bad = tmp_path / "bad_dtype.rwt"
+    bad.write_bytes(bytes(blob))
+    with pytest.raises(ValueError) as exc_info:
+        read_weights(bad)
+    msg = str(exc_info.value)
+    assert str(bad) in msg
+    assert "99" in msg
