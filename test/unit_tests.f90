@@ -11,6 +11,7 @@ program unit_tests
     call test_sigmoid_midpoint()
     call test_maxpool_identity_nonsquare()
     call test_maxpool_preserves_batch()
+    call test_tanh_saturates()
 
     if (failures > 0) then
         write(*,'(a,i0,a)') 'UNIT TESTS: ', failures, ' failure(s)'
@@ -74,6 +75,15 @@ contains
         call check(all(shape(x) == [2,1,1,1]) .and. &
                    abs(x(2,1,1,1) - 2.0d0) < 1.0d-12, &
                    'max_pool preserves the batch dimension')
+    end subroutine
+
+    subroutine test_tanh_saturates()
+        real(c_double) :: y(3)
+        y = tanhh([1.0d0, 720.0d0, -720.0d0])
+        call check(abs(y(1) - 0.761594155955765d0) < 1.0d-12 .and. &
+                   abs(y(2) - 1.0d0) < 1.0d-12 .and. &
+                   abs(y(3) + 1.0d0) < 1.0d-12, &
+                   'tanhh saturates instead of overflowing to NaN')
     end subroutine
 
 end program unit_tests
