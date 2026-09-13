@@ -52,7 +52,7 @@ def test_regate_lstm_handles_direction_axis():
 def test_four_d_transform_right_aligns():
     # (1,4,3,3) and (4,) do not actually broadcast under real numpy/ONNX
     # semantics (verified: np.broadcast_shapes((1,4,3,3), (4,)) itself
-    # raises) — strict right-alignment puts the 4 at the last axis, which
+    # raises) - strict right-alignment puts the 4 at the last axis, which
     # collides with the true last axis (3). A validating fourDTransform is
     # therefore entitled to raise here instead of guessing; that is a third
     # acceptable outcome alongside the two shapes below, not a narrowing of
