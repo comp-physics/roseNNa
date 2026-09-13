@@ -34,7 +34,7 @@ testing: ex1 compile user output
 
 capi: $(COMP) modelCreator.o
 	gcc -c ../examples/cAPI.c -o cAPI.o
-	gfortran -o capi cAPI.o $(COMP) modelCreator.o
+	$(FC) $(FFLAGS) -o capi cAPI.o $(COMP) modelCreator.o
 	./capi
 
 ex1: $(DIR)/modelParserONNX.py
