@@ -44,7 +44,7 @@ module reader
         CHARACTER(LEN = 100) :: layerName
         INTEGER :: i
         INTEGER :: readOrNot
-        LOGICAL :: binary
+        LOGICAL :: binary, wexists
         character(len=4) :: ext
         integer :: k, wlen
         integer(int64) :: wpos, wsize
@@ -67,6 +67,15 @@ module reader
             write(error_unit,'(a)') "roseNNa: cannot open model file '"//mpath//"'"
             flush(error_unit)
             error stop 1
+        end if
+        ! with no weights path given, fall back to a legacy text file when the binary default is absent
+        if (.not. present(weights_file)) then
+            inquire(file=wpath, exist=wexists)
+            if (.not. wexists) then
+                wpath = "onnxWeights.txt"
+                write(error_unit,'(a)') "roseNNa: onnxWeights.bin not found, reading legacy onnxWeights.txt"
+                flush(error_unit)
+            end if
         end if
         ! a path ending in .txt (any case, trailing blanks ignored) is the legacy text format
         wlen = len_trim(wpath)

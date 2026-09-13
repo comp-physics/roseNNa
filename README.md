@@ -43,6 +43,15 @@ end program
 This example program links to the roseNNa library, parses the model inputs, and runs inference on the loaded library. 
 Only a few lines are required to use the library: `use rosenna`, `call initialize()`, and `call use_model(args)`.
 
+With no arguments, `initialize` reads `onnxModel.txt` and `onnxWeights.bin` from the working directory.
+If `onnxWeights.bin` does not exist, it reads a legacy `onnxWeights.txt` instead and prints a notice to standard error; it never does this when a weights path is passed explicitly.
+To read the files from elsewhere, pass the paths.
+`initialize` is a `bind(c)` procedure, so a Fortran caller must terminate each path with `c_null_char`:
+``` fortran
+use iso_c_binding
+call initialize("path/onnxModel.txt"//c_null_char, "path/onnxWeights.bin"//c_null_char)
+```
+
 ## Dependencies
 
 We have minimal dependencies. 
@@ -188,7 +197,7 @@ gfortran -o capi *.o path/to/libcorelib.a
 
 A weights path ending in `.txt` (in any letter case, trailing blanks ignored) is read as the legacy text format;
 any other path is read as little-endian float64 binary, which must match the model exactly, or `initialize`
-stops with an error.
+stops with an error. The `onnxWeights.txt` fallback described under Hello RoseNNa is read as text.
 
 ## Further documentation
 
