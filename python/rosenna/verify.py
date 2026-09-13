@@ -34,7 +34,16 @@ def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir) 
     """Generate, compile and run `lang` backend(s) for `model_path`, and compare to onnxruntime.
 
     Draws `cases` random inputs from a fixed seed and compares every backend's output
-    against the same onnxruntime reference, at rtol/atol keyed by the plan's dtype.
+    against the same onnxruntime reference.
+
+    Tolerance (controller ruling R11): keyed on the ONNX model's OWN dtype -- the
+    precision onnxruntime actually computes the reference in -- not on `dtype`/the
+    plan's dtype (i.e. not on `--precision`). Generating f64 code from a float32 model
+    makes our own arithmetic more precise, but it cannot make onnxruntime's float32
+    reference any more accurate, so a float32 model is always compared at the
+    fp32-appropriate tolerance, even when `--precision double` asked for an f64 build:
+    the tighter tolerance is reserved for models whose reference computation is itself
+    float64.
 
     Non-degeneracy: the reference model's own weights can be dead (every output zero,
     e.g. a final ReLU whose pre-activations are all negative), most likely on one of the
@@ -53,7 +62,10 @@ def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir) 
     inputs, expected = _live_inputs(session, shape, cases, model_path)
 
     backends = ["fortran", "c"] if lang == "both" else [lang]
-    rtol, atol = _TOL[plan.dtype]
+    # Model's own dtype, read before --precision is applied: this is what onnxruntime
+    # actually computes the reference in, regardless of what precision we generate.
+    model_dtype = graph.values[graph.inputs[0]].dtype
+    rtol, atol = _TOL[model_dtype]
     results = []
     for backend in backends:
         backend_dir = workdir / backend
