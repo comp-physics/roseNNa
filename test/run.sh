@@ -3,6 +3,8 @@ nfail=0
 testnum=1
 skip="__pycache__"
 make compile
+make unit || { echo "FATAL: Fortran unit tests failed"; exit 1; }
+python3 test_parser.py || { echo "FATAL: parser tests failed"; exit 1; }
 for d in ../goldenFiles/*/ ; do
     name=$(basename "$d")
     if [[ "$name" != "$skip" ]] && [[ "$name" != "vgg16" ]] && [[ "$name" != "gemm_huge" ]] && [[ "$name" != "turbulentShear" ]]; then

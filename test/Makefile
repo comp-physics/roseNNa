@@ -47,5 +47,9 @@ graphs: output
 
 compile: $(COMP)
 
+unit: $(COMP) unit_tests.o
+	$(FC) $(FFLAGS) -o unit_tests $(COMP) unit_tests.o
+	./unit_tests
+
 clean:
 	rm *.o *.mod output

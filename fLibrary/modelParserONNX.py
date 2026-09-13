@@ -8,6 +8,11 @@ from onnx import numpy_helper
 import argparse
 import sys
 
+from onnx_helpers import (
+    stranspose, stringer, reshapeParser,
+    fourDTransform, fakeFourD, spreadInfo,
+)
+
 parser = argparse.ArgumentParser()
 
 parser.add_argument('--onnxfile',"-f", required=True, help="Please provide .onnx file of your pretrained model.")
@@ -69,66 +74,12 @@ outShape = [] #what shape to instantiate the output name to, need to export
 modelArch = [] #need to export
 extra = "0"
 
-def stranspose(arr):
-    shape = arr.shape
-    combs = [x for x in range(len(shape))]
-    for dim1, dim2 in itertools.combinations(combs,2):
-        dim = combs.copy()
-        dim[dim1] = dim2
-        dim[dim2] = dim1
-        arr = np.transpose(arr, dim)
-    return stringer(arr.flatten().tolist())
-
-def stringer(mat):
-    s = ""
-    for elem in mat:
-        s += str(elem) + " "
-    return s.strip()
-
-def reshapeParser(reshape, trueShape):
-    contains = False
-    ind = 0
-    for index, dim in enumerate(reshape):
-        if dim==-1:
-            ind = index
-            contains = True
-            break
-    if not contains:
-        return reshape
-    else:
-        res = np.prod(reshape)*-1
-        true = np.prod(trueShape)
-        missing_dim = int(true/res)
-        reshape[ind] = missing_dim
-        return reshape
 
 def findWeightsInitializer(input_name):
     if input_name in initializer:
         return initializer[input_name][1]
     return constants[input_name]
 
-def fourDTransform(trueshape, toBeTransformedShape):
-    new = [1,1,1,1]
-    i = 0
-    for dim in toBeTransformedShape:
-        try:
-            find = trueshape.index(dim)
-            new[find-len(trueshape)] = dim
-        except:
-            pass
-    return new
-
-def fakeFourD(inp):
-    add = 4-len(inp)
-    return add*[1] + inp
-
-def spreadInfo(trueShape, toBeTransformedShape):
-    ret = []
-    for index,dim in enumerate(toBeTransformedShape):
-        if trueShape[index] != dim:
-            ret.append(index+1)
-            ret.append(trueShape[index])
-    return ret
 
 #ONNX parser
 #onnxModel.txt => holds model structure
