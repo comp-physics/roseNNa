@@ -106,3 +106,59 @@ def sanitize(name):
     cleaned = re.sub(r"[^A-Za-z0-9_]", "_", name).lower()
     digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
     return f"v_{cleaned[:48]}_{digest}"
+
+
+def checkSupported(op, attrs):
+    """Raise NotImplementedError for attributes roseNNa reads but cannot honour.
+
+    MaxPool and AveragePool require kernel_shape (ONNX gives it no default).
+    Conv may omit it; the caller infers it from the weight tensor first.
+    """
+    kernel = attrs.get("kernel_shape")
+    if op in ("MaxPool", "AveragePool") and not kernel:
+        raise NotImplementedError(
+            f"{op}: kernel_shape is required by ONNX but missing from this node")
+
+    if op == "Conv" and int(attrs.get("group", 1)) != 1:
+        raise NotImplementedError(
+            f"Conv: group={attrs.get('group')} (grouped or depthwise convolution) "
+            f"is not supported by roseNNa")
+
+    if op == "AveragePool" and attrs.get("auto_pad", "NOTSET") not in ("NOTSET", "VALID"):
+        raise NotImplementedError(
+            f"AveragePool: auto_pad={attrs.get('auto_pad')} is not supported by roseNNa")
+
+    dilations = list(attrs.get("dilations", [1, 1]))
+    if any(d != 1 for d in dilations):
+        raise NotImplementedError(
+            f"{op}: dilations={dilations} is parsed but ignored by roseNNa; "
+            f"only dilations of 1 are supported")
+
+    if int(attrs.get("ceil_mode", 0)) != 0:
+        raise NotImplementedError(
+            f"{op}: ceil_mode=1 is parsed but ignored by roseNNa; "
+            f"output extents are always floored")
+
+    kernel = list(kernel or [])
+    if len(kernel) == 2 and kernel[0] != kernel[1]:
+        raise NotImplementedError(
+            f"{op}: non-square kernel {kernel} is not supported by roseNNa")
+
+    pads = list(attrs.get("pads", [0, 0, 0, 0]))
+    if len(pads) == 4 and (pads[0] != pads[2] or pads[1] != pads[3]):
+        raise NotImplementedError(
+            f"{op}: asymmetric pads {pads} are not supported by roseNNa; "
+            f"padding is applied symmetrically")
+
+    if op == "AveragePool" and any(p != 0 for p in pads) \
+            and int(attrs.get("count_include_pad", 0)) != 1:
+        raise NotImplementedError(
+            f"AveragePool: count_include_pad=0 with pads {pads} is not supported "
+            f"by roseNNa, which always divides by the full kernel area")
+
+
+def checkPadIsNoop(pads):
+    """Raise unless an ONNX Pad node's pads are all zero (then it is an identity)."""
+    pads = list(pads)
+    if any(p != 0 for p in pads):
+        raise NotImplementedError(f"Pad: pads={pads} is not supported by roseNNa")

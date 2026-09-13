@@ -87,6 +87,74 @@ def test_sanitize_avoids_fortran_collisions():
         check(H.sanitize(raw).lower() not in reserved,
               f"sanitize({raw!r}) avoids a generated or called name")
 
+def test_check_supported_rejects_unimplemented_attrs():
+    def raises(fn):
+        try:
+            fn()
+        except NotImplementedError:
+            return True
+        return False
+
+    # attributes roseNNa parses but ignores
+    check(raises(lambda: H.checkSupported("Conv", {"dilations": [2, 2], "kernel_shape": [3, 3], "pads": [0]*4, "strides": [1, 1]})),
+          "rejects dilations != 1")
+    check(raises(lambda: H.checkSupported("MaxPool", {"ceil_mode": 1, "kernel_shape": [2, 2], "pads": [0]*4, "strides": [1, 1]})),
+          "rejects ceil_mode = 1")
+    check(raises(lambda: H.checkSupported("Conv", {"kernel_shape": [3, 3], "pads": [1, 1, 2, 2], "strides": [1, 1]})),
+          "rejects asymmetric pads")
+    check(raises(lambda: H.checkSupported("Conv", {"kernel_shape": [3, 5], "pads": [0]*4, "strides": [1, 1]})),
+          "rejects non-square kernels")
+    check(not raises(lambda: H.checkSupported("Conv", {"dilations": [1, 1], "kernel_shape": [3, 3], "pads": [1, 1, 1, 1], "strides": [2, 2]})),
+          "accepts a supported Conv")
+
+def test_check_supported_required_kernel_and_pooling_padding():
+    def raises(fn):
+        try:
+            fn()
+        except NotImplementedError:
+            return True
+        return False
+
+    # kernel_shape is required for pooling, optional (inferred) for Conv
+    check(raises(lambda: H.checkSupported("MaxPool", {"pads": [0]*4, "strides": [1, 1]})),
+          "rejects MaxPool with no kernel_shape")
+    check(raises(lambda: H.checkSupported("AveragePool", {"pads": [0]*4, "strides": [1, 1]})),
+          "rejects AveragePool with no kernel_shape")
+    check(not raises(lambda: H.checkSupported("Conv", {"kernel_shape": [3, 3], "pads": [0]*4})),
+          "accepts Conv whose kernel_shape was inferred")
+    # AveragePool divisor: roseNNa always divides by the full kernel area
+    check(raises(lambda: H.checkSupported("AveragePool", {"kernel_shape": [3, 3], "pads": [1]*4, "count_include_pad": 0})),
+          "rejects padded AveragePool with count_include_pad=0")
+    check(raises(lambda: H.checkSupported("AveragePool", {"kernel_shape": [3, 3], "pads": [1]*4})),
+          "rejects padded AveragePool with count_include_pad absent (ONNX default 0)")
+    check(not raises(lambda: H.checkSupported("AveragePool", {"kernel_shape": [3, 3], "pads": [1]*4, "count_include_pad": 1})),
+          "accepts padded AveragePool with count_include_pad=1")
+    check(not raises(lambda: H.checkSupported("AveragePool", {"kernel_shape": [3, 3], "pads": [0]*4})),
+          "accepts unpadded AveragePool regardless of count_include_pad")
+    # AveragePool never computes SAME padding
+    check(raises(lambda: H.checkSupported("AveragePool", {"kernel_shape": [3, 3], "auto_pad": "SAME_UPPER"})),
+          "rejects AveragePool with auto_pad=SAME_UPPER")
+    check(not raises(lambda: H.checkSupported("AveragePool", {"kernel_shape": [3, 3], "auto_pad": "VALID"})),
+          "accepts AveragePool with auto_pad=VALID")
+    # grouped convolution reads past the weight array in the Fortran conv
+    check(raises(lambda: H.checkSupported("Conv", {"kernel_shape": [3, 3], "group": 2})),
+          "rejects grouped Conv (group=2)")
+    check(not raises(lambda: H.checkSupported("Conv", {"kernel_shape": [3, 3], "group": 1})),
+          "accepts ungrouped Conv (group=1)")
+
+def test_pad_is_rejected_unless_identity():
+    def raises(fn):
+        try:
+            fn()
+        except NotImplementedError:
+            return True
+        return False
+
+    check(raises(lambda: H.checkPadIsNoop([0, 0, 1, 1, 0, 0, 1, 1])),
+          "rejects a Pad node with nonzero pads")
+    check(not raises(lambda: H.checkPadIsNoop([0]*8)),
+          "accepts an all-zero Pad node")
+
 if __name__ == "__main__":
     test_stranspose_is_column_major()
     test_stringer()
@@ -96,5 +164,8 @@ if __name__ == "__main__":
     test_four_d_transform_right_aligns()
     test_sanitize_produces_fortran_identifiers()
     test_sanitize_avoids_fortran_collisions()
+    test_check_supported_rejects_unimplemented_attrs()
+    test_check_supported_required_kernel_and_pooling_padding()
+    test_pad_is_rejected_unless_identity()
     print(f"PARSER TESTS: {len(failures)} failure(s)")
     sys.exit(1 if failures else 0)

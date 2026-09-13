@@ -122,6 +122,25 @@ torch.onnx.export(model,               # model being run
 
 Then, in the same `/fLibrary` directory, run `make library`. This compiles the library into `libcorelib.a`, which is required to link other `*.o` files with the library. This library file is now ready to be integrated into any Fortran/C workflow.
 
+## Supported ONNX operators and limits
+
+roseNNa supports the following ONNX operators: `Gemm`, `MatMul`, `Conv`, `MaxPool`, `AveragePool`, `LSTM`, `Add`,
+`Reshape`, `Transpose`, `Squeeze`, `Relu`, `Sigmoid`, `Tanh`.
+
+The parser rejects a model with `NotImplementedError` rather than silently producing a wrong answer when it
+encounters an attribute it cannot honour. The limits it enforces:
+
+- `kernel_shape` is required for `MaxPool` and `AveragePool` (inferred from the weights for `Conv`)
+- `dilations` must be 1
+- `ceil_mode` must be 0
+- kernels must be square
+- pads must be symmetric per axis
+- `Conv` `group` must be 1 (no grouped or depthwise convolution)
+- `AveragePool` with nonzero pads requires `count_include_pad=1`
+- `AveragePool` `auto_pad` must be `NOTSET` or `VALID`
+- a `Pad` node must have all-zero pads
+- `Gemm` `alpha` and `beta` must be 1, and `transA` must be 0
+
 ## Fortran use
 
 One can compile a Fortran example (like the `Hello RoseNNa` example above) by specifying the location of the module files and linking the library to other program files.

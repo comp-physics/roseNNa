@@ -11,6 +11,7 @@ from onnx_helpers import (
     stranspose, reshapeParser,
     fourDTransform, fakeFourD, spreadInfo,
     regateLSTM, sanitize,
+    checkSupported, checkPadIsNoop,
 )
 
 parser = argparse.ArgumentParser()
@@ -273,12 +274,16 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             for attr in node.attribute:
                 name = str(attr.name)
                 if name == "group":
-                    pass
+                    attributes['group'] = attr.i
                 elif name == "auto_pad":
-                    auto_pad = True
                     attributes['auto_pad'] = attr.s.decode('ASCII')
+                    if attributes['auto_pad'] not in ("NOTSET", "VALID"):
+                        auto_pad = True
                 else:
                     attributes[attr.name] = attr.ints
+
+            # kernel_shape is optional on Conv; infer it from the weight dims (out, in, kh, kw)
+            attributes.setdefault('kernel_shape', list(initializer[node.input[1]][0][2:]))
 
             if auto_pad: # DEAL WITH STRIDE > 1?
                 kernel_shape = attributes['kernel_shape'][0]
@@ -291,6 +296,10 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                         attributes['pads'] = [pad+1,pad+1,pad,pad]
                 else:
                     attributes['pads'] = [pad]*4
+            attributes.setdefault('pads', [0, 0, 0, 0])
+            attributes.setdefault('strides', [1, 1])
+            attributes.setdefault('dilations', [1, 1])
+            checkSupported("Conv", attributes)
             names = {n.name:n.i if n.type==2 else n.ints for n in node.attribute}
             modelArch.append(("Conv", [ioMap[node.input[0]]], [names.get('dilations', [1,1]), attributes['kernel_shape'], attributes['pads'], names.get('strides', [1,1])])) #(dilations, kernel_shape, pads, strides)
 
@@ -331,11 +340,10 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                     attributes[attr.name] = attr.i
                 elif name == "auto_pad":
                     attributes['auto_pad'] = attr.s.decode('ASCII')
-                    if attributes['auto_pad'] != "NOTSET":
+                    if attributes['auto_pad'] not in ("NOTSET", "VALID"):
                         auto_pad = True
                 else:
                     attributes[attr.name] = attr.ints
-            attributes.setdefault('kernel_shape', [1, 1])
             attributes.setdefault('pads', [0, 0, 0, 0])
             attributes.setdefault('strides', [1, 1])
             if auto_pad:  # DEAL WITH STRIDE > 1?
@@ -349,6 +357,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                         attributes['pads'] = [pad+1,pad+1,pad,pad]
                 else:
                     attributes['pads'] = [pad]*4
+            checkSupported("MaxPool", attributes)
             modelArch.append(("MaxPool", [ioMap[node.input[0]]], [attributes['ceil_mode'],attributes['pads'],attributes['strides']])) #(ceil_mode, pads, strides)
             f.write(str(attributes['kernel_shape'][0]))
             f.write("\n")
@@ -359,10 +368,17 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             f.write("\n")
             #https://onnx.ai/onnx/api/mapping.html#l-onnx-types-mapping
             names = {n.name:n.i if n.type==2 else n.ints for n in node.attribute}
-            attributes = [names.get('ceil_mode', 0),
-                          names.get('pads', [0,0,0,0]),
-                          names.get('strides', [1,1]),
-			  names.get('kernel_shape', 0)]
+            poolAttrs = {
+                'ceil_mode': names.get('ceil_mode', 0),
+                'pads': names.get('pads', [0, 0, 0, 0]),
+                'strides': names.get('strides', [1, 1]),
+                'kernel_shape': names.get('kernel_shape'),
+                'count_include_pad': names.get('count_include_pad', 0),
+                # `names` maps STRING attributes to an empty ints list, so read auto_pad directly
+                'auto_pad': next((a.s.decode('ASCII') for a in node.attribute if a.name == 'auto_pad'), 'NOTSET'),
+            }
+            checkSupported("AveragePool", poolAttrs)
+            attributes = [poolAttrs['ceil_mode'], poolAttrs['pads'], poolAttrs['strides'], poolAttrs['kernel_shape']]
             modelArch.append(("AveragePool", [ioMap[node.input[0]]], attributes[:3])) #(ceil_mode, pads, strides)
             f.write(str(attributes[-1][0]))
             f.write("\n")
@@ -409,9 +425,17 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
 
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
-        elif layer == "Pad": #FINISH
+        elif layer == "Pad":
             f.write(layer)
             f.write("\n")
+            # opset < 11 carries pads as an attribute; opset >= 11 as the second input
+            pads = None
+            for attr in node.attribute:
+                if attr.name == "pads":
+                    pads = list(attr.ints)
+            if pads is None:
+                pads = findWeightsInitializer(node.input[1]).tolist()
+            checkPadIsNoop(pads)
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "Relu":
