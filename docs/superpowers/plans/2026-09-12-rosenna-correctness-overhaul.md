@@ -1174,7 +1174,7 @@ Expected: all `ok`, exit 0
 - [ ] **Step 5: Run the full suite**
 
 Run: `cd test && ./run.sh 2>&1 | tail -1`
-Expected: `19 out of 19 test cases have passed!` (`mnist` exercises `Add` twice with `(8,1,1)` and `(16,1,1)` biases, so this is real coverage)
+Expected: `19 out of 19 test cases have passed!` — but note this is a **regression check, not coverage**. Verified: on mnist's actual shapes (`[1,8,28,28]` vs `(8,1,1)` and `[1,16,14,14]` vs `(16,1,1)`) the old value-matching code and the new right-aligning code return identical results, because a length-3 tuple's unique nonzero dim lands at the same position either way. The golden suite fails to contradict this fix; it does not corroborate it. The two discriminating assertions in `test/test_parser.py` are the only real evidence.
 
 - [ ] **Step 6: Commit**
 
