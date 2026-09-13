@@ -1,9 +1,15 @@
 """Render a plan as a self-contained Fortran module."""
+from .abi import name_capacity, rank_capacity, status_code_comment
 from .plan import Plan
 
 _KIND = {"f32": "real32", "f64": "real64"}
 _ACT = {"relu": "max({v}, 0.0_wp)", "tanh": "tanh({v})", "sigmoid": "1.0_wp / (1.0_wp + exp(-({v})))"}
 _DTYPE_CODE = {"f32": 0, "f64": 1}
+
+
+def _f_string(s: str) -> str:
+    """Render a plan-supplied (ASCII) name as a Fortran character literal."""
+    return "'" + s.replace("'", "''") + "'"
 
 
 def _weight_dims(plan: Plan, symbol: str) -> str:
@@ -45,63 +51,111 @@ def emit_fortran(plan: Plan) -> str:
 def _emit_init(plan: Plan) -> list:
     m = plan.model
     dtype_code = _DTYPE_CODE[plan.dtype]
-    return [
+    lines = ["    " + line for line in status_code_comment("!", m)]
+    lines += [
         f"    subroutine {m}_init(path, status)",
         "        character(*), intent(in) :: path",
         "        integer, intent(out) :: status",
-        "        integer :: u, ios, ntensors, toclen, k, namelen, rank",
+        "        integer :: u, ios, ntensors",
         "        integer(int32) :: version, dtype, endian",
-        "        integer(int64) :: dims(8), off, length, data_start, tocpos",
         "        character(len=8) :: magic",
-        "        character(len=128) :: name",
         "        integer(int8) :: file_hash(32)",
+    ]
+    if plan.weights:
+        lines += [
+            "        integer :: toclen, k, namelen, rank",
+            "        integer(int64) :: dims(%d), off, length, data_start, tocpos" % rank_capacity(plan),
+            "        character(len=%d) :: name" % name_capacity(plan),
+        ]
+    lines += [
         "        status = 0",
         "        open(newunit=u, file=path, status='old', action='read', access='stream', &",
         "             form='unformatted', iostat=ios)",
         "        if (ios /= 0) then; status = 1; return; end if",
-        "        read(u) magic",
+        "        read(u, iostat=ios) magic",
+        "        if (ios /= 0) then; status = 9; close(u); return; end if",
         "        if (magic /= 'ROSENNA1') then; status = 2; close(u); return; end if",
-        "        read(u) version, dtype, endian, ntensors",
+        "        read(u, iostat=ios) version, dtype, endian, ntensors",
+        "        if (ios /= 0) then; status = 9; close(u); return; end if",
         "        if (version /= 1) then; status = 3; close(u); return; end if",
         f"        if (dtype /= {dtype_code}) then; status = 4; close(u); return; end if",
         "        if (endian /= 16909060) then; status = 5; close(u); return; end if",
-        "        read(u) file_hash",
+        "        read(u, iostat=ios) file_hash",
+        "        if (ios /= 0) then; status = 9; close(u); return; end if",
         "        if (any(file_hash /= expected_hash)) then; status = 6; close(u); return; end if",
-        "        read(u) toclen",
+    ]
+    if not plan.weights:
+        # This model has no weights at all, so a well-formed file for it holds
+        # no tensors. Skipping the table of contents entirely keeps the
+        # generated module free of an unreachable loop and of the unused
+        # locals and dummy arguments that loop would need.
+        lines += [
+            "        if (ntensors /= 0) then; status = 7; close(u); return; end if",
+            "        close(u)",
+            "    end subroutine",
+            "",
+        ]
+        return lines
+    lines += [
+        "        read(u, iostat=ios) toclen",
+        "        if (ios /= 0) then; status = 9; close(u); return; end if",
         "        data_start = int(60, int64) + int(toclen, int64) + 1_int64",
         "        do k = 1, ntensors",
-        "            read(u) namelen",
+        "            read(u, iostat=ios) namelen",
+        "            if (ios /= 0) then; status = 9; close(u); return; end if",
+        f"            if (namelen < 0 .or. namelen > {name_capacity(plan)}) then",
+        "                status = 8; close(u); return",
+        "            end if",
         "            name = ''",
-        "            read(u) name(1:namelen)",
-        "            read(u) rank",
-        "            read(u) dims(1:rank)",
-        "            read(u) off, length",
+        "            read(u, iostat=ios) name(1:namelen)",
+        "            if (ios /= 0) then; status = 9; close(u); return; end if",
+        "            read(u, iostat=ios) rank",
+        "            if (ios /= 0) then; status = 9; close(u); return; end if",
+        f"            if (rank < 0 .or. rank > {rank_capacity(plan)}) then",
+        "                status = 8; close(u); return",
+        "            end if",
+        "            read(u, iostat=ios) dims(1:rank)",
+        "            if (ios /= 0) then; status = 9; close(u); return; end if",
+        "            read(u, iostat=ios) off, length",
+        "            if (ios /= 0) then; status = 9; close(u); return; end if",
         "            inquire(unit=u, pos=tocpos)",
-        "            call load_tensor(u, name(1:namelen), data_start + off, status)",
+        "            call load_tensor(u, name(1:namelen), data_start + off, length, status)",
         "            if (status /= 0) then; close(u); return; end if",
-        "            read(u, pos=tocpos)",
+        "            read(u, pos=tocpos, iostat=ios)",
+        "            if (ios /= 0) then; status = 9; close(u); return; end if",
         "        end do",
         "        close(u)",
         "    end subroutine",
         "",
     ]
+    return lines
 
 
 def _emit_load(plan: Plan) -> list:
+    if not plan.weights:
+        return []
     lines = [
-        "    subroutine load_tensor(u, name, pos, status)",
+        "    subroutine load_tensor(u, name, pos, length, status)",
         "        integer, intent(in) :: u",
         "        character(*), intent(in) :: name",
-        "        integer(int64), intent(in) :: pos",
+        "        integer(int64), intent(in) :: pos, length",
         "        integer, intent(out) :: status",
+        "        integer :: ios",
         "        status = 0",
+        "        ios = 0",
         "        select case (name)",
     ]
     for w in plan.weights:
-        lines.append(f"        case ('{w.name}'); read(u, pos=pos) {w.symbol}")
+        # `length` comes from the file's own table of contents; a tensor whose
+        # declared byte count disagrees with the array it is about to fill
+        # means a corrupt file, not a short read, so reject before reading.
+        lines.append(f"        case ({_f_string(w.name)})")
+        lines.append(f"            if (length /= {w.nbytes}_int64) then; status = 9; return; end if")
+        lines.append(f"            read(u, pos=pos, iostat=ios) {w.symbol}")
     lines += [
-        "        case default; status = 7",
+        "        case default; status = 7; return",
         "        end select",
+        "        if (ios /= 0) status = 9",
         "    end subroutine",
         "",
     ]
@@ -144,7 +198,13 @@ def _emit_infer(plan: Plan) -> list:
     ]
     for sym in scratch:
         lines.append(f"        real(wp) :: {sym}({plan.buffers[sym]})")
-    lines.append("        integer :: i, j")
+    # Declare only the loop variables some op actually uses: a weight-free
+    # model (x -> Relu -> y) has no inner accumulation loop, and an unused
+    # 'j' is a warning in any tree built with -Werror.
+    loop_vars = [v for v, used in (("i", bool(plan.ops)),
+                                   ("j", any(op.kind == "gemm" for op in plan.ops))) if used]
+    if loop_vars:
+        lines.append("        integer :: " + ", ".join(loop_vars))
 
     # Fusing an activation into its preceding gemm's loop would require the
     # activation's output buffer to equal the gemm's output buffer. Task 4's

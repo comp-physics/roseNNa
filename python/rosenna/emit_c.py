@@ -1,10 +1,12 @@
 """Render a plan as a self-contained C source/header pair."""
+from .abi import name_capacity, rank_capacity, status_code_comment
 from .plan import Plan
 
 _CTYPE = {"f32": "float", "f64": "double"}
+_DTYPE_CODE = {"f32": 0, "f64": 1}
+
 _ACT_C = {"relu": "{v} > 0.0 ? {v} : 0.0", "tanh": "tanh({v})",
           "sigmoid": "1.0 / (1.0 + exp(-({v})))"}
-_DTYPE_CODE = {"f32": 0, "f64": 1}
 
 
 def _c_string(s: str) -> str:
@@ -103,14 +105,25 @@ def _emit_source_head(plan: Plan, ctype: str) -> list:
 
 
 def _emit_load(plan: Plan) -> list:
+    if not plan.weights:
+        return []
     lines = [
-        "static int load_tensor(FILE *f, const char *name, int namelen, long pos) {",
-        "    fseek(f, pos, SEEK_SET);",
+        "static int load_tensor(FILE *f, const char *name, int32_t namelen, long pos,",
+        "                       int64_t length) {",
     ]
     for w in plan.weights:
+        # `length` comes from the file's own table of contents; a tensor whose
+        # declared byte count disagrees with the array it is about to fill
+        # means a corrupt file, so reject it rather than short-read into the
+        # array and infer on half-loaded weights.
         lines.append(
-            f"    if (namelen == {len(w.name)} && memcmp(name, {_c_string(w.name)}, {len(w.name)}) == 0) "
-            f"{{ fread({w.symbol}, sizeof {w.symbol}, 1, f); return 0; }}")
+            f"    if (namelen == {len(w.name)} && "
+            f"memcmp(name, {_c_string(w.name)}, {len(w.name)}) == 0) {{")
+        lines.append(f"        if (length != (int64_t)sizeof {w.symbol}) return 9;")
+        lines.append("        if (fseek(f, pos, SEEK_SET) != 0) return 9;")
+        lines.append(f"        if (fread({w.symbol}, sizeof {w.symbol}, 1, f) != 1) return 9;")
+        lines.append("        return 0;")
+        lines.append("    }")
     lines += ["    return 7;", "}", ""]
     return lines
 
@@ -118,51 +131,72 @@ def _emit_load(plan: Plan) -> list:
 def _emit_init(plan: Plan) -> list:
     m = plan.model
     dtype_code = _DTYPE_CODE[plan.dtype]
-    return [
+    lines = ["/*"] + [" " + line for line in status_code_comment("*", m)] + [" */"]
+    lines += [
         f"int {m}_init(const char *path) {{",
         '    FILE *f = fopen(path, "rb");',
         "    if (!f) return 1;",
         "    unsigned char magic[8];",
-        "    fread(magic, 1, 8, f);",
+        "    if (fread(magic, 1, 8, f) != 8) { fclose(f); return 9; }",
         '    if (memcmp(magic, "ROSENNA1", 8) != 0) { fclose(f); return 2; }',
         "    int32_t version, dtype, endian, ntensors;",
-        "    fread(&version, sizeof version, 1, f);",
-        "    fread(&dtype, sizeof dtype, 1, f);",
-        "    fread(&endian, sizeof endian, 1, f);",
-        "    fread(&ntensors, sizeof ntensors, 1, f);",
+        "    if (fread(&version, sizeof version, 1, f) != 1) { fclose(f); return 9; }",
+        "    if (fread(&dtype, sizeof dtype, 1, f) != 1) { fclose(f); return 9; }",
+        "    if (fread(&endian, sizeof endian, 1, f) != 1) { fclose(f); return 9; }",
+        "    if (fread(&ntensors, sizeof ntensors, 1, f) != 1) { fclose(f); return 9; }",
         "    if (version != 1) { fclose(f); return 3; }",
         f"    if (dtype != {dtype_code}) {{ fclose(f); return 4; }}",
         "    if (endian != 0x01020304) { fclose(f); return 5; }",
         "    unsigned char file_hash[32];",
-        "    fread(file_hash, 1, 32, f);",
+        "    if (fread(file_hash, 1, 32, f) != 32) { fclose(f); return 9; }",
         "    if (memcmp(file_hash, expected_hash, 32) != 0) { fclose(f); return 6; }",
+    ]
+    if not plan.weights:
+        # This model has no weights, so a well-formed file for it holds no
+        # tensors. Skipping the table of contents keeps the generated source
+        # free of an unreachable loop and of the unused parameters a
+        # weight-free load_tensor would carry.
+        lines += [
+            "    if (ntensors != 0) { fclose(f); return 7; }",
+            "    fclose(f);",
+            "    return 0;",
+            "}",
+            "",
+        ]
+        return lines
+    name_cap, rank_cap = name_capacity(plan), rank_capacity(plan)
+    lines += [
         "    int32_t toclen;",
-        "    fread(&toclen, sizeof toclen, 1, f);",
+        "    if (fread(&toclen, sizeof toclen, 1, f) != 1) { fclose(f); return 9; }",
         "    long data_start = 60L + (long)toclen;",
         "    for (int32_t k = 0; k < ntensors; ++k) {",
         "        int32_t namelen;",
-        "        fread(&namelen, sizeof namelen, 1, f);",
-        "        char name[128];",
-        "        fread(name, 1, (size_t)namelen, f);",
+        "        if (fread(&namelen, sizeof namelen, 1, f) != 1) { fclose(f); return 9; }",
+        f"        if (namelen < 0 || namelen > {name_cap}) {{ fclose(f); return 8; }}",
+        f"        char name[{name_cap}] = {{0}};",
+        "        if (fread(name, 1, (size_t)namelen, f) != (size_t)namelen)",
+        "            { fclose(f); return 9; }",
         "        int32_t rank;",
-        "        fread(&rank, sizeof rank, 1, f);",
-        "        int64_t dims[8];",
-        "        fread(dims, sizeof(int64_t), (size_t)rank, f);",
+        "        if (fread(&rank, sizeof rank, 1, f) != 1) { fclose(f); return 9; }",
+        f"        if (rank < 0 || rank > {rank_cap}) {{ fclose(f); return 8; }}",
+        f"        int64_t dims[{rank_cap}];",
+        "        if (fread(dims, sizeof(int64_t), (size_t)rank, f) != (size_t)rank)",
+        "            { fclose(f); return 9; }",
         "        (void)dims;",
         "        int64_t off, length;",
-        "        fread(&off, sizeof off, 1, f);",
-        "        fread(&length, sizeof length, 1, f);",
-        "        (void)length;",
+        "        if (fread(&off, sizeof off, 1, f) != 1) { fclose(f); return 9; }",
+        "        if (fread(&length, sizeof length, 1, f) != 1) { fclose(f); return 9; }",
         "        long tocpos = ftell(f);",
-        "        int status = load_tensor(f, name, namelen, data_start + (long)off);",
+        "        int status = load_tensor(f, name, namelen, data_start + (long)off, length);",
         "        if (status != 0) { fclose(f); return status; }",
-        "        fseek(f, tocpos, SEEK_SET);",
+        "        if (fseek(f, tocpos, SEEK_SET) != 0) { fclose(f); return 9; }",
         "    }",
         "    fclose(f);",
         "    return 0;",
         "}",
         "",
     ]
+    return lines
 
 
 def _emit_infer(plan: Plan, ctype: str) -> list:
@@ -170,13 +204,9 @@ def _emit_infer(plan: Plan, ctype: str) -> list:
 
     There is deliberately no fusion pass and no private allocator here. The
     plan already owns the buffer assignment, one allocator serves both
-    backends, and the plan hash covers what it produced. A second allocator
+    backends, and the plan hash covers what it produced; a second allocator
     with narrower assumptions (ruling R13) crashed on models validate accepts
-    and the Fortran backend handles: a graph whose first node is an activation
-    had no preceding gemm to take a length from, and a gemm output with two
-    consumers lost its buffer to fusion and then could not be looked up.
-    Fusion, if ever wanted, belongs in plan.py where one allocator serves both
-    backends and the hash covers it.
+    and the Fortran backend handles.
     """
     m = plan.model
     n_in = plan.input.shape[0]
