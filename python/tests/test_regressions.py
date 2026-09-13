@@ -11,7 +11,6 @@ import struct
 import subprocess
 
 import numpy as np
-import onnx
 import onnxruntime as ort
 import pytest
 from onnx import helper, numpy_helper, TensorProto
@@ -22,6 +21,7 @@ from rosenna.emit_fortran import emit_fortran
 from rosenna.frontend import load_graph
 from rosenna.plan import build_plan
 from rosenna.weights import write_weights
+from tests.conftest import save_model
 from tests.test_emit_c import _build_and_run as _c_build_and_run
 from tests.test_emit_fortran import _build_and_run as _f_build_and_run
 from tests.test_emit_fortran import _live_reference
@@ -33,14 +33,7 @@ DENSE = ["gemm_small", "gemm_big", "gemm_nobias", "droplet", "batchnet"]
 _LONG_NAME = "model.encoder.layers.0.feedforward.linear_relu_stack." * 3 + "projection.weight"
 
 
-def _save(tmp_path, name, nodes, inits, in_shape, out_shape, elem=TensorProto.FLOAT):
-    x = helper.make_tensor_value_info("x", elem, list(in_shape))
-    y = helper.make_tensor_value_info("y", elem, list(out_shape))
-    g = helper.make_graph(nodes, name, [x], [y], initializer=inits)
-    m = helper.make_model(g, opset_imports=[helper.make_opsetid("", 13)])
-    p = tmp_path / f"{name}.onnx"
-    onnx.save(m, p)
-    return p
+_save = save_model
 
 
 def _both_backends(tmp_path, onnx_path, name, inputs, dtype="f64"):

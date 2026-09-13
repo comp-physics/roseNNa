@@ -37,15 +37,17 @@ def test_verify_double_precision_build_on_a_float32_model_still_passes(capsys, g
     assert "FAIL" not in out
 
 
-def test_verify_reports_compiler_diagnostic_on_a_compile_failure(capsys, golden_model, monkeypatch):
+def test_verify_reports_compiler_diagnostic_on_a_compile_failure(capsys, live_gemm_model, monkeypatch):
     # Finding 1 (review round 2): a failing gfortran/gcc used to reach the user as an
     # unhandled CalledProcessError traceback, throwing away the compiler's own message.
     # Force a compile failure by making the Fortran emitter return garbage, and check
     # that the user instead sees which backend and step failed plus gfortran's actual
     # diagnostic -- not a traceback -- with a non-zero exit code.
+    # On a deterministic inline model (ruling R22): this test is about the
+    # compile step, and an unseeded golden model can be dead, which makes verify
+    # return 1 with its all-zero message before the compiler is ever run.
     monkeypatch.setattr(verify_mod, "emit_fortran", lambda plan: "this is not fortran\n")
-    onnx_path = golden_model("gemm_small")
-    rc = main(["verify", str(onnx_path), "--lang", "fortran", "--cases", "2"])
+    rc = main(["verify", str(live_gemm_model), "--lang", "fortran", "--cases", "2"])
     err = capsys.readouterr().err
     assert rc == 1
     assert "rosenna:" in err
@@ -94,12 +96,12 @@ def test_non_onnx_file_is_reported_not_traced(tmp_path, capsys):
     assert "rosenna:" in err
 
 
-def test_missing_compiler_is_reported_not_traced(capsys, monkeypatch, golden_model):
+def test_missing_compiler_is_reported_not_traced(capsys, monkeypatch, live_gemm_model):
     # verify._run caught CalledProcessError but not FileNotFoundError, so a
     # gfortran that is simply not on PATH reached the user as a traceback.
-    onnx_path = golden_model("gemm_small")
+    # Deterministic inline model for the same reason as the test above (R22).
     monkeypatch.setenv("PATH", "")
-    rc = main(["verify", str(onnx_path), "--lang", "fortran", "--cases", "2"])
+    rc = main(["verify", str(live_gemm_model), "--lang", "fortran", "--cases", "2"])
     err = capsys.readouterr().err
     assert rc == 1
     assert "rosenna:" in err
@@ -125,3 +127,13 @@ def test_generate_rejects_a_dotted_file_stem(tmp_path, capsys, golden_model):
     err = capsys.readouterr().err
     assert rc == 1
     assert "--name" in err
+
+
+def test_live_gemm_model_verifies_end_to_end(capsys, live_gemm_model):
+    # The fixture's premise, checked: verify on the inline model reaches the
+    # compile and run steps and passes, so the two error-path tests above are
+    # exercising the code they name rather than the dead-model guard.
+    rc = main(["verify", str(live_gemm_model), "--cases", "2"])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "all-zero" not in out and "FAIL" not in out
