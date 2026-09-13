@@ -233,80 +233,72 @@ contains
     END subroutine
 
 
-    subroutine max_pool(inp, maxpool, ceil_mode, pads, strides) !==ceil_mode, pads, strides
+    subroutine max_pool(inp, maxpool, ceil_mode, pads, strides)
         implicit none
-        REAL (c_double), INTENT(INOUT), ALLOCATABLE, DIMENSION(:,:,:,:) :: inp !==(numImages,imageD1,imageD2)
-        TYPE(maxpoolLayer), INTENT(IN) :: maxpool !==(ConvRowDim,ConvColDim)
+        REAL (c_double), INTENT(INOUT), ALLOCATABLE, DIMENSION(:,:,:,:) :: inp !==(batches,numImages,imageD1,imageD2)
+        TYPE(maxpoolLayer), INTENT(IN) :: maxpool
         INTEGER, INTENT(IN) :: ceil_mode
         INTEGER, INTENT(IN), DIMENSION(:) :: pads
         INTEGER, INTENT(IN), DIMENSION(:) :: strides
-        !==INTEGER, INTENT(IN) :: stride IMPLEMENT THIS
         REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: out
-        INTEGER :: kernel_size
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: padded
+        INTEGER :: kernel_size, b, ch, orow, ocol, outRows, outCols, r0, c0
 
-        REAL (c_double), DIMENSION(size(inp,1),size(inp,2),size(inp,3)+2*pads(1),size(inp,4)+2*pads(2)) :: padded
-
-        INTEGER :: overImage
-        INTEGER :: inner
-        INTEGER :: outRowDim
-        INTEGER :: outColDim
         padded = padding(pads, inp)
         kernel_size = maxpool%kernel_size
-        ALLOCATE(out(1,size(padded,dim=2), (size(padded,dim=3)-kernel_size)/strides(1) + 1, &
-            (size(padded,dim=4)-kernel_size)/strides(2)+1))
-        outRowDim = size(out,4)
-        outColDim = size(out,3)
+        outRows = (size(padded,3) - kernel_size)/strides(1) + 1
+        outCols = (size(padded,4) - kernel_size)/strides(2) + 1
+        ALLOCATE(out(size(padded,1), size(padded,2), outRows, outCols))
 
-        DO overImage = 0, (outRowDim*outColDim)-1 !==iterating kernel through the whole image
-            DO inner = 0, size(padded,dim=2)-1 !==applying kernel to each input image
-                out(1,inner+1,(overImage/outRowDim)+1,MODULO(overImage,outColDim)+1) = &
-                 MAXVAL(padded(1,inner+1,1 + ((overImage/outRowDim)*strides(1)):((overImage/outRowDim)*strides(1)+kernel_size) &
-                 ,(1 + MODULO(overImage,outRowDim)*strides(2)): &
-                 (MODULO(overImage,outRowDim)*strides(2)+kernel_size)))
+        DO b = 1, size(padded,1)
+            DO ch = 1, size(padded,2)
+                DO orow = 1, outRows
+                    r0 = (orow-1)*strides(1)
+                    DO ocol = 1, outCols
+                        c0 = (ocol-1)*strides(2)
+                        out(b,ch,orow,ocol) = MAXVAL(padded(b, ch, &
+                            r0+1 : r0+kernel_size, &
+                            c0+1 : c0+kernel_size))
+                    END DO
+                END DO
             END DO
         END DO
         inp = out
-        DEALLOCATE(out)
-
     end subroutine
 
-    subroutine avgpool(inp, maxpool, ceil_mode, pads, strides) !==ceil_mode, pads, strides
+    subroutine avgpool(inp, avgpoolLay, ceil_mode, pads, strides)
         implicit none
-        REAL (c_double), INTENT(INOUT), ALLOCATABLE, DIMENSION(:,:,:,:) :: inp !==(numImages,imageD1,imageD2)
-        TYPE(avgpoolLayer), INTENT(IN) :: maxpool !==(ConvRowDim,ConvColDim)
+        REAL (c_double), INTENT(INOUT), ALLOCATABLE, DIMENSION(:,:,:,:) :: inp
+        TYPE(avgpoolLayer), INTENT(IN) :: avgpoolLay
         INTEGER, INTENT(IN) :: ceil_mode
         INTEGER, INTENT(IN), DIMENSION(:) :: pads
         INTEGER, INTENT(IN), DIMENSION(:) :: strides
-        !==INTEGER, INTENT(IN) :: stride IMPLEMENT THIS
         REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: out
-        INTEGER :: kernel_size
-        INTEGER :: total
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: padded
+        INTEGER :: kernel_size, b, ch, orow, ocol, outRows, outCols, r0, c0
+        REAL (c_double) :: total
 
-        REAL (c_double), DIMENSION(size(inp,1),size(inp,2),size(inp,3)+2*pads(1),size(inp,4)+2*pads(2)) :: padded
-
-        INTEGER :: overImage
-        INTEGER :: inner
-        INTEGER :: outRowDim
-        INTEGER :: outColDim
         padded = padding(pads, inp)
-        kernel_size = maxpool%kernel_size
-        total = kernel_size * kernel_size
-        ALLOCATE(out(1,size(padded,dim=2), (size(padded,dim=3)-kernel_size)/strides(1) + 1, &
-            (size(padded,dim=4)-kernel_size)/strides(2)+1))
-        outRowDim = size(out,4)
-        outColDim = size(out,3)
+        kernel_size = avgpoolLay%kernel_size
+        total = REAL(kernel_size * kernel_size, c_double)
+        outRows = (size(padded,3) - kernel_size)/strides(1) + 1
+        outCols = (size(padded,4) - kernel_size)/strides(2) + 1
+        ALLOCATE(out(size(padded,1), size(padded,2), outRows, outCols))
 
-        DO overImage = 0, (outRowDim*outColDim)-1 !==iterating kernel through the whole image
-            DO inner = 0, size(padded,dim=2)-1 !==applying kernel to each input image
-                out(1,inner+1,(overImage/outRowDim)+1,MODULO(overImage,outColDim)+1) = &
-                 SUM(padded(1,inner+1,1 + ((overImage/outRowDim)*strides(1)):((overImage/outRowDim)*strides(1)+kernel_size) &
-                 ,(1 + MODULO(overImage,outRowDim)*strides(2)): &
-                 (MODULO(overImage,outRowDim)*strides(2)+kernel_size)))/total
+        DO b = 1, size(padded,1)
+            DO ch = 1, size(padded,2)
+                DO orow = 1, outRows
+                    r0 = (orow-1)*strides(1)
+                    DO ocol = 1, outCols
+                        c0 = (ocol-1)*strides(2)
+                        out(b,ch,orow,ocol) = SUM(padded(b, ch, &
+                            r0+1 : r0+kernel_size, &
+                            c0+1 : c0+kernel_size)) / total
+                    END DO
+                END DO
             END DO
         END DO
         inp = out
-        DEALLOCATE(out)
-
     end subroutine
 
     !
