@@ -108,21 +108,26 @@ def _emit_load(plan: Plan) -> list:
     return lines
 
 
-def _weight_index(weight_by_symbol: dict, symbol: str, n_in: int, n_out: int) -> str:
-    """Decide the accumulation index order from the layout rule.
+def _weight_index(weight_by_symbol: dict, op) -> str:
+    """Decide the accumulation index order from the op's own transB flag.
 
     A transB=1 Gemm weight has ONNX shape (n_out, n_in): Fortran dims are
     (n_in, n_out) and the accumulation reads w(j, i). A transB=0 weight, or
     any MatMul weight, has ONNX shape (n_in, n_out): Fortran dims are
     (n_out, n_in) and the accumulation reads w(i, j).
+
+    The flag is authoritative; the shape check below only makes a plan that
+    disagrees with its own weights fail loudly instead of silently reading a
+    transposed array. Sniffing the convention back out of the shape is what
+    this replaces: when n_in == n_out the two cases are indistinguishable.
     """
-    spec = weight_by_symbol[symbol]
-    if spec.shape[0] == n_out:
-        return "j, i"
-    if spec.shape[0] == n_in:
-        return "i, j"
-    raise AssertionError(
-        f"weight {symbol}: shape {spec.shape} matches neither n_in={n_in} nor n_out={n_out}")
+    spec = weight_by_symbol[op.weight]
+    expected = (op.n_out, op.n_in) if op.trans_b else (op.n_in, op.n_out)
+    if tuple(spec.shape) != expected:
+        raise AssertionError(
+            f"weight {op.weight}: shape {tuple(spec.shape)} does not match the layout "
+            f"the plan claims (transB={int(op.trans_b)} implies {expected})")
+    return "j, i" if op.trans_b else "i, j"
 
 
 def _emit_infer(plan: Plan) -> list:
@@ -155,7 +160,7 @@ def _emit_infer(plan: Plan) -> list:
         if op.kind == "gemm":
             dst = plan.assignment[op.out]
             src = plan.assignment[op.inp]
-            idx_expr = _weight_index(weight_by_symbol, op.weight, op.n_in, op.n_out)
+            idx_expr = _weight_index(weight_by_symbol, op)
 
             lines.append(f"        do i = 1, {op.n_out}")
             if op.bias:

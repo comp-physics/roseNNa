@@ -30,6 +30,11 @@ class Op:
     bias: str | None
     n_in: int
     n_out: int
+    # The weight's ONNX layout, straight from the node's transB attribute
+    # (MatMul is always 0). Both emitters branch on this. Re-deriving it by
+    # comparing the weight's shape against n_out is ambiguous whenever
+    # n_in == n_out, and a square weight then gets read transposed.
+    trans_b: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,7 +88,8 @@ def build_plan(graph: Graph, dtype: str | None = None) -> Plan:
             weights.append(WeightSpec(node.inputs[2], bsym, tuple(int(d) for d in b.shape), offset,
                                       b.size * _ITEMSIZE[dtype]))
             offset += weights[-1].nbytes
-        ops.append(Op("gemm", node.outputs[0], node.inputs[0], wsym, bsym, int(n_in), int(n_out)))
+        ops.append(Op("gemm", node.outputs[0], node.inputs[0], wsym, bsym,
+                      int(n_in), int(n_out), bool(trans_b)))
         widx += 1
 
     in_t = graph.values[graph.inputs[0]]

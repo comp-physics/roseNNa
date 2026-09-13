@@ -29,22 +29,27 @@ def _weight_size(shape) -> int:
     return size
 
 
-def _weight_index_c(weight_by_symbol: dict, symbol: str, n_in: int, n_out: int) -> str:
-    """Decide the accumulation index order from the layout rule.
+def _weight_index_c(weight_by_symbol: dict, op) -> str:
+    """Decide the accumulation index order from the op's own transB flag.
 
     A transB=1 Gemm weight has ONNX shape (n_out, n_in), stored row-major and
-    indexed w[i * n_in + j] directly. A transB=0 weight, or any MatMul
-    weight, has ONNX shape (n_in, n_out), indexed w[j * n_out + i]. Unlike
-    the Fortran side, C never reverses the dimensions, so no transposition
-    happens anywhere.
+    indexed w[i * n_in + j]. A transB=0 weight, or any MatMul weight, has
+    ONNX shape (n_in, n_out), indexed w[j * n_out + i]. Unlike the Fortran
+    side, C never reverses the dimensions, so no transposition happens
+    anywhere.
+
+    The flag is authoritative. The shape check below only makes a plan that
+    disagrees with its own weights fail loudly; sniffing the convention back
+    out of the shape, which is what this replaces, is ambiguous exactly when
+    n_in == n_out and silently transposes a square weight.
     """
-    spec = weight_by_symbol[symbol]
-    if spec.shape[0] == n_out:
-        return f"i * {n_in} + j"
-    if spec.shape[0] == n_in:
-        return f"j * {n_out} + i"
-    raise AssertionError(
-        f"weight {symbol}: shape {spec.shape} matches neither n_in={n_in} nor n_out={n_out}")
+    spec = weight_by_symbol[op.weight]
+    expected = (op.n_out, op.n_in) if op.trans_b else (op.n_in, op.n_out)
+    if tuple(spec.shape) != expected:
+        raise AssertionError(
+            f"weight {op.weight}: shape {tuple(spec.shape)} does not match the layout "
+            f"the plan claims (transB={int(op.trans_b)} implies {expected})")
+    return f"i * {op.n_in} + j" if op.trans_b else f"j * {op.n_out} + i"
 
 
 def emit_c(plan: Plan) -> tuple:
@@ -187,7 +192,7 @@ def _emit_infer(plan: Plan, ctype: str) -> list:
     for op in plan.ops:
         dst, src = plan.assignment[op.out], plan.assignment[op.inp]
         if op.kind == "gemm":
-            idx_expr = _weight_index_c(weight_by_symbol, op.weight, op.n_in, op.n_out)
+            idx_expr = _weight_index_c(weight_by_symbol, op)
             bias_init = f"{op.bias}[i]" if op.bias else "0.0"
             lines.append(f"    for (int i = 0; i < {op.n_out}; ++i) {{")
             lines.append(f"        {ctype} acc = {bias_init};")
