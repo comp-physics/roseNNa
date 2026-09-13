@@ -29,7 +29,7 @@ def test_reshape_parser_resolves_negative_one():
 
 def test_regate_lstm_reorders_iofc_to_ifgo():
     h = 2
-    # blocks tagged by gate: ONNX order is i, o, f, c
+    # ONNX gate order i, o, f, c
     onnx_w = np.concatenate([
         np.full((h, 3), 0.0),   # i
         np.full((h, 3), 1.0),   # o
@@ -50,10 +50,7 @@ def test_regate_lstm_handles_direction_axis():
     check(np.all(got[0, 1 * h:2 * h] == onnx_w[0, 2 * h:3 * h]), "regateLSTM remaps along axis 1")
 
 def test_four_d_transform_right_aligns():
-    # (1,4,3,3) and (4,) do not broadcast under numpy/ONNX semantics
-    # (np.broadcast_shapes on that pair raises): right-alignment puts the 4
-    # at the last axis, colliding with the true last axis of 3. A validating
-    # fourDTransform must reject it rather than guess.
+    # (1,4,3,3) and (4,) do not broadcast
     try:
         H.fourDTransform([1,4,3,3], (4,))
         check(False, "fourDTransform rejects a non-broadcastable trailing vector")
@@ -77,8 +74,7 @@ def test_sanitize_produces_fortran_identifiers():
           "sanitize keeps distinct names distinct")
 
 def test_sanitize_avoids_fortran_collisions():
-    # Fortran identifiers are case-insensitive and share one scope with the
-    # generated locals and the procedures the generated body calls.
+    # Fortran ignores case; names share scope with generated locals and calls
     check(H.sanitize("Input").lower() != H.sanitize("input").lower(),
           "sanitize separates names that differ only by case")
     reserved = {"i0", "o0", "output0", "t1", "t2", "conv", "lstm", "linear_layer", "max_pool",
@@ -163,7 +159,7 @@ def _raises(fn):
     return False
 
 def test_same_padding_requires_unit_stride():
-    # SAME padding is computed as kernel-1, which is only right for stride 1
+    # SAME pads are kernel-1, right only for stride 1
     for op in ("Conv", "MaxPool"):
         for mode in ("SAME_UPPER", "SAME_LOWER"):
             check(_raises(lambda: H.checkSupported(op, {"kernel_shape": [3, 3], "pads": [1]*4, "strides": [2, 2], "auto_pad": mode})),

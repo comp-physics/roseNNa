@@ -1,13 +1,10 @@
 program weights_format_tests
-    ! Exercises the weights-format dispatch in initialize on a hand-written
-    ! one-layer Gemm model. Every mode runs as its own process, because
-    ! initialize allocates the layer arrays once and error stop ends the process.
-    !   write     write onnxModel.txt, onnxWeights.bin, extra.bin (one extra value),
-    !             and the same weights as legacy text in legacy.TXT and onnxWeights.txt
-    !   bin       load onnxWeights.bin by explicit path
-    !   txt       load legacy.TXT, passed as an uppercase .TXT path with trailing blanks
-    !   extra     load extra.bin, which initialize must reject
-    !   fallback  call initialize() with no onnxWeights.bin present
+    ! Weights-format tests on a one-layer Gemm model, one mode per process.
+    !   write     model, .bin, extra.bin, legacy.TXT, onnxWeights.txt
+    !   bin       explicit .bin path
+    !   txt       uppercase .TXT path with trailing blanks
+    !   extra     oversized .bin, must be rejected
+    !   fallback  no arguments, no .bin
     use iso_c_binding
     use reader
     implicit none
@@ -63,8 +60,7 @@ contains
     end subroutine
 
     subroutine write_text(path)
-        ! one value per line is a valid legacy file for any model, since each
-        ! list-directed read consumes as many records as it needs
+        ! one value per line is valid legacy text for any model
         character(*), intent(in) :: path
         integer :: u
         open(newunit=u, file=path, status='replace', action='write')

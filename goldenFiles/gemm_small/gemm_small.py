@@ -23,15 +23,6 @@ class NN(nn.Module):
         )
 
     def forward(self, inp):
-        # logits, hid = self.lstm(inp,hidden) #logits will have shape of hidden_dimension
-        # print("Logits")
-        # print(logits)
-        # print("------")
-        # print("Hidden")
-        # print(hid)
-        # print("------")
-        # logits = logits.view(-1,logits.size(2)) #.view reshapes it to a valid (1,hid_dim) for lin layer
-        # logits = self.linear_relu_stack(logits)
         hid = self.linear_relu_stack(inp)
         return hid
 
@@ -63,22 +54,22 @@ with open(filePath+"gemm_small.txt", "w") as f:
     f.write(stringer(logits.flatten().tolist()))
 print(logits.flatten().tolist())
 
-torch.onnx.export(model,               # model being run
-                  inp,                         # model input (or a tuple for multiple inputs)
-                  filePath+"gemm_small.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True, dynamo=False,        # store the trained parameter weights inside the model file
-                  opset_version=10,          # the ONNX version to export the model to
-                  do_constant_folding=True,  # whether to execute constant folding for optimization
-                  input_names = ['input'],   # the model's input names
-                  output_names = ['output'], # the model's output names
+torch.onnx.export(model,
+                  inp,
+                  filePath+"gemm_small.onnx",
+                  export_params=True, dynamo=False,
+                  opset_version=10,
+                  do_constant_folding=True,
+                  input_names = ['input'],
+                  output_names = ['output'],
                   )
 
-torch.onnx.export(model,               # model being run
-                  inp,                         # model input (or a tuple for multiple inputs)
-                  filePath+"gemm_small_weights.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True, dynamo=False,        # store the trained parameter weights inside the model file
-                  opset_version=10,          # the ONNX version to export the model to
-                  do_constant_folding=False,  # whether to execute constant folding for optimization
-                  input_names = ['input'],   # the model's input names
-                  output_names = ['output'], # the model's output names
+torch.onnx.export(model,
+                  inp,
+                  filePath+"gemm_small_weights.onnx",
+                  export_params=True, dynamo=False,
+                  opset_version=10,
+                  do_constant_folding=False,
+                  input_names = ['input'],
+                  output_names = ['output'],
                   )

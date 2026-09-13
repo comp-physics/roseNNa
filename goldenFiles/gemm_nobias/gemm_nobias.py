@@ -15,9 +15,7 @@ for opt, _ in opts:
 
 torch.manual_seed(0)
 
-# nn.Linear(bias=False) exports as MatMul, not Gemm; the parser lowers it to a
-# Gemm with a zero bias. Rectangular layers catch transB and bias-length errors,
-# and there is no final ReLU so the outputs cannot all be clamped to zero.
+# bias=False exports MatMul; rectangular layers, no final ReLU
 class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
@@ -57,22 +55,22 @@ with open(filePath+"gemm_nobias.txt", "w") as f:
     f.write(stringer(logits.flatten().tolist()))
 print(logits.flatten().tolist())
 
-torch.onnx.export(model,               # model being run
-                  inp,                         # model input (or a tuple for multiple inputs)
-                  filePath+"gemm_nobias.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True, dynamo=False,        # store the trained parameter weights inside the model file
-                  opset_version=10,          # the ONNX version to export the model to
-                  do_constant_folding=True,  # whether to execute constant folding for optimization
-                  input_names = ['input'],   # the model's input names
-                  output_names = ['output'], # the model's output names
+torch.onnx.export(model,
+                  inp,
+                  filePath+"gemm_nobias.onnx",
+                  export_params=True, dynamo=False,
+                  opset_version=10,
+                  do_constant_folding=True,
+                  input_names = ['input'],
+                  output_names = ['output'],
                   )
 
-torch.onnx.export(model,               # model being run
-                  inp,                         # model input (or a tuple for multiple inputs)
-                  filePath+"gemm_nobias_weights.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True, dynamo=False,        # store the trained parameter weights inside the model file
-                  opset_version=10,          # the ONNX version to export the model to
-                  do_constant_folding=False,  # whether to execute constant folding for optimization
-                  input_names = ['input'],   # the model's input names
-                  output_names = ['output'], # the model's output names
+torch.onnx.export(model,
+                  inp,
+                  filePath+"gemm_nobias_weights.onnx",
+                  export_params=True, dynamo=False,
+                  opset_version=10,
+                  do_constant_folding=False,
+                  input_names = ['input'],
+                  output_names = ['output'],
                   )

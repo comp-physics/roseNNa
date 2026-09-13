@@ -5,7 +5,6 @@ module model
 
 
     ! ===============================================================
-    ! USE filereader !<loading in weights, biases
     USE activation_functions !<getting activation functions
     USE model_layers
     USE reader
@@ -110,7 +109,7 @@ module model
 
             #!Average Pooling Layer
             #: elif tup[0] == 'AveragePool'
-            !========MaxPool Layer============
+            !========AveragePool Layer============
             CALL avgpool(${tup[1][0]}$,avgpoolLayers(${layer_dict[tup[0]]}$), ${tup[2][0]}$, ${genArray(tup[2][1])}$, ${genArray(tup[2][2])}$)
 
             #!Transpose

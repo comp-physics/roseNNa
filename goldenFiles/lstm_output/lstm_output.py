@@ -10,27 +10,8 @@ class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
         self.lstm = LSTM(10,20,1)
-        # self.linear_relu_stack = nn.Sequential(
-        #     nn.Linear(2, 2),
-        #     nn.ReLU(),
-        #     nn.Linear(2, 3),
-        #     nn.Sigmoid(),
-        #     nn.Linear(3, 3),
-        #     nn.ReLU(),
-        #     nn.Linear(3,1),
-        #     nn.Sigmoid(),
-        # )
 
     def forward(self, inp, hidden):
-        # logits, hid = self.lstm(inp,hidden) #logits will have shape of hidden_dimension
-        # print("Logits")
-        # print(logits)
-        # print("------")
-        # print("Hidden")
-        # print(hid)
-        # print("------")
-        # logits = logits.view(-1,logits.size(2)) #.view reshapes it to a valid (1,hid_dim) for lin layer
-        # logits = self.linear_relu_stack(logits)
         logits, hid = self.lstm(inp,hidden)
         return logits
 SETUP_CODE = '''
@@ -44,27 +25,8 @@ class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
         self.lstm = LSTM(10,20,1)
-        # self.linear_relu_stack = nn.Sequential(
-        #     nn.Linear(2, 2),
-        #     nn.ReLU(),
-        #     nn.Linear(2, 3),
-        #     nn.Sigmoid(),
-        #     nn.Linear(3, 3),
-        #     nn.ReLU(),
-        #     nn.Linear(3,1),
-        #     nn.Sigmoid(),
-        # )
 
     def forward(self, inp, hidden):
-        # logits, hid = self.lstm(inp,hidden) #logits will have shape of hidden_dimension
-        # print("Logits")
-        # print(logits)
-        # print("------")
-        # print("Hidden")
-        # print(hid)
-        # print("------")
-        # logits = logits.view(-1,logits.size(2)) #.view reshapes it to a valid (1,hid_dim) for lin layer
-        # logits = self.linear_relu_stack(logits)
         logits, hid = self.lstm(inp,hidden)
         return logits
 model = NN()
@@ -124,22 +86,22 @@ with open(filePath+"lstm_output.txt", "w") as f:
     f.write(stringer(logits.flatten().tolist()))
 print(logits.flatten().tolist())
 
-torch.onnx.export(model,               # model being run
+torch.onnx.export(model,
                   (inp, hidden),                         # model input (or a tuple for multiple inputs)
-                  filePath+"lstm_output.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True, dynamo=False,        # store the trained parameter weights inside the model file
-                  opset_version=10,          # the ONNX version to export the model to
-                  do_constant_folding=True,  # whether to execute constant folding for optimization
-                  input_names = ['input', 'hidden_state','cell_state'],   # the model's input names
-                  output_names = ['output'], # the model's output names
+                  filePath+"lstm_output.onnx",
+                  export_params=True, dynamo=False,
+                  opset_version=10,
+                  do_constant_folding=True,
+                  input_names = ['input', 'hidden_state','cell_state'],
+                  output_names = ['output'],
                   )
 
-torch.onnx.export(model,               # model being run
+torch.onnx.export(model,
                   (inp, hidden),                         # model input (or a tuple for multiple inputs)
-                  filePath+"lstm_output_weights.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True, dynamo=False,        # store the trained parameter weights inside the model file
-                  opset_version=10,          # the ONNX version to export the model to
-                  do_constant_folding=False,  # whether to execute constant folding for optimization
-                  input_names = ['input', 'hidden_state','cell_state'],   # the model's input names
-                  output_names = ['output'], # the model's output names
+                  filePath+"lstm_output_weights.onnx",
+                  export_params=True, dynamo=False,
+                  opset_version=10,
+                  do_constant_folding=False,
+                  input_names = ['input', 'hidden_state','cell_state'],
+                  output_names = ['output'],
                   )

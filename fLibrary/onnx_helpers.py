@@ -1,4 +1,4 @@
-"""Pure helpers shared by modelParserONNX.py. No side effects at import."""
+"""Helpers for modelParserONNX.py."""
 import itertools
 import hashlib
 import re
@@ -37,11 +37,7 @@ def fakeFourD(inp):
 
 
 def fourDTransform(trueshape, toBeTransformedShape):
-    """Right-align `toBeTransformedShape` into 4 dimensions, per ONNX broadcasting.
-
-    Every axis of the result must be either 1 or equal to the corresponding
-    axis of `trueshape`, otherwise the two do not broadcast.
-    """
+    """Right-align a shape into 4-D; raise ValueError if it does not broadcast."""
     t = list(toBeTransformedShape)
     if len(t) > 4:
         raise ValueError(f"cannot broadcast a {len(t)}-D tensor into 4 dimensions")
@@ -67,13 +63,12 @@ def spreadInfo(trueShape, toBeTransformedShape):
     return ret
 
 
-# ONNX stores LSTM gates as (input, output, forget, cell); roseNNa's
-# lstm_cell consumes PyTorch order (input, forget, gate/cell, output).
+# ONNX gate order (i, o, f, c) -> lstm_cell order (i, f, c, o)
 ONNX_TO_ROSENNA_GATES = [0, 2, 3, 1]
 
 
 def regateLSTM(arr, axis=0):
-    """Reorder the 4 gate blocks of an ONNX LSTM W/R/B tensor along `axis`."""
+    """Reorder LSTM W/R/B gate blocks along `axis`."""
     n = arr.shape[axis]
     if n % 4 != 0:
         raise ValueError(f"LSTM gate axis {axis} has length {n}, not a multiple of 4")
@@ -89,17 +84,10 @@ _LOWER_IDENT = re.compile(r"^[a-z][a-z0-9_]{0,60}$")
 
 
 def sanitize(name):
-    """Map an ONNX tensor name onto a Fortran identifier that cannot collide.
+    """Map an ONNX name to a collision-free Fortran identifier.
 
-    Every result starts with ``v_``. No identifier in the library, the model
-    template, or the drivers uses that prefix, so an emitted name can never
-    clash with a generated local (``i0``, ``o0``, ``output0``, ``T1``), a
-    called procedure (``conv``, ``lstm``), or an intrinsic (``reshape``).
-
-    Fortran identifiers are case-insensitive, so a name that is not already a
-    valid all-lowercase identifier is lowercased and given a short digest of the
-    original. ``Input`` and ``input`` therefore map to different identifiers.
-    Results stay within Fortran's 63-character limit.
+    The v_ prefix avoids generated locals, procedures, and intrinsics. Names that
+    are not lowercase identifiers get a digest, since Fortran ignores case.
     """
     if _LOWER_IDENT.match(name):
         return "v_" + name
@@ -109,11 +97,7 @@ def sanitize(name):
 
 
 def checkSupported(op, attrs):
-    """Raise NotImplementedError for attributes roseNNa reads but cannot honour.
-
-    MaxPool and AveragePool require kernel_shape (ONNX gives it no default).
-    Conv may omit it; the caller infers it from the weight tensor first.
-    """
+    """Raise NotImplementedError for attributes roseNNa cannot honour."""
     kernel = attrs.get("kernel_shape")
     if op in ("MaxPool", "AveragePool") and not kernel:
         raise NotImplementedError(
@@ -166,20 +150,14 @@ def checkSupported(op, attrs):
 
 
 def checkPadIsNoop(pads):
-    """Raise unless an ONNX Pad node's pads are all zero (then it is an identity)."""
+    """Raise unless all pads are zero."""
     pads = list(pads)
     if any(p != 0 for p in pads):
         raise NotImplementedError(f"Pad: pads={pads} is not supported by roseNNa")
 
 
 def checkLSTMSupported(attrs):
-    """Raise NotImplementedError for LSTM attributes roseNNa does not implement.
-
-    `attrs` maps attribute names to decoded values; absent attributes take the
-    ONNX defaults. roseNNa computes one forward direction with the default
-    Sigmoid/Tanh/Tanh activations, no clipping, uncoupled gates, and the
-    sequence-first layout.
-    """
+    """Raise NotImplementedError for LSTM attributes roseNNa does not implement."""
     direction = attrs.get("direction", "forward")
     if direction != "forward":
         raise NotImplementedError(
@@ -206,11 +184,7 @@ def checkLSTMSupported(attrs):
 
 
 def checkGemmBias(shape):
-    """Raise NotImplementedError unless a Gemm bias C is rank 1.
-
-    reader.f90 reads a Gemm bias with a single dimension, so any other rank
-    would desynchronise the model file.
-    """
+    """Raise NotImplementedError unless the Gemm bias is rank 1."""
     shape = list(shape)
     if len(shape) != 1:
         raise NotImplementedError(

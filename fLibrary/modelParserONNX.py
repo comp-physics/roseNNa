@@ -35,7 +35,7 @@ if weights is not None:
     print("note: --weights/-w is no longer needed and is ignored; "
           "weights are now read by name from the structure file.")
 
-#sometimes the inferred shapes is too big, so we need to store an external file of the precomputed inferred shapes
+# large models may supply precomputed inferred shapes in an external file
 try:
     inferred = onnx.load(inferred)
     value_info = inferred.graph.value_info
@@ -84,14 +84,11 @@ def findWeightsInitializer(input_name):
     )
 
 
-#ONNX parser
-#onnxModel.txt => holds model structure
-#onnxWeights.bin => holds model's weights, as float64 in column-major order, as a raw binary stream
-
-#ioMap => dictionary that maps (outputs) -> (inputs)
-#initializer => holds weights dims
-
-#modelArch => (layer_name, input_list[], parameters) to call respective subroutines in fypp
+# onnxModel.txt: model structure
+# onnxWeights.bin: weights, float64, column-major, raw stream
+# ioMap: output name -> input name
+# initializer: weight dims
+# modelArch: (layer, inputs, params) consumed by fypp
 print("starting to write weights..")
 print("starting parsing...")
 for node in nodes:
@@ -114,13 +111,13 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
             except KeyError:
                 default = [x for x in range(len(input_shapes[node.input[0]])-1,-1,-1)]
             attributes = names.get('perm', default)
-            #make sure there is a node.attribute[0], otherwise default is to reverse all the dimensions
+            # no perm: reverse all dims
             modelArch.append(("Transpose",[ioMap[node.input[0]]], [list(map(lambda x: x+1,attributes))])) #"order"
 
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "LSTM": #changes shape
-            # reject attributes that lstm_cell does not implement; absent ones take the ONNX defaults
+            # reject unimplemented attributes; absent ones take ONNX defaults
             lstmAttrs = {}
             for attr in node.attribute:
                 if attr.name == "direction":
@@ -150,9 +147,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
                     f.write(str(dim)+" ")
                 f2.write(np.asarray(regateLSTM(findWeightsInitializer(inp), axis=1), dtype='<f8').flatten(order='F').tobytes())
                 f.write("\n")
-            #check if bias exists
-            # ONNX packs Wb and Rb into one (num_directions, 8*hidden) tensor;
-            # split into the two halves first, then regate each half.
+            # B packs Wb and Rb; split, then regate each half
             wb, rb = np.split(findWeightsInitializer(node.input[3]), 2, axis=1)
             for half in (wb, rb):
                 f.write(str(int(initializer[node.input[3]][0][1]/2)))
@@ -194,11 +189,10 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
 
         elif layer == "Gemm":
             if len(node.input) >= 3:
-                # read_linear reads a rank-1 bias; check before anything is written
+                # read_linear expects a rank-1 bias
                 checkGemmBias(np.shape(findWeightsInitializer(node.input[2])))
             f.write(layer)
             f.write("\n")
-            #only need default for node.attribute[2].i for transInput/B=0
             names = {n.name:n.i if n.type==2 else n.ints for n in node.attribute}
             if names.get('transA', 0):
                 raise NotImplementedError(
@@ -211,7 +205,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
             attributes = names.get('transB', 0)
             modelArch.append(("Gemm", [ioMap[node.input[0]],attributes], None))
             numzs = 0
-            #check if bias exists
+            # no bias: write zeros
             if len(node.input) < 3:
                 for inp in node.input[1:]:
                     numzs = initializer[inp][0][0]
@@ -230,7 +224,6 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
                     f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
-        #check notion summer start
         elif layer == "Squeeze": #changes shape
             f.write(layer)
             f.write("\n")
@@ -254,9 +247,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
             extra = str(int(extra)+1)
 
 
-        #check notion summer start
         elif layer == "Reshape": #changes shape
-            #no default changes needed
             f.write(layer)
             f.write("\n")
             try:
@@ -291,10 +282,10 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
                 else:
                     attributes[attr.name] = attr.ints
 
-            # kernel_shape is optional on Conv; infer it from the weight dims (out, in, kh, kw)
+            # optional on Conv; infer from weights (out, in, kh, kw)
             attributes.setdefault('kernel_shape', list(initializer[node.input[1]][0][2:]))
 
-            if auto_pad: # DEAL WITH STRIDE > 1?
+            if auto_pad:  # SAME; stride > 1 rejected by checkSupported
                 kernel_shape = attributes['kernel_shape'][0]
                 pad_total = kernel_shape - 1
                 pad = int(pad_total/2)
@@ -332,14 +323,11 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "MaxPool":
-            #no default changes needed
             f.write(layer)
             f.write("\n")
             attributes = {}
             auto_pad = False
-            #--SOME CONSTANTS THAT ARE REQUIRED IN ARGUMENTS AND MAY NOT APPEAR IN ONNX--
             attributes['ceil_mode'] = 0
-            #-------------
             for attr in node.attribute:
                 name = str(attr.name)
                 if name == "ceil_mode":
@@ -352,7 +340,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
                     attributes[attr.name] = attr.ints
             attributes.setdefault('pads', [0, 0, 0, 0])
             attributes.setdefault('strides', [1, 1])
-            if auto_pad:  # DEAL WITH STRIDE > 1?
+            if auto_pad:  # SAME; stride > 1 rejected by checkSupported
                 kernel_shape = attributes['kernel_shape'][0]
                 pad_total = kernel_shape - 1
                 pad = int(pad_total/2)
@@ -380,7 +368,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
                 'strides': names.get('strides', [1, 1]),
                 'kernel_shape': names.get('kernel_shape'),
                 'count_include_pad': names.get('count_include_pad', 0),
-                # `names` maps STRING attributes to an empty ints list, so read auto_pad directly
+                # string attribute; not in `names`
                 'auto_pad': next((a.s.decode('ASCII') for a in node.attribute if a.name == 'auto_pad'), 'NOTSET'),
             }
             checkSupported("AveragePool", poolAttrs)
@@ -391,7 +379,6 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "Add":
-            #no default changes needed
             f.write(layer)
             f.write("\n")
             fourd = fourDTransform(intermediateShapes[node.input[0]],findWeightsInitializer(node.input[-1]).shape)
@@ -404,7 +391,6 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
         elif layer == "MatMul":
-            #no default changes needed
             try:
                 modelArch.append(("MatMul",[ioMap[node.input[0]],ioMap[node.input[1]]], [len(intermediateShapes[node.input[0]])])) #[trueshape, need to be broadcasted and added SHAPE]
                 f.write(layer)
@@ -412,12 +398,11 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
             except KeyError:
                 f.write("Gemm")
                 f.write("\n")
-                # MatMul is Y = A*B with B stored as (in, out), so transB=0
+                # constant B: lower to Gemm with transB=0, B is (in, out)
                 modelArch.append(("Gemm", [ioMap[node.input[0]],0], None))
                 numzs = 0
-                #check if bias exists
                 for inp in node.input[1:]:
-                    numzs = initializer[inp][0][1] # the zero bias has the output width
+                    numzs = initializer[inp][0][1] # zero bias, output width
                     for dim in initializer[inp][0]:
                         f.write(str(dim)+ " ")
                     f2.write(np.asarray(findWeightsInitializer(inp), dtype='<f8').flatten(order='F').tobytes())
@@ -432,7 +417,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.bin', 'wb') as f2:
         elif layer == "Pad":
             f.write(layer)
             f.write("\n")
-            # opset < 11 carries pads as an attribute; opset >= 11 as the second input
+            # pads: attribute before opset 11, input from 11
             pads = None
             for attr in node.attribute:
                 if attr.name == "pads":

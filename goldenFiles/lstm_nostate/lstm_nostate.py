@@ -3,12 +3,9 @@ import onnx
 from onnx import helper, numpy_helper, TensorProto
 import onnxruntime as ort
 
-# An LSTM node with no initial_h/initial_c inputs, so the parser takes the
-# zero-initial-state path (readOrNot=1). PyTorch always wires h0/c0 into its
-# exported LSTM (as Expand outputs, even when the call omits them), so the
-# graph is built directly and onnxruntime supplies the golden outputs.
-# The layout mirrors a PyTorch batch_first export:
-# Transpose -> LSTM -> Squeeze -> Transpose.
+# LSTM without initial_h/initial_c (readOrNot=1). PyTorch always exports h0/c0,
+# so the graph is built by hand and onnxruntime gives the golden output.
+# Transpose -> LSTM -> Squeeze -> Transpose, as in a batch_first export.
 
 rng = np.random.default_rng(0)
 batch_size = 1
@@ -16,7 +13,7 @@ seq_len = 4
 input_dim = 5
 hidden_dim = 3
 
-# ONNX gate order is (i, o, f, c); the parser remaps it for roseNNa.
+# ONNX gate order (i, o, f, c)
 W = rng.uniform(-0.6, 0.6, (1, 4 * hidden_dim, input_dim)).astype(np.float32)
 R = rng.uniform(-0.6, 0.6, (1, 4 * hidden_dim, hidden_dim)).astype(np.float32)
 B = rng.uniform(-0.6, 0.6, (1, 8 * hidden_dim)).astype(np.float32)

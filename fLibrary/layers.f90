@@ -79,7 +79,7 @@ contains
         REAL (c_double), DIMENSION(size(Bhh, 1), size(input,2)) :: Bhh_broadcast !== (4m, batch_size)
         REAL (c_double), DIMENSION(size(Bhh, 1), size(input,2)) :: Bih_broadcast
         REAL (c_double), DIMENSION(size(Whh, dim=1), size(input,2)) :: gates_out
-        REAL (c_double), DIMENSION(size(hid1,1),4,size(input,2)) :: chunks !4, size(Whh, dim=1)/4
+        REAL (c_double), DIMENSION(size(hid1,1),4,size(input,2)) :: chunks
         ALLOCATE(hiddenOut(size(hid1),size(input,2)))
         ALLOCATE(cellOut(size(cell1),size(input,2)))
 
@@ -112,7 +112,6 @@ contains
         REAL (c_double), intent(in), ALLOCATABLE, DIMENSION(:) :: Bhh !==(4m,1)
         REAL (c_double), intent(in), ALLOCATABLE, DIMENSION(:) :: Bih !==(4m,1)
         REAL (c_double), INTENT(OUT), ALLOCATABLE, DIMENSION(:,:,:,:) :: output !==(timesteps,num_directions,m,batch_size)
-        ! INTEGER, INTENT(IN) :: nlayers, NEED TO ADD NLAYERS FUNCTIONALITY (no need for now since onnx apparently doesn't support it)
         INTEGER :: timesteps
         INTEGER :: i
         REAL (c_double), ALLOCATABLE, DIMENSION(:,:) :: hid1changed
@@ -188,7 +187,7 @@ contains
                         sumini = sumini + SUM(padded(itBatches,inner+1, &
                         (1 + (overImage/outRowDim)*strides(1)):((overImage/outRowDim)*strides(1)+kernel_size) &
                         ,(1 + MODULO(overImage,outRowDim)*strides(2)):(MODULO(overImage,outRowDim)*strides(2)+kernel_size)) &
-                            * convWeights(outer+1,inner+1,:,:)) !==depending on the way convWeights is laid out change position of outer/inner, currently it is row based (input images are applied to 1st row then 2nd row, etc.)
+                            * convWeights(outer+1,inner+1,:,:))
                     END DO
                     out(itBatches,outer+1,overImage/outRowDim + 1,MODULO(overImage,outRowDim)+1) = sumini + bias(outer+1)
                 END DO

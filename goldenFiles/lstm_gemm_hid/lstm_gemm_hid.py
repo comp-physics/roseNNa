@@ -64,22 +64,22 @@ with open(filePath+"lstm_gemm_hid.txt", "w") as f:
     f.write(stringer(logits.flatten().tolist()))
 print(logits.flatten().tolist())
 
-torch.onnx.export(model,               # model being run
+torch.onnx.export(model,
                   (inp, hidden),                         # model input (or a tuple for multiple inputs)
-                  filePath+"lstm_gemm_hid.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True, dynamo=False,        # store the trained parameter weights inside the model file
-                  opset_version=10,          # the ONNX version to export the model to
-                  do_constant_folding=True,  # whether to execute constant folding for optimization
-                  input_names = ['input', 'hidden_state','cell_state'],   # the model's input names
-                  output_names = ['output'], # the model's output names
+                  filePath+"lstm_gemm_hid.onnx",
+                  export_params=True, dynamo=False,
+                  opset_version=10,
+                  do_constant_folding=True,
+                  input_names = ['input', 'hidden_state','cell_state'],
+                  output_names = ['output'],
                   )
 
-torch.onnx.export(model,               # model being run
+torch.onnx.export(model,
                   (inp, hidden),                         # model input (or a tuple for multiple inputs)
-                  filePath+"lstm_gemm_hid_weights.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True, dynamo=False,        # store the trained parameter weights inside the model file
-                  opset_version=10,          # the ONNX version to export the model to
-                  do_constant_folding=False,  # whether to execute constant folding for optimization
-                  input_names = ['input', 'hidden_state','cell_state'],   # the model's input names
-                  output_names = ['output'], # the model's output names
+                  filePath+"lstm_gemm_hid_weights.onnx",
+                  export_params=True, dynamo=False,
+                  opset_version=10,
+                  do_constant_folding=False,
+                  input_names = ['input', 'hidden_state','cell_state'],
+                  output_names = ['output'],
                   )

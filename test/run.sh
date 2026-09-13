@@ -18,8 +18,7 @@ for d in ../goldenFiles/*/ ; do
             fi
             echo "$output"
         else
-            # a parser rejection or build failure leaves the previous case's
-            # test.txt behind, so never compare it
+            # test.txt is stale; skip the checker
             ((++nfail))
             echo "Fail!! make test failed for $name (parser rejection or build failure); outputs not compared"
         fi
