@@ -49,7 +49,7 @@ graphs: output
 
 compile: $(COMP)
 
-unit: $(COMP) unit_tests.o
+unit: $(COMP) unit_tests.o weights_format_tests.o
 	$(FC) $(FFLAGS) -o unit_tests $(COMP) unit_tests.o
 	./unit_tests
 	gcc -c c_default_paths.c -o c_default_paths.o
@@ -57,10 +57,18 @@ unit: $(COMP) unit_tests.o
 	rm -rf c_default_paths_run && mkdir c_default_paths_run
 	cd c_default_paths_run && ! ../c_default_paths 2> err.txt && grep -q "cannot open model file 'onnxModel.txt'" err.txt
 	rm -rf c_default_paths_run
+	$(FC) $(FFLAGS) -o weights_format_tests $(COMP) weights_format_tests.o
+	rm -rf weights_format_run && mkdir weights_format_run
+	cd weights_format_run && ../weights_format_tests write
+	cd weights_format_run && ../weights_format_tests bin
+	cd weights_format_run && ../weights_format_tests txt
+	cd weights_format_run && ! ../weights_format_tests extra 2> err_extra.txt && grep -q "do not match the model" err_extra.txt
+	cd weights_format_run && rm -f onnxWeights.bin && ../weights_format_tests fallback 2> err_fallback.txt && grep -q "onnxWeights.bin not found, reading legacy onnxWeights.txt" err_fallback.txt
+	rm -rf weights_format_run
 
 clean:
-	rm -f *.o *.mod output unit_tests c_default_paths capi cAPI.o
-	rm -rf c_default_paths_run
+	rm -f *.o *.mod output unit_tests c_default_paths weights_format_tests capi cAPI.o
+	rm -rf c_default_paths_run weights_format_run
 	rm -f $(DIR)/*.o
 	rm -f modelCreator.f90 userTesting.f90 variables.fpp inputs.fpp
 	rm -f test.txt outputCase.txt onnxModel.txt onnxWeights.txt onnxWeights.bin
