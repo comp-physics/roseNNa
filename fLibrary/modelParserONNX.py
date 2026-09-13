@@ -359,7 +359,10 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                         auto_pad = True
                 else:
                     attributes[attr.name] = attr.ints
-            if auto_pad: # DEAL WITH STRIDE > 1?
+            attributes.setdefault('kernel_shape', [1, 1])
+            attributes.setdefault('pads', [0, 0, 0, 0])
+            attributes.setdefault('strides', [1, 1])
+            if auto_pad:  # DEAL WITH STRIDE > 1?
                 kernel_shape = attributes['kernel_shape'][0]
                 pad_total = kernel_shape - 1
                 pad = int(pad_total/2)
@@ -371,7 +374,7 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
                 else:
                     attributes['pads'] = [pad]*4
             modelArch.append(("MaxPool", [ioMap[node.input[0]]], [attributes['ceil_mode'],attributes['pads'],attributes['strides']])) #(ceil_mode, pads, strides)
-            f.write(str(node.attribute[1].ints[0]))
+            f.write(str(attributes['kernel_shape'][0]))
             f.write("\n")
             ioMap[node.output[0]] = ioMap[node.input[0]]
 
