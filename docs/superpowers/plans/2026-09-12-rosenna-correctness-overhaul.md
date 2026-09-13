@@ -727,7 +727,7 @@ Replace `fLibrary/layers.f90:236-310` with:
     end subroutine
 ```
 
-Three incidental improvements: `padded` becomes allocatable (removing one automatic-array stack copy), the `avgpool` dummy is renamed off `maxpool` (it was shadowing the other layer type's name), and `total` becomes a real so the division is not integer-truncated for large kernels.
+Three incidental improvements: `padded` becomes allocatable (removing one automatic-array stack copy), the `avgpool` dummy is renamed off `maxpool` (it was shadowing the other layer type's name), and `total` becomes a real for clarity only — `SUM(...)` is already `REAL(c_double)`, and Fortran promotes the integer operand in mixed arithmetic, so the old division was never truncating.
 
 - [ ] **Step 4: Update the avgpool call site**
 
