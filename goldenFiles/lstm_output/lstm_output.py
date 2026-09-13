@@ -127,7 +127,7 @@ print(logits.flatten().tolist())
 torch.onnx.export(model,               # model being run
                   (inp, hidden),                         # model input (or a tuple for multiple inputs)
                   filePath+"lstm_output.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True,        # store the trained parameter weights inside the model file
+                  export_params=True, dynamo=False,        # store the trained parameter weights inside the model file
                   opset_version=10,          # the ONNX version to export the model to
                   do_constant_folding=True,  # whether to execute constant folding for optimization
                   input_names = ['input', 'hidden_state','cell_state'],   # the model's input names
@@ -137,7 +137,7 @@ torch.onnx.export(model,               # model being run
 torch.onnx.export(model,               # model being run
                   (inp, hidden),                         # model input (or a tuple for multiple inputs)
                   filePath+"lstm_output_weights.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True,        # store the trained parameter weights inside the model file
+                  export_params=True, dynamo=False,        # store the trained parameter weights inside the model file
                   opset_version=10,          # the ONNX version to export the model to
                   do_constant_folding=False,  # whether to execute constant folding for optimization
                   input_names = ['input', 'hidden_state','cell_state'],   # the model's input names
