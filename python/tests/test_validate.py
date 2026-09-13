@@ -41,3 +41,32 @@ def test_rejects_matmul_with_runtime_rhs(tmp_path):
     n2 = helper.make_node("MatMul", ["x", "r"], ["y"], name="mm1")
     with pytest.raises(UnsupportedModel, match="mm1"):
         validate(_model(tmp_path, [n1, n2], []))
+
+def test_rejects_gemm_weight_rank3(tmp_path):
+    w = numpy_helper.from_array(np.zeros((2, 2, 2), np.float32), "w")
+    n = helper.make_node("Gemm", ["x", "w"], ["y"], name="g1")
+    with pytest.raises(UnsupportedModel, match="w.*rank"):
+        validate(_model(tmp_path, [n], [w]))
+
+def test_rejects_matmul_rhs_rank3(tmp_path):
+    w = numpy_helper.from_array(np.zeros((2, 2, 2), np.float32), "w")
+    n = helper.make_node("MatMul", ["x", "w"], ["y"], name="mm1")
+    with pytest.raises(UnsupportedModel, match="w.*rank"):
+        validate(_model(tmp_path, [n], [w]))
+
+def test_rejects_gemm_short_inputs(tmp_path):
+    n = helper.make_node("Gemm", ["x"], ["y"], name="g1")
+    g = _model(tmp_path, [n], [])
+    with pytest.raises(UnsupportedModel, match="g1"):
+        validate(g)
+
+def test_rejects_matmul_short_inputs(tmp_path):
+    n = helper.make_node("MatMul", ["x"], ["y"], name="mm1")
+    g = _model(tmp_path, [n], [])
+    with pytest.raises(UnsupportedModel, match="mm1"):
+        validate(g)
+
+def test_accepts_rank2_weight_with_nonunity_leading_dim(tmp_path):
+    w = numpy_helper.from_array(np.zeros((3, 2), np.float32), "w")
+    n = helper.make_node("Gemm", ["x", "w"], ["y"], name="g1", transB=1)
+    validate(_model(tmp_path, [n], [w], in_shape=(1, 3), out_shape=(1, 2)))

@@ -12,10 +12,14 @@ def validate(graph: Graph) -> None:
                 f"this generator handles {sorted(SUPPORTED)}")
         if node.op == "Gemm":
             _validate_gemm(graph, node)
-        if node.op == "MatMul" and node.inputs[1] not in graph.initializers:
-            raise UnsupportedModel(
-                f"node '{node.name}': MatMul needs a constant second input; "
-                f"'{node.inputs[1]}' is computed at runtime")
+        if node.op == "MatMul":
+            if len(node.inputs) < 2:
+                raise UnsupportedModel(
+                    f"node '{node.name}': MatMul requires at least 2 inputs")
+            if node.inputs[1] not in graph.initializers:
+                raise UnsupportedModel(
+                    f"node '{node.name}': MatMul needs a constant second input; "
+                    f"'{node.inputs[1]}' is computed at runtime")
     for name, t in graph.values.items():
         if len(t.shape) not in (1, 2):
             raise UnsupportedModel(
@@ -24,9 +28,16 @@ def validate(graph: Graph) -> None:
             raise UnsupportedModel(
                 f"value '{name}' has leading dimension {t.shape[0]}; "
                 f"this generator infers one point per call")
+    for name, init in graph.initializers.items():
+        if init.ndim not in (1, 2):
+            raise UnsupportedModel(
+                f"initializer '{name}' has rank {init.ndim}; this generator handles rank 1 and 2")
 
 
 def _validate_gemm(graph: Graph, node) -> None:
+    if len(node.inputs) < 2:
+        raise UnsupportedModel(
+            f"node '{node.name}': Gemm requires at least 2 inputs")
     if int(node.attrs.get("transA", 0)) != 0:
         raise UnsupportedModel(f"node '{node.name}': Gemm transA=1 is not supported")
     for attr in ("alpha", "beta"):
