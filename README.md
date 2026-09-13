@@ -73,7 +73,7 @@ make library
 Compile the "source files" (`capiTester.f90`) and link to the library file created:
 ``` bash
 gfortran -c ../examples/capiTester.f90 -IobjFiles/
-gfortran -o flibrary libcorelib.a capiTester.o
+gfortran -o flibrary capiTester.o libcorelib.a
 ./flibrary
 ```
 and finally check if the output from PyTorch model matches roseNNa's output
@@ -147,7 +147,7 @@ One can compile a Fortran example (like the `Hello RoseNNa` example above) by sp
 In practice, this looks like
 ``` shell
 gfortran -c *.f90 -Ipath/to/objFiles
-gfortran -o flibrary path/to/libcorelib.a *.o
+gfortran -o flibrary *.o path/to/libcorelib.a
 ./flibrary
 ```
 
