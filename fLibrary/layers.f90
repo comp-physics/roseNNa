@@ -13,12 +13,16 @@ contains
         INTEGER, INTENT(IN) :: transInp
         REAL (c_double), ALLOCATABLE, intent(inout) :: inp(:,:) !===input is 2d usually (k,n), where n is usually 1
         TYPE(linLayer), INTENT(IN) :: lin !===stores the weights (m,k) and biases (m,1)
-        REAL (c_double), DIMENSION(size(lin%weights,1),size(inp,transInp+1)) :: bias_broadcast !==(m,n)
-        bias_broadcast = SPREAD(lin%biases, 2, size(inp,transInp+1))
+        REAL (c_double), ALLOCATABLE :: bias_broadcast(:,:)
+
         if (transInp == 0) THEN
-            inp = matmul(inp,TRANSPOSE(lin%weights)) + TRANSPOSE(bias_broadcast)
+            !== weights are (out,in): Y = X * W^T + b
+            bias_broadcast = SPREAD(lin%biases, 1, size(inp,1))
+            inp = matmul(inp, TRANSPOSE(lin%weights)) + bias_broadcast
         ELSE
-            inp = matmul(lin%weights,inp) + bias_broadcast
+            !== weights are (in,out): Y = X * W + b
+            bias_broadcast = SPREAD(lin%biases, 1, size(inp,1))
+            inp = matmul(inp, lin%weights) + bias_broadcast
         END IF
     end subroutine
 

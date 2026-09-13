@@ -12,6 +12,7 @@ program unit_tests
     call test_maxpool_identity_nonsquare()
     call test_maxpool_preserves_batch()
     call test_tanh_saturates()
+    call test_linear_layer_untransposed()
 
     if (failures > 0) then
         write(*,'(a,i0,a)') 'UNIT TESTS: ', failures, ' failure(s)'
@@ -84,6 +85,22 @@ contains
                    abs(y(2) - 1.0d0) < 1.0d-12 .and. &
                    abs(y(3) + 1.0d0) < 1.0d-12, &
                    'tanhh saturates instead of overflowing to NaN')
+    end subroutine
+
+    subroutine test_linear_layer_untransposed()
+        real(c_double), allocatable :: a(:,:)
+        type(linLayer) :: L
+        logical :: ok
+        allocate(a(1,2))
+        a = reshape([1.0d0, 2.0d0], [1,2])
+        allocate(L%weights(2,3))
+        L%weights = reshape([1.0d0,2.0d0,3.0d0,4.0d0,5.0d0,6.0d0], [2,3])
+        allocate(L%biases(3))
+        L%biases = 0.0d0
+        call linear_layer(a, L, 1)
+        ok = all(shape(a) == [1,3])
+        if (ok) ok = all(abs(reshape(a, [3]) - [5.0d0, 11.0d0, 17.0d0]) < 1.0d-12)
+        call check(ok, 'linear_layer computes A*B when transB=0')
     end subroutine
 
 end program unit_tests

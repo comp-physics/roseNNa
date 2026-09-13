@@ -187,6 +187,14 @@ with open('onnxModel.txt','w') as f, open('onnxWeights.txt', 'w') as f2:
             f.write("\n")
             #only need default for node.attribute[2].i for transInput/B=0
             names = {n.name:n.i if n.type==2 else n.ints for n in node.attribute}
+            if names.get('transA', 0):
+                raise NotImplementedError(
+                    "Gemm transA=1 is not supported by roseNNa")
+            for attr in node.attribute:
+                if attr.name in ('alpha', 'beta') and abs(attr.f - 1.0) > 1e-12:
+                    raise NotImplementedError(
+                        f"Gemm {attr.name}={attr.f} is not supported by roseNNa "
+                        f"(only 1.0)")
             attributes = names.get('transB', 0)
             modelArch.append(("Gemm", [ioMap[node.input[0]],attributes], None))
             numzs = 0
