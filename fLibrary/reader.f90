@@ -41,10 +41,9 @@ module reader
         character(len=:), allocatable :: str
         integer :: i, n
         n = 0
-        do
+        do while (n < 4096)
             if (s(n+1) == c_null_char) exit
             n = n + 1
-            if (n > 4096) exit
         end do
         allocate(character(len=n) :: str)
         do i = 1, n
@@ -75,17 +74,20 @@ module reader
         open(newunit=modelUnit, file=mpath, status='old', action='read', iostat=ios)
         if (ios /= 0) then
             write(error_unit,'(a)') "roseNNa: cannot open model file '"//mpath//"'"
+            flush(error_unit)
             error stop 1
         end if
         open(newunit=weightsUnit, file=wpath, status='old', action='read', iostat=ios)
         if (ios /= 0) then
             write(error_unit,'(a)') "roseNNa: cannot open weights file '"//wpath//"'"
+            flush(error_unit)
             error stop 1
         end if
 
         read(modelUnit, *, iostat=ios) numLayers
         if (ios /= 0) then
             write(error_unit,'(a)') "roseNNa: '"//mpath//"' is empty or malformed"
+            flush(error_unit)
             error stop 1
         end if
 

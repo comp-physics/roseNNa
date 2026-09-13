@@ -50,6 +50,11 @@ compile: $(COMP)
 unit: $(COMP) unit_tests.o
 	$(FC) $(FFLAGS) -o unit_tests $(COMP) unit_tests.o
 	./unit_tests
+	gcc -c c_default_paths.c -o c_default_paths.o
+	$(FC) $(FFLAGS) -o c_default_paths c_default_paths.o $(COMP)
+	rm -rf c_default_paths_run && mkdir c_default_paths_run
+	cd c_default_paths_run && ! ../c_default_paths 2> err.txt && grep -q "cannot open model file 'onnxModel.txt'" err.txt
+	rm -rf c_default_paths_run
 
 clean:
 	rm *.o *.mod output
