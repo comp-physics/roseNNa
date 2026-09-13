@@ -15,24 +15,8 @@ module reader
     TYPE(avgpoolLayer), ALLOCATABLE, DIMENSION(:) :: avgpoolLayers
     TYPE(addLayer), ALLOCATABLE, DIMENSION(:) :: addLayers
     TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshapeLayers
-    CHARACTER(len = 20) :: activation_func
-    REAL (c_double), ALLOCATABLE, DIMENSION(:,:) :: weights
-    REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
-    REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
-    INTEGER :: w_dim1
-    INTEGER :: w_dim2
-    INTEGER :: w_dim3
-    INTEGER :: w_dim4
-
-    REAL (c_double), ALLOCATABLE, DIMENSION(:) :: biases
-
-    ! INTEGER :: activation_func
-
-    CHARACTER(LEN = 100) :: layerName
 
     INTEGER :: numLayers
-    INTEGER :: i
-    INTEGER :: readOrNot
 
     contains
 
@@ -57,6 +41,9 @@ module reader
         INTEGER :: Reason, ios
         INTEGER :: modelUnit, weightsUnit
         character(len=:), allocatable :: mpath, wpath
+        CHARACTER(LEN = 100) :: layerName
+        INTEGER :: i
+        INTEGER :: readOrNot
 
         mpath = "onnxModel.txt"
         wpath = "onnxWeights.txt"
@@ -144,6 +131,9 @@ module reader
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshape
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:) :: weights
+        INTEGER :: w_dim1
+        INTEGER :: w_dim2
         ALLOCATE(reshape(1))
         read(file1, *) w_dim1, w_dim2
         ALLOCATE(weights(w_dim1, w_dim2))
@@ -158,6 +148,10 @@ module reader
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshape
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
+        INTEGER :: w_dim1
+        INTEGER :: w_dim2
+        INTEGER :: w_dim3
         ALLOCATE(reshape(1))
         read(file1, *) w_dim1, w_dim2, w_dim3
         ALLOCATE(midWeights(w_dim1, w_dim2, w_dim3))
@@ -172,6 +166,11 @@ module reader
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(reshapeLayer), ALLOCATABLE, DIMENSION(:) :: reshape
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
+        INTEGER :: w_dim1
+        INTEGER :: w_dim2
+        INTEGER :: w_dim3
+        INTEGER :: w_dim4
         ALLOCATE(reshape(1))
         read(file1, *) w_dim1, w_dim2, w_dim3, w_dim4
         ALLOCATE(largeWeights(w_dim1, w_dim2, w_dim3, w_dim4))
@@ -186,6 +185,11 @@ module reader
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(addLayer), ALLOCATABLE, DIMENSION(:) :: add
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
+        INTEGER :: w_dim1
+        INTEGER :: w_dim2
+        INTEGER :: w_dim3
+        INTEGER :: w_dim4
         ALLOCATE(add(1))
         read(file1, *) w_dim1, w_dim2, w_dim3, w_dim4
         ALLOCATE(largeWeights(w_dim1, w_dim2, w_dim3, w_dim4))
@@ -200,6 +204,7 @@ module reader
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(avgpoolLayer), ALLOCATABLE, DIMENSION(:) :: avgpool
+        INTEGER :: w_dim1
         ALLOCATE(avgpool(1))
         read(file1, *) w_dim1
         avgpool(1)%kernel_size = w_dim1
@@ -211,6 +216,7 @@ module reader
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(maxpoolLayer), ALLOCATABLE, DIMENSION(:) :: maxpool
+        INTEGER :: w_dim1
         ALLOCATE(maxpool(1))
         read(file1, *) w_dim1
         maxpool(1)%kernel_size = w_dim1
@@ -221,6 +227,12 @@ module reader
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(convLayer), ALLOCATABLE, DIMENSION(:) :: conv
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: largeWeights
+        REAL (c_double), ALLOCATABLE, DIMENSION(:) :: biases
+        INTEGER :: w_dim1
+        INTEGER :: w_dim2
+        INTEGER :: w_dim3
+        INTEGER :: w_dim4
         ALLOCATE(conv(1))
         read(file1, *) w_dim1, w_dim2, w_dim3, w_dim4
         ALLOCATE(largeWeights(w_dim1, w_dim2, w_dim3, w_dim4))
@@ -247,6 +259,11 @@ module reader
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(lstmLayer), ALLOCATABLE, DIMENSION(:) :: lstm
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: midWeights
+        REAL (c_double), ALLOCATABLE, DIMENSION(:) :: biases
+        INTEGER :: w_dim1
+        INTEGER :: w_dim2
+        INTEGER :: w_dim3
         ALLOCATE(lstm(1))
         read(file1, *) w_dim1, w_dim2, w_dim3
         ALLOCATE(midWeights(w_dim1,w_dim2,w_dim3))
@@ -297,6 +314,10 @@ module reader
         INTEGER, INTENT(IN) :: file1
         INTEGER, INTENT(IN) :: file2
         TYPE(linLayer), ALLOCATABLE,DIMENSION(:) :: lin
+        REAL (c_double), ALLOCATABLE, DIMENSION(:,:) :: weights
+        REAL (c_double), ALLOCATABLE, DIMENSION(:) :: biases
+        INTEGER :: w_dim1
+        INTEGER :: w_dim2
 
         ALLOCATE(lin(1))
         read(file1, *) w_dim1, w_dim2
@@ -306,18 +327,6 @@ module reader
         read(file1, *) w_dim1
         ALLOCATE(biases(w_dim1))
         read(file2, *) biases
-
-        ! read(file1, *) activation_func
-
-        ! if (activation_func .eq. "Relu") then
-        !     lin(1)%fn_ptr => relu2d
-        ! else if (activation_func .eq. "Sigmoid") then
-        !     lin(1)%fn_ptr => sigmoid2d
-        ! else if (activation_func .eq. "Tanh") then
-        !     lin(1)%fn_ptr => tanhh2d
-        ! else
-        !     lin(1)%fn_ptr => null()
-        ! end if
 
         lin(1)%weights = weights
         lin(1)%biases = biases

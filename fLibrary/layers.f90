@@ -268,45 +268,6 @@ contains
         inp = out
     end subroutine
 
-    !
-    ! != INSTEAD WHAT I SHOULD DO IS DO ALL OF THIS IN MODELCREATOR.FPP
-    ! !== BASICALLY, I TAKE THE SMALLER ARRAY, WHICH SHOULD BE THE ONE THATS ADDLAYER%ADDER
-    ! !== I SPREAD THIS BASED ON EACH DIMENSION OF THE LARGER ARRAY
-    ! !==THEN I RESHAPE TO THE SHAPE OF THE LARGER ARRAY
-    ! subroutine ad(inp, adding, reshapeDim)
-    !     INTEGER, INTENT(in) :: reshapeDim
-    !     REAL (c_double), ALLOCATABLE, intent(in) :: inp(:,:,:,:)
-    !     TYPE(addLayer), INTENT(IN) :: adding
-    !     REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:,:) :: intermediate
-    !     INTEGER, DIMENSION(4) :: true
-    !     INTEGER, DIMENSION(reshapeDim) :: reshaped
-    !     INTEGER, ALLOCATABLE, DIMENSION(:) :: inter
-    !     INTEGER, DIMENSION(4) :: changing
-    !     INTEGER :: i
-    !     true = SHAPE(inp)
-    !     intermediate = adding%adder
-    !     inter = SHAPE(intermediate)
-    !     DO i=1, 4
-    !         if (i .ne. 4) then
-    !             changing = [true(:i),inter((i+1):)]
-    !             intermediate = RESHAPE(SPREAD(intermediate,i,size(inp,i)), changing)
-    !         else
-    !             intermediate = RESHAPE(SPREAD(intermediate,i,size(inp,i)), SHAPE(inp))
-    !         end if
-    !     END DO
-
-    !     if (reshapeDim .eq. 1) then
-    !         asdf
-    !     else if (reshapeDim .eq. 2) then
-    !         asdf
-    !     else if (reshapeDim .eq. 3) then
-    !         asdf
-    !     else
-    !         asdf
-    !     end if 
-    !     print *, RESHAPE(intermediate, )  ! make var called output
-    ! end subroutine
-    !hi
     function broadc(inp, trueShape, spreadInfo) result(out)
         implicit none
         REAL (c_double), dimension(:,:,:,:), intent(in) :: inp
