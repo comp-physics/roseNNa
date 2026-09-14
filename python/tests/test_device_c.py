@@ -191,7 +191,28 @@ def test_device_pass_guard_needs_the_cuda_compiler_not_just_the_arch(tmp_path, g
     # never stands alone on a guard line.
     header = (tmp_path / f"{name}.h").read_text()
     assert ("#if (defined(__CUDACC__) && defined(__CUDA_ARCH__)) || "
-            "((defined(__HIPCC__) || defined(__HIP__)) && defined(__HIP_DEVICE_COMPILE__))") in header
+            "(defined(__HIPCC__) && defined(__HIP_DEVICE_COMPILE__))") in header
     for line in header.splitlines():
         if "__CUDA_ARCH__" in line and line.startswith("#if"):
             assert "__CUDACC__" in line, line
+
+
+def test_cuda_hip_guard_ignores_openmp_amdgpu_device_pass_macros(tmp_path, golden_model):
+    # The HIP twin of ruling R23: clang's OpenMP AMDGPU device pass defines
+    # __HIP__ (openmp_wrappers/math.h, to borrow HIP's device math) and
+    # __AMDGCN__, but never __HIPCC__ -- reproduced on an MI210 with
+    # `amdclang -fopenmp --offload-arch=gfx90a`, where a header that accepted
+    # __HIP__ emitted `static __device__ const` into a plain OpenMP host build.
+    # Under a plain compiler with both macros forced on, the header must take
+    # the host branch and compile.
+    name = "gemm_big"
+    graph = load_graph(golden_model(name))
+    _write(tmp_path, name, build_plan(graph, dtype="f64", embed=True), graph)
+    (tmp_path / "host.c").write_text(HOST.format(name=name, n_in=2, n_out=1, init=""))
+    cc = shutil.which("clang") or shutil.which("cc") or _omp_cc()
+    flags = ["-O2", "-Wall", "-Wextra", "-std=c11", "-D__HIP__=1", "-D__AMDGCN__=1"]
+    r = subprocess.run([cc, *flags, "-c", "host.c"], cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    _assert_warning_free("gcc", r.stderr)
+    header = (tmp_path / f"{name}.h").read_text()
+    assert "__HIP__" not in header

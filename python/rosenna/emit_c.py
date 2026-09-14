@@ -5,13 +5,16 @@ from .plan import Plan
 _CTYPE = {"f32": "float", "f64": "double"}
 _DTYPE_CODE = {"f32": 0, "f64": 1}
 _ITEMSIZE = {"f32": 4, "f64": 8}
-# The CUDA/HIP compiler guard. hipcc's wrapper adds -D__HIPCC__ itself, and
-# hip-clang defines __HIP__ for any HIP compilation, so accepting either keeps
-# the header independent of the wrapper's flag order.
+# The CUDA/HIP compiler guard. __HIPCC__ is defined by hip-clang itself for
+# any HIP compilation (and by the hipcc wrapper besides), so it is the one
+# HIP macro to test. __HIP__ is NOT a HIP-compilation signal: clang's OpenMP
+# AMDGPU device pass defines it from openmp_wrappers/math.h to borrow HIP's
+# device math, so a header that accepted it took the __device__ branch under
+# `amdclang -fopenmp --offload-arch=gfx90a` (ruling R23, HIP twin).
 _IS_CUDA = "defined(__CUDACC__)"
-_IS_HIP = "(defined(__HIPCC__) || defined(__HIP__))"
+_IS_HIP = "defined(__HIPCC__)"
 _CUDA_GUARD = f"#if {_IS_CUDA} || {_IS_HIP}"
-_NOT_CUDA_GUARD = "#if !defined(__CUDACC__) && !defined(__HIPCC__) && !defined(__HIP__)"
+_NOT_CUDA_GUARD = "#if !defined(__CUDACC__) && !defined(__HIPCC__)"
 # Device-pass guard: nvcc defines __CUDA_ARCH__ and hipcc __HIP_DEVICE_COMPILE__
 # only while compiling for the device, so a header-inline function can read one
 # storage in its host instantiation and another in its device instantiation.

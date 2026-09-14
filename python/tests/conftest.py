@@ -1,15 +1,14 @@
 """Fixtures for golden file models and for inline models built with onnx.helper."""
-import os
 import re
 import subprocess
-import tempfile
-import sys
 from pathlib import Path
 
 import numpy as np
 import onnx
 import pytest
 from onnx import helper, numpy_helper, TensorProto
+
+from rosenna.golden import golden_generator_run, golden_model_path
 
 # A diagnostic about the generated source carries a <file>:<line>: location.
 # A driver-level notice instead names the tool as its "location" -- for
@@ -71,35 +70,18 @@ def golden_model():
     """Return a helper that generates a golden ONNX model by running its generator script.
 
     The helper takes a model name (e.g. "gemm_small"), returns the path to the ONNX file
-    (goldenFiles/<name>/<name>.onnx), and generates it if it does not exist.
-
-    Each generator script writes its ONNX to a hard-coded `../goldenFiles/<name>/`
-    and drops an `inputs.fpp` beside itself, so it is run from a throwaway
-    directory holding a `goldenFiles` symlink: the model lands in the real tree
-    and the scratch output is discarded with the temp directory. (It used to run
-    in `test/`, which existed to serve the old runtime library's shell suite.)
+    (goldenFiles/<name>/<name>.onnx), and generates it if it does not exist. How the
+    generator is run is rosenna.golden's business, shared with the gpu-gate.
     """
     root = Path(__file__).resolve().parents[2]
     generated = {}
-    tmp = tempfile.TemporaryDirectory()
-    cwd = Path(tmp.name) / "run"
-    cwd.mkdir()
-    (Path(tmp.name) / "goldenFiles").symlink_to(root / "goldenFiles", target_is_directory=True)
 
     def _get_model_path(name: str) -> Path:
         if name not in generated:
-            model_path = root / "goldenFiles" / name / f"{name}.onnx"
+            model_path = golden_model_path(root, name)
             if not model_path.exists():
-                # The LSTM generators `import nnLSTM`, a shared helper that
-                # lives beside them in goldenFiles/, so that directory has to be
-                # importable from the scratch cwd they run in.
-                env = dict(os.environ)
-                env["PYTHONPATH"] = os.pathsep.join(
-                    [str(root / "goldenFiles")] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
-                subprocess.run(
-                    [sys.executable, str(root / "goldenFiles" / name / f"{name}.py")],
-                    cwd=cwd, check=True, env=env,
-                )
+                with golden_generator_run(root, name) as (argv, cwd, env):
+                    subprocess.run(argv, cwd=cwd, check=True, env=env)
             if not model_path.exists():
                 # goldenFiles/mnist/mnist.py reads its .onnx rather than
                 # writing one -- that model is checked in. Say so, instead of
@@ -110,8 +92,7 @@ def golden_model():
             generated[name] = model_path
         return generated[name]
 
-    yield _get_model_path
-    tmp.cleanup()
+    return _get_model_path
 
 
 @pytest.fixture

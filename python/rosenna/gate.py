@@ -25,8 +25,10 @@ Device residency is not claimed anywhere until this script has actually run
 on a GPU machine and its report recorded. For CUDA that has now happened:
 `--backend cuda` PASSes on an A100 under NVIDIA HPC SDK 25.11 (nvc,
 nvfortran -mp=gpu -gpu=cc80, nvcc 13.0), with zero cudaMemcpy inside the
-timed infer_batch call. HIP is still unvalidated -- no ROCm machine has run
-this.
+timed infer_batch call. For HIP too: `--backend hip` PASSes on an MI210
+(gfx90a) under ROCm 7.2.0 (amdclang, amdflang -fopenmp --offload-arch=gfx90a,
+hipcc) and under the TheRock AFAR 23.2.1 drop; the nsys transfer count has no
+rocprof counterpart yet, so that part is skipped and said so in the report.
 """
 import csv
 import io
@@ -46,6 +48,7 @@ from .emit_c import emit_c, emit_c_recipe
 from .emit_fortran import emit_fortran, emit_fortran_recipe
 from .emit_kernel import emit_kernel
 from .frontend import load_graph
+from .golden import golden_generator_run, golden_model_path
 from .plan import build_plan, validate_model_name
 from .rt_header import rt_header
 from .verify import _live_reference
@@ -122,6 +125,12 @@ def _sh(report: _Report, label: str, args: list, cwd=None, env=None, input_text=
     return proc
 
 
+def _link_archive(lib: Path, cwd: Path) -> list:
+    """`-L<dir> -l<name>` for lib<name>.a, relative to cwd (see the hipcc note at its use)."""
+    assert lib.name.startswith("lib") and lib.suffix == ".a", lib
+    return [f"-L{lib.parent.relative_to(cwd)}", f"-l{lib.name[3:-2]}"]
+
+
 def _gnu_style(compiler: str) -> bool:
     return Path(shlex.split(compiler)[0]).name.startswith(_GNU_STYLE_PREFIXES)
 
@@ -153,11 +162,10 @@ def _record_versions(report: _Report, cc: str, fc: str, devcc) -> None:
 
 
 def _ensure_model(report: _Report) -> Path:
-    onnx_path = _REPO_ROOT / "goldenFiles" / _MODEL / f"{_MODEL}.onnx"
+    onnx_path = golden_model_path(_REPO_ROOT, _MODEL)
     if not onnx_path.exists():
-        gen = _REPO_ROOT / "goldenFiles" / _MODEL / f"{_MODEL}.py"
-        _sh(report, "generate the golden gemm_big model", [sys.executable, str(gen)],
-           cwd=_REPO_ROOT / "test")
+        with golden_generator_run(_REPO_ROOT, _MODEL) as (argv, cwd, env):
+            _sh(report, "generate the golden gemm_big model", argv, cwd=cwd, env=env)
     return onnx_path
 
 
@@ -523,6 +531,9 @@ _DEV_HARNESS3 = """/* rosenna gpu-gate: infer_batch over raw device pointers ({b
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+/* rosenna_rt.h includes cuda_runtime.h or hip/hip_runtime.h for whichever
+   compiler this is: nvcc includes its runtime implicitly, hipcc does not. */
+#include "rosenna_rt.h"
 #include "{name}.h"
 #ifdef ROSENNA_GATE_NVTX
 /* Ruling R15: only defined (via -DROSENNA_GATE_NVTX=1) for the separate
@@ -695,13 +706,15 @@ def _run_dev_harness3(report, cfg_dir, plan, devcc, devflags, backend, dev_lib, 
         name=name, n_in=n_in, n_out=n_out, init=init, ntime=_TIMED_ITERS, p=prefix,
         backend=backend))
     # Ruling R22: the device compiler compiles AND links this driver (it
-    # supplies its own runtime), against the archive it built itself. No
-    # `-x cu|hip`: the driver is a .cu, which both compilers take as device
-    # source by extension, and a -x before the archive would make
-    # clang-based hipcc compile the archive as source too.
+    # supplies its own runtime), against the archive it built itself. The
+    # archive goes to the linker as -L/-l rather than as a bare path: hipcc
+    # injects `-x hip` ahead of a .cu input, and that applies to every input
+    # after it, so a bare libfoo.a after the .cu is compiled as HIP source
+    # ("!<arch>: expected unqualified-id"). nvcc dispatches by extension and
+    # takes either form. Seen on an MI210 with ROCm 7.2.
     proc = _sh(report, f"compile and link {backend} infer_batch harness (device compiler)",
               [*shlex.split(devcc), *devflags.split(),
-               "gate_harness3.cu", str(dev_lib.relative_to(cfg_dir)), "-o", "gate_harness3_dev"],
+               "gate_harness3.cu", *_link_archive(dev_lib, cfg_dir), "-o", "gate_harness3_dev"],
               cwd=cfg_dir)
     if proc.returncode != 0:
         return False
@@ -825,7 +838,7 @@ def _run_nsys_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: 
     # -lnvToolsExt first (the documented form) and retry once with it if
     # linking fails, noting which form was needed. Neither path has run here.
     base_cmd = [*shlex.split(devcc), *devflags.split(), "-DROSENNA_GATE_NVTX=1",
-                "gate_harness3.cu", str(dev_lib.relative_to(cfg_dir))]
+                "gate_harness3.cu", *_link_archive(dev_lib, cfg_dir)]
     proc = _sh(report, "compile nvtx-bracketed infer_batch harness (no explicit -lnvToolsExt)",
               [*base_cmd, "-o", "gate_harness3_nvtx"], cwd=cfg_dir)
     if proc.returncode != 0:

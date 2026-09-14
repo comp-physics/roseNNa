@@ -9,8 +9,10 @@ y are device-resident and infer_batch only launches; the one transfer this
 file makes (<name>_device_bind, file-loaded plans only) belongs to the plan
 step and is called from init. Validated on an A100 by `rosenna gpu-gate
 --backend cuda` (nvcc 13.0, HPC SDK 25.11): matches onnxruntime embedded
-and file-loaded, with zero cudaMemcpy inside the timed call. The hip
-backend is still unvalidated -- no ROCm machine has built it.
+and file-loaded, with zero cudaMemcpy inside the timed call. Validated on
+an MI210 (gfx90a) by `--backend hip` under ROCm 7.2.0 and the AFAR 23.2.1
+drop: matches onnxruntime embedded and file-loaded; the rocprof-scoped
+transfer count is still a follow-up.
 """
 from .emit_c import KERNEL_TILE, _CTYPE, _c_weight_symbol, _device_bind
 from .plan import Plan

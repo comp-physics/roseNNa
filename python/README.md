@@ -431,9 +431,34 @@ See [`examples/nvhpc_teams_mapping/`](examples/nvhpc_teams_mapping/) for the
 PTX, the `ncu` geometry and stall counters, and a self-contained
 reproducer.
 
-The HIP path remains unvalidated -- `hipcc` is only ever exercised by the
-gate, and no ROCm machine has run it. A compile-only `nvcc` job also exists
-in CI (`.github/workflows/CI.yml`, `nvcc_compile`). See
+The HIP path has been validated the same way. `gpu-gate --backend hip` was
+run on an AMD Instinct MI210 (gfx90a) twice: under ROCm 7.2.0 (`amdclang`
+/ `amdflang` `-fopenmp --offload-arch=gfx90a` as the host compilers,
+`hipcc` as the device compiler) and under the TheRock AFAR 23.2.1 drop
+(`amdflang` 23.0), and reported `PASS: every configuration matched` both
+times (`gate-reports/gate-report-hip-*.md`). Per point: 2.0-3.1 ns for the
+C per-point host, 4.6-4.8 ns Fortran, 4.0 ns through the native HIP
+kernel embedded and 6.6-6.9 ns file-loaded. Three things had to change to
+get there, none of them in the generated arithmetic:
+
+- `__HIP__` is not a HIP-compilation signal. clang's OpenMP AMDGPU device
+  pass defines it from `openmp_wrappers/math.h` (to borrow HIP's device
+  math), so a header that accepted `__HIP__` next to `__HIPCC__` emitted
+  `static __device__ const` into a plain OpenMP host build. hip-clang
+  defines `__HIPCC__` itself for any HIP compilation, so that is the one
+  macro the guards test (the HIP twin of the nvptx `__CUDA_ARCH__` case).
+- `hipcc` does not include its runtime implicitly the way `nvcc` includes
+  `cuda_runtime.h`; the gate's device harness now includes `rosenna_rt.h`,
+  which already picks the right one.
+- `hipcc` injects `-x hip` ahead of a `.cu` input and that applies to every
+  later input, so a bare `libfoo.a` after the `.cu` is compiled as source.
+  The gate hands the archive to the linker as `-L`/`-l`, which both
+  compilers take.
+
+What the HIP run does not yet show is the transfer count inside the timed
+call: that check is `nsys`/nvtx-scoped and CUDA-only, and a `rocprof`
+equivalent is a follow-up. A compile-only `nvcc` job also exists in CI
+(`.github/workflows/CI.yml`, `nvcc_compile`). See
 `python/examples/microfd_closure/` for a worked example of wiring a
 generated model into a solver.
 
