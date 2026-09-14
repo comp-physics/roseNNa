@@ -203,6 +203,14 @@ stops with an error. The `onnxWeights.txt` fallback described under Hello RoseNN
 
 Please see [this document](https://github.com/comp-physics/roseNNa/blob/master/doc/opensource.md) on how to extend roseNNa to new network models and [this document](https://github.com/comp-physics/roseNNa/blob/master/doc/methodology.md) on the details of the roseNNa pipeline.
 
+## Python code generator
+
+`python/` holds a second, newer way to use roseNNa: a generator that reads an ONNX model and emits a small, self-contained Fortran module and/or C library, callable per point from inside your own OpenMP-target, OpenACC, CUDA or HIP loop, with its weights device-resident.
+
+Two paths currently coexist in this repository. The `fLibrary/` runtime library described in the rest of this README supports every op roseNNa implements (RNNs, CNNs, MLPs). The generator in `python/` supports dense (Gemm/MatMul + Relu/Tanh/Sigmoid) models only, but its output is GPU-callable. The generator is meant to replace the library once it covers everything the library does; until then, use `fLibrary/` for anything the generator does not yet support.
+
+See [python/README.md](python/README.md) for how to install, generate, build and call generated code from C or Fortran.
+
 ## Citation
 
 You can cite this work as 

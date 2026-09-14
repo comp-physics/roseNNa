@@ -72,6 +72,9 @@ def test_host_region_calls_header_inline_and_matches(tmp_path, golden_model, nam
     plan = build_plan(graph, dtype="f64", embed=embed)
     session = ort.InferenceSession(golden_model(name))
     inputs, expected = _live_reference(session, session.get_inputs()[0].shape, np.float64, seed=5, batch=8)
+    if inputs is None:
+        pytest.skip(f"{name}: onnxruntime reference is all-zero across 10 resampled "
+                    f"batches; its golden-file weights produced a dead model")
     r = _build_and_run(tmp_path, name, plan, graph, _omp_cc(), ["-O2", "-Wall", "-Wextra", "-std=c11", "-fopenmp"], inputs)
     assert r.returncode == 0, r.stderr
     got = np.array([[float(v) for v in line.split()] for line in r.stdout.strip().splitlines()])
@@ -96,6 +99,9 @@ def test_plain_compiler_without_openmp_still_matches(tmp_path, golden_model):
     cc = shutil.which("clang") or shutil.which("cc") or _omp_cc()
     session = ort.InferenceSession(golden_model(name))
     inputs, expected = _live_reference(session, session.get_inputs()[0].shape, np.float64, seed=6, batch=4)
+    if inputs is None:
+        pytest.skip(f"{name}: onnxruntime reference is all-zero across 10 resampled "
+                    f"batches; its golden-file weights produced a dead model")
     r = _build_and_run(tmp_path, name, plan, graph, cc, ["-O2", "-Wall", "-Wextra", "-std=c11"], inputs)
     assert r.returncode == 0, r.stderr
     got = np.array([[float(v) for v in line.split()] for line in r.stdout.strip().splitlines()])

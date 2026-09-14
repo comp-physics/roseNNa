@@ -1,0 +1,365 @@
+# rosenna: ONNX to a GPU-callable Fortran/C library
+
+This is the roseNNa code generator: it reads a dense ONNX model and emits a
+small, self-contained Fortran module and/or C library that a solver written
+in C or Fortran links directly, and calls per point inside its own compute
+loop -- on the host, or on a GPU under OpenMP target offload, OpenACC, CUDA
+or HIP.
+
+## What you get
+
+`rosenna generate model.onnx` turns an ONNX model into `lib<name>.a` (C) and
+`lib<name>_f.a` (Fortran, a module in the archive): `<name>_infer` is a
+plain per-point function you call inside your own GPU loop, exactly like any
+other device-callable routine in your solver, and its weights are
+device-resident -- baked into the generated source as constants for a small
+model, or loaded once at startup and copied to the device for a large one.
+
+## Install
+
+```sh
+pip install -e python
+```
+
+The generator itself only needs Python (`onnx`, `numpy`, `onnxruntime` for
+`verify`). Building generated code needs a compiler:
+
+- host path (no accelerator, or the OpenMP-target host fallback): `gcc`/`gfortran`
+  with `-fopenmp` (on macOS, Homebrew's `gcc-15`/`gfortran-15` -- Apple's
+  `clang`-based `gcc` has no `-fopenmp`).
+- GPU path: `nvc`/`nvfortran` (NVIDIA HPC SDK) for OpenMP-target or OpenACC on
+  an NVIDIA GPU; `amdclang`/`amdflang` for OpenMP-target on an AMD GPU; `icx`/`ifx`
+  for OpenMP-target on an Intel GPU. `nvcc` or `hipcc` if you also want the
+  native batched kernel (`--backend cuda|hip`, see [Call it from C](#call-it-from-c)).
+
+## Generate
+
+```sh
+rosenna generate model.onnx --lang both --precision single --out build/
+```
+
+`--lang` selects `fortran`, `c`, or `both` (default); `--precision` selects
+`single` or `double` and defaults to the model's own dtype (see
+[Precision](#precision)); `--name` sets the symbol prefix and defaults to the
+model file's stem. `generate` prints every file it wrote:
+
+| File | Written when | What it is |
+|---|---|---|
+| `<name>.h` | `--lang c\|both` | the header: `<name>_infer` (per-point, device-decorated), `<name>_infer_batch` |
+| `<name>.c` | `--lang c\|both` | weight loading and `<name>_init` (file-loaded models only), the OpenMP-fallback `<name>_infer_batch` |
+| `<name>_kernel.cu` | `--lang c\|both` | the native CUDA/HIP batched kernel; inert unless built with `ROSENNA_BACKEND=cuda\|hip` |
+| `rosenna_rt.h` | `--lang c\|both` | the CUDA/HIP runtime macro mapping; identical for every model |
+| `<name>.mk` | `--lang c\|both` | the C build recipe: builds `lib<name>.a` for `ROSENNA_BACKEND=cuda\|hip\|omp` |
+| `<name>_model.f90` | `--lang fortran\|both` | the Fortran module |
+| `<name>_fortran.mk` | `--lang fortran\|both` | the Fortran build recipe: builds `lib<name>_f.a` |
+| `<name>.rwt` | file-loaded weights only | the weights file `<name>_init` reads |
+
+Both recipes write into the same output directory and build there: a
+`--lang both` run gives you one directory holding both archives.
+
+A model embeds its weights as constants (`ROSENNA_CONST` in C, a Fortran
+`parameter` array) automatically when it has fewer than `EMBED_THRESHOLD`
+(1,000,000) parameters; above that it is file-loaded by default. `--embed-weights`
+forces embedding regardless of size; `--no-embed` forces a `.rwt` file
+regardless of size. An embedded model has no `<name>_init` at all -- there is
+nothing to load -- and no `.rwt` file is written for it.
+
+## Call it from C
+
+Two paths call the same generated code. This example is generated from
+`gemm_small` with `--name model`; it embeds by default, so it has no
+`model_init` to call (the commented-out line below shows the file-loaded
+form). It reads its inputs from a fixed array, calls `model_infer` in its
+own offload loop, calls `model_infer_batch` once, and exits non-zero if the
+two disagree:
+
+```c
+#include <math.h>
+#include <stdio.h>
+#include "model.h"
+
+#define NPTS 4
+
+int main(void) {
+    /* Fixed inputs: NPTS points of n_in=2 values each. */
+    double x[NPTS * 2] = {
+        0.10, 0.20,
+        0.30, -0.10,
+        -0.20, 0.50,
+        1.00, -1.00,
+    };
+    double y_loop[NPTS * 3];
+    double y_batch[NPTS * 3];
+    int status = 0;
+
+    /* File-loaded models only: gemm_small embeds by default, so this
+       generated header has no model_init to call.
+       if (model_init("model.rwt") != 0) return 1; */
+
+    /* (a) The per-point path: model_infer inside your own offload loop. */
+#if defined(_OPENMP)
+    #pragma omp target teams loop map(to: x[0:NPTS * 2]) map(from: y_loop[0:NPTS * 3])
+#endif
+    for (int p = 0; p < NPTS; ++p)
+        model_infer(x + p * 2, y_loop + p * 3);
+
+    /* (b) The batched path: model_infer_batch takes device-resident data in
+       every backend and never allocates, transfers or synchronizes itself.
+       Under the omp backend the host maps its own arrays and hands
+       infer_batch the mapped device pointers (use_device_ptr needs a
+       pointer variable, not an array, hence xp/yp); a cuda/hip caller
+       passes raw device pointers here instead and skips this mapping. */
+#if defined(_OPENMP)
+    {
+        double *xp = x, *yp = y_batch;
+        #pragma omp target data map(to: x[0:NPTS * 2]) map(from: y_batch[0:NPTS * 3]) \
+                                 use_device_ptr(xp, yp)
+        {
+            status = model_infer_batch(NPTS, xp, yp, NULL);
+        }
+    }
+#else
+    status = model_infer_batch(NPTS, x, y_batch, NULL);
+#endif
+    if (status != 0) return 1;
+
+    for (int i = 0; i < NPTS * 3; ++i) {
+        if (fabs(y_loop[i] - y_batch[i]) > 1e-9) {
+            fprintf(stderr, "mismatch at %d: %.17g vs %.17g\n", i, y_loop[i], y_batch[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
+```
+
+Generate and build it (`--precision double` here only to keep the example's
+own arithmetic in `double` throughout; see [Precision](#precision)):
+
+```sh
+rosenna generate model.onnx --lang c --precision double --out build/ --name model
+```
+```sh
+make -f model.mk ROSENNA_BACKEND=omp CC=gcc-15 ROSENNA_OFFLOAD_FLAGS=-fopenmp
+```
+
+`ROSENNA_BACKEND` selects which `model_infer_batch` the archive holds --
+`cuda`/`hip` build `model_kernel.cu` with `DEVCC` (default `nvcc`/`hipcc`)
+and launch the native kernel over raw device pointers; `omp` (the default)
+builds only `model.c` with the host compiler and runs the OpenMP-target
+fallback shown above. The two are never linked together. A cuda/hip build
+of a *file-loaded* model needs one more call: after every `model_init`, call
+`model_device_bind_here()` in every translation unit whose kernels call
+`model_infer` (an embedded model needs neither).
+
+### No transfers in the loop
+
+`<name>_init` is the plan step and the only routine that allocates or
+transfers. Nothing in the loop path -- `<name>_infer` or
+`<name>_infer_batch` -- allocates, transfers or synchronizes; the caller
+owns the stream (`model_infer_batch`'s last argument), and `infer_batch`
+never even looks at it beyond passing it to the launch. An embedded model's
+`<name>_infer` is also device-only under `nvcc`/`hipcc` -- its host
+instantiation asserts -- so on those compilers call it from a kernel, or use
+`infer_batch`.
+
+Host offload flags, for the per-point path and the `omp` backend:
+
+| Host compiler | Host flags (the per-point path and the `omp` backend) |
+|---|---|
+| nvc / nvfortran (NVIDIA, OpenMP) | `-mp=gpu -gpu=cc80` (or your `-gpu=` target) |
+| nvc / nvfortran (NVIDIA, OpenACC) | `-acc -gpu=cc80` |
+| amdclang / amdflang (AMD) | `-fopenmp --offload-arch=gfx90a` (or your arch) |
+| icx / ifx (Intel) | `-fopenmp -fopenmp-targets=spir64` |
+| gcc / gfortran, host fallback | `-fopenmp` |
+
+`DEVFLAGS`, for the batched backend:
+
+| Batched backend | `ROSENNA_BACKEND` | `DEVFLAGS` |
+|---|---|---|
+| CUDA | `cuda` | `-O2 -arch=sm_80` (or your arch) |
+| HIP | `hip` | `-O2 --offload-arch=gfx90a` (or your arch) |
+| OpenMP fallback | `omp` | none; uses the host flags |
+
+## Call it from Fortran
+
+The same two paths, through `use <name>_model`. This is the same
+`gemm_small` model as above (`--name model`), built with `--lang fortran`,
+so it also embeds and has no `model_init`:
+
+```fortran
+program host
+    use model_model
+    use iso_fortran_env, only: real64
+    implicit none
+    integer, parameter :: npts = 4
+    real(real64) :: x(2, npts), y_loop(3, npts), y_batch(3, npts)
+    integer :: p, status
+
+    x(:, 1) = [ 0.10_real64,  0.20_real64]
+    x(:, 2) = [ 0.30_real64, -0.10_real64]
+    x(:, 3) = [-0.20_real64,  0.50_real64]
+    x(:, 4) = [ 1.00_real64, -1.00_real64]
+
+    ! File-loaded models only: gemm_small embeds by default, so this
+    ! generated module has no model_init to call.
+    ! call model_init('model.rwt', status)
+    ! if (status /= 0) stop 1
+
+    ! (a) The per-point path: model_infer inside your own offload loop.
+    !$omp target teams loop map(to: x) map(from: y_loop)
+    do p = 1, npts
+        call model_infer(x(:, p), y_loop(:, p))
+    end do
+
+    ! (b) The batched path: model_infer_batch takes device-resident arrays.
+    ! The host maps its own arrays and hands infer_batch the mapped device
+    ! addresses (use_device_addr); a cuda/hip caller reaches the same
+    ! contract through model_infer_batch_dev and c_loc of device memory.
+    !$omp target data map(to: x) map(from: y_batch) use_device_addr(x, y_batch)
+    call model_infer_batch(npts, x, y_batch, status)
+    !$omp end target data
+    if (status /= 0) stop 1
+
+    if (maxval(abs(y_loop - y_batch)) > 1.0e-9_real64) stop 1
+end program
+```
+
+`model_infer` is `pure`; `model_infer_batch(n, x, y, status)` returns its
+status (0, 10 or 11 -- see [Status codes](#status-codes)) as an `intent(out)`
+argument rather than a function result, so it can be called from inside a
+plain (non-`pure`) host subroutine. Build and run it:
+
+```sh
+rosenna generate model.onnx --lang fortran --precision double --out build/ --name model
+```
+```sh
+make -f model_fortran.mk FC=gfortran ROSENNA_OFFLOAD_FLAGS=-fopenmp
+```
+```sh
+gfortran -O2 -std=f2008 -fopenmp -I. host.f90 -L. -lmodel_f -o host
+```
+
+`gfortran` drops `model_model.mod` next to the object it compiles; `-J DIR`
+during the library build sends it to `DIR` instead of the current
+directory, and a host that `use`s the module then needs `-I DIR` on its own
+compile line to find it (`-I.` above, since the example builds both in the
+same directory).
+
+A Fortran host reaches the batched path two ways. `model_infer_batch` as
+shown above is always Fortran's own OpenMP-target fallback, compiled
+straight into `lib<name>_f.a`, so it links nothing else. The module also
+declares a second route straight to the native kernel: the `bind(C)`
+interface `model_infer_batch_dev`, bound to the plain C symbol
+`model_infer_batch` that `lib<name>.a` provides -- whichever kernel its
+`ROSENNA_BACKEND` was built with (see [Call it from C](#call-it-from-c)).
+That route needs `c_ptr`s to device-resident memory, which OpenACC's
+`host_data use_device` produces from a mapped Fortran array:
+
+```fortran
+use iso_c_binding, only: c_loc, c_null_ptr
+integer :: status
+!$acc host_data use_device(x, y_batch)
+status = model_infer_batch_dev(npts, c_loc(x), c_loc(y_batch), c_null_ptr)
+!$acc end host_data
+```
+
+and links both archives: `-lmodel_f -lmodel`.
+
+`model_infer` is not itself inlined across the `use model_model` boundary by
+every compiler, so a Fortran host's own offload loop generally gets a real
+call per point, not an inlined one, unless the build enables cross-module
+inlining (`gfortran -flto`, nvfortran `-Minline`).
+
+## Precision
+
+`--precision` defaults to the model's own dtype -- `float32` for a PyTorch
+export via `torch.onnx.export`, since that is what PyTorch trains and
+exports in. A double-precision host can still call single-precision
+generated code: `model_infer`'s `x`/`y` are the plan's own C `float` /
+Fortran `real(real32)`, so the host converts at the call site -- an
+implicit narrowing conversion for a C `double` array passed element by
+element, or an explicit `real(x, real32)` going in and `real(y_f32, real64)`
+coming back out in Fortran. `--precision single` is the usual GPU choice
+regardless of the host's own precision: consumer and even most datacenter
+GPUs run FP64 at a small fraction of their FP32 throughput, so a solver
+whose accuracy budget tolerates it gets a substantial speedup from
+generating (and calling) the single-precision code even from a
+double-precision caller.
+
+## Status codes
+
+`<name>_init` and `<name>_infer_batch` return one of these (rendered here
+from `rosenna.abi.STATUS_CODES`, the one place the table is defined):
+
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 1 | cannot open the weights file |
+| 2 | not a roseNNa weights file (bad magic) |
+| 3 | weights file version is not supported |
+| 4 | weights file dtype does not match this generated code |
+| 5 | weights file endianness does not match this machine |
+| 6 | weights file plan hash does not match this generated code |
+| 7 | weights file holds a tensor this model does not declare |
+| 8 | a name or rank in the weights file exceeds this model's capacity |
+| 9 | a read failed: the weights file is truncated or inconsistent |
+| 10 | device allocation or copy failed in init |
+| 11 | kernel launch failed |
+
+Codes 0-9 are `<name>_init`'s; `<name>_infer_batch` only ever returns 0, 10
+or 11 (10 and 11 are cuda/hip only -- the `omp` backend's fallback loop
+cannot itself fail once its arguments are device-resident, so it always
+returns 0).
+
+## Verify
+
+```sh
+rosenna verify model.onnx --lang both --cases 16
+```
+
+`verify` generates, compiles and runs the per-point `<name>_infer` path on
+the host, for one or both languages, and compares its output against
+onnxruntime running the same model over the same random inputs. It proves
+the generated arithmetic is correct on the host; it never builds or runs the
+batched device path (`<name>_infer_batch`, the native kernel, or the
+`omp`/`acc` fallbacks under a real offload device), because that needs a GPU
+this machine may not have.
+
+```sh
+rosenna gpu-gate --help
+```
+```sh
+rosenna gpu-gate --cc gcc --fc gfortran --flags=-fopenmp --backend omp --host-fallback --out gate-report/
+```
+
+`gpu-gate` is the check that does exercise the device path: on a machine
+with a real accelerator (and the matching compilers -- `--help` lists the
+NVIDIA, AMD and no-GPU pairings), it generates a model, builds it for the
+chosen `--backend`, and runs three harnesses -- a per-point C host, a
+per-point Fortran host, and a host that hands device-resident data to
+`infer_batch` -- each compared against onnxruntime and timed, writing every
+command and its output to `gate-report.md`.
+
+Until `gpu-gate` has been run on a GPU machine, the device path is
+unvalidated: everything above compiles and runs on the host, and the CUDA
+and HIP decoration compiles under `nvcc`/`hipcc` in CI, but none of it has
+executed on a device. See `python/examples/microfd_closure/` for a worked
+example of wiring a generated model into a solver, with the same caveat.
+
+## Limits
+
+- Supported ops: `Gemm`, `MatMul`, `Relu`, `Tanh`, `Sigmoid` -- dense MLPs
+  only (no convolution, pooling, batch norm, or recurrent ops), one point
+  per call (every value is rank 1 or a rank-2 tensor with leading dimension
+  1), one input and one output tensor.
+- A file-loaded model's `<name>_infer` reads unset (zero-initialized static)
+  weights if `<name>_init` was never called, or failed, before it. Nothing
+  in the loop path checks this -- checking it there would be the transfer
+  and synchronization ruled out under [No transfers in the loop](#no-transfers-in-the-loop).
+- The native batched kernel (`ROSENNA_BACKEND=cuda|hip`) launches one thread
+  per point in this release; a fused, tiled batched GEMM is planned once the
+  GPU gate has timed this one.
+- There is no SYCL backend. An Intel GPU is reached through the `omp`
+  fallback (`icx`/`ifx` with `-fopenmp -fopenmp-targets=spir64`), not a
+  native kernel.
