@@ -108,15 +108,55 @@ def test_plain_compiler_without_openmp_still_matches(tmp_path, golden_model):
     np.testing.assert_allclose(got, expected, rtol=1e-5, atol=1e-6)
 
 
-def test_header_carries_exactly_the_two_macros(golden_model):
-    from rosenna.emit_c import emit_c
-    from rosenna.frontend import load_graph as lg
+def test_header_carries_exactly_the_three_macros(golden_model):
+    from rosenna.emit_c import _CUDA_GUARD, _DEVICE_PASS_GUARD
     # A CUDA/HIP host must see __host__ __device__ and __constant__; nothing else in the header may mention CUDA.
     # Controller ruling P2: take the golden path through the golden_model fixture (tests.conftest has no
     # standalone golden_path function). Controller ruling P3: a third macro, ROSENNA_RESTRICT, sits next to
     # the two above so `restrict` -- not a keyword once this header reaches a C++ (nvcc) translation unit --
     # never appears bare in a signature; assert all three macro names are present.
-    plan = build_plan(lg(golden_model("gemm_small")), dtype="f64")
+    plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64")
     _, header = emit_c(plan)
     assert header.count("__CUDACC__") == 1 and "__host__ __device__" in header and "__constant__" in header
     assert "ROSENNA_DEVICE_FN" in header and "ROSENNA_CONST" in header and "ROSENNA_RESTRICT" in header
+    # The file-loaded header mentions __CUDACC__ more often (the rosenna_rt.h
+    # include, the _dev declarations, the __constant__ table and its bind, and
+    # the device-pass guard), but only ever on one of the two guard lines:
+    # every occurrence in the emitted text is accounted for by those two.
+    _, header_f = emit_c(build_plan(load_graph(golden_model("gemm_small")), dtype="f64", embed=False))
+    guard_lines = [l for l in header_f.splitlines() if "__CUDACC__" in l]
+    assert guard_lines and all(l in (_CUDA_GUARD, _DEVICE_PASS_GUARD) for l in guard_lines), guard_lines
+    assert header_f.count("__CUDACC__") == len(guard_lines)
+    assert header_f.count(_CUDA_GUARD) == 5 and header_f.count(_DEVICE_PASS_GUARD) == 1
+
+
+def test_device_pass_guard_needs_the_cuda_compiler_not_just_the_arch(tmp_path, golden_model):
+    # Ruling R23: clang's OpenMP nvptx device pass defines __CUDA_ARCH__ without
+    # __CUDACC__ (reproduced with `clang -cc1 -triple nvptx64-nvidia-cuda
+    # -fopenmp -fopenmp-is-target-device -E -dM`). The device-pass guard must
+    # test the compiler macro together with the arch macro, or ROSENNA_REF_*
+    # selects the __constant__ table, which only the CUDA/HIP guard declares:
+    # an undeclared identifier. Under a plain compiler with __CUDA_ARCH__
+    # forced on, the file-loaded header has to compile and read the host arrays.
+    name = "gemm_big"
+    graph = load_graph(golden_model(name))
+    plan = build_plan(graph, dtype="f64", embed=False)
+    _write(tmp_path, name, plan, graph)
+    (tmp_path / "host.c").write_text(HOST.format(name=name, n_in=plan.input.shape[0], n_out=plan.output.shape[0],
+                                                 init=f'if ({name}_init("{name}.rwt")) return 2;'))
+    cc = shutil.which("clang") or shutil.which("cc") or _omp_cc()
+    flags = ["-O2", "-Wall", "-Wextra", "-std=c11", "-D__CUDA_ARCH__=800"]
+    for src in ("host.c", f"{name}.c"):
+        r = subprocess.run([cc, *flags, "-c", src], cwd=tmp_path, capture_output=True, text=True)
+        assert r.returncode == 0 and r.stderr == "", (src, r.stderr)
+    pre = subprocess.run([cc, *flags, "-E", "host.c"], cwd=tmp_path, capture_output=True, text=True)
+    assert pre.returncode == 0
+    assert f"{name}_devw" not in pre.stdout and f"{name}_w0[" in pre.stdout
+    # The guard the emitter writes is the compound one, and the arch macro
+    # never stands alone on a guard line.
+    header = (tmp_path / f"{name}.h").read_text()
+    assert ("#if (defined(__CUDACC__) && defined(__CUDA_ARCH__)) || "
+            "((defined(__HIPCC__) || defined(__HIP__)) && defined(__HIP_DEVICE_COMPILE__))") in header
+    for line in header.splitlines():
+        if "__CUDA_ARCH__" in line and line.startswith("#if"):
+            assert "__CUDACC__" in line, line

@@ -89,7 +89,7 @@ def test_infer_is_pure_and_has_literal_bounds(golden_model):
     # `infer` is now defined only in the header (a static inline callable
     # from inside the host's own offload region); the source never defines
     # it.
-    assert ("ROSENNA_DEVICE_FN static inline void gemm_small_infer("
+    assert ("static inline ROSENNA_DEVICE_FN void gemm_small_infer("
             "const double *ROSENNA_RESTRICT x, double *ROSENNA_RESTRICT y) {") in header
     # The scratch buffers come from plan.buffers now (ruling R13), not from a
     # second allocator private to this emitter: gemm_small's t0 is reused by

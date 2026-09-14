@@ -5,12 +5,22 @@ from .plan import Plan
 _CTYPE = {"f32": "float", "f64": "double"}
 _DTYPE_CODE = {"f32": 0, "f64": 1}
 _ITEMSIZE = {"f32": 4, "f64": 8}
-_CUDA_GUARD = "#if defined(__CUDACC__) || defined(__HIPCC__)"
-_NOT_CUDA_GUARD = "#if !defined(__CUDACC__) && !defined(__HIPCC__)"
+# The CUDA/HIP compiler guard. hipcc's wrapper adds -D__HIPCC__ itself, and
+# hip-clang defines __HIP__ for any HIP compilation, so accepting either keeps
+# the header independent of the wrapper's flag order.
+_IS_CUDA = "defined(__CUDACC__)"
+_IS_HIP = "(defined(__HIPCC__) || defined(__HIP__))"
+_CUDA_GUARD = f"#if {_IS_CUDA} || {_IS_HIP}"
+_NOT_CUDA_GUARD = "#if !defined(__CUDACC__) && !defined(__HIPCC__) && !defined(__HIP__)"
 # Device-pass guard: nvcc defines __CUDA_ARCH__ and hipcc __HIP_DEVICE_COMPILE__
 # only while compiling for the device, so a header-inline function can read one
 # storage in its host instantiation and another in its device instantiation.
-_DEVICE_PASS_GUARD = "#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)"
+# Each arch macro is tested together with its compiler macro (ruling R23):
+# clang's OpenMP nvptx device pass defines __CUDA_ARCH__ without __CUDACC__,
+# and there the host arrays, not the __constant__ table (which only the
+# CUDA/HIP guard declares), are the storage that exists.
+_DEVICE_PASS_GUARD = (f"#if ({_IS_CUDA} && defined(__CUDA_ARCH__)) || "
+                      f"({_IS_HIP} && defined(__HIP_DEVICE_COMPILE__))")
 
 # Controller ruling R4. CUDA __constant__ memory is 64 KB per module, while
 # a model embeds by default below EMBED_THRESHOLD (1M parameters, up to 8 MB
@@ -585,12 +595,15 @@ def _emit_upload(plan: Plan) -> list:
     """The cuda/hip half of init: copy the freshly loaded host arrays to the device.
 
     Only compiled under nvcc/hipcc, where the runtime is reachable through
-    rosenna_rt.h (included by the header under the same guard). A repeated init frees the previous copies first (freeing a
-    null pointer is a no-op in both runtimes); a failed allocation or copy
-    leaves that pointer null and returns 10, so a later infer_batch refuses
-    to launch rather than read an unfilled buffer. The last step publishes
+    rosenna_rt.h (included by the header under the same guard). A repeated
+    init frees the previous copies first (<name>_release; freeing a null
+    pointer is a no-op in both runtimes). A failed allocation or copy, or a
+    failed bind, releases every copy again and returns 10, so a later
+    infer_batch refuses to launch (its null check) rather than read an
+    unfilled buffer or, after a failed bind, launch over a table that still
+    holds the previous addresses. The bind is the last step: it publishes
     the new addresses to the kernel's translation unit (<name>_device_bind,
-    in <name>_kernel.cu); after init returns, the loop path transfers
+    in <name>_kernel.cu). After init returns, the loop path transfers
     nothing (controller ruling R5).
     """
     m = plan.model
@@ -598,21 +611,34 @@ def _emit_upload(plan: Plan) -> list:
         return []
     lines = [
         _CUDA_GUARD,
-        f"static int {m}_upload(void) {{",
+        f"static void {m}_release(void) {{",
     ]
     for w in plan.weights:
         sym = _c_weight_symbol(m, w.symbol)
         lines += [
             f"    (void)ROSENNA_FREE({sym}_dev);",
             f"    {sym}_dev = 0;",
-            f"    if (ROSENNA_MALLOC(&{sym}_dev, sizeof {sym}) != ROSENNA_OK) return 10;",
-            f"    if (ROSENNA_MEMCPY_H2D({sym}_dev, {sym}, sizeof {sym}) != ROSENNA_OK) {{",
-            f"        (void)ROSENNA_FREE({sym}_dev);",
-            f"        {sym}_dev = 0;",
-            f"        return 10;",
-            f"    }}",
         ]
-    lines += [f"    return {_device_bind(m)}();", "}", "#endif", ""]
+    lines += [
+        "}",
+        "",
+        f"static int {m}_upload(void) {{",
+        f"    {m}_release();",
+    ]
+    fail = f"{{ {m}_release(); return 10; }}"
+    for w in plan.weights:
+        sym = _c_weight_symbol(m, w.symbol)
+        lines += [
+            f"    if (ROSENNA_MALLOC(&{sym}_dev, sizeof {sym}) != ROSENNA_OK) {fail}",
+            f"    if (ROSENNA_MEMCPY_H2D({sym}_dev, {sym}, sizeof {sym}) != ROSENNA_OK) {fail}",
+        ]
+    lines += [
+        f"    if ({_device_bind(m)}() != 0) {fail}",
+        "    return 0;",
+        "}",
+        "#endif",
+        "",
+    ]
     return lines
 
 
@@ -773,7 +799,9 @@ def _emit_infer(plan: Plan, ctype: str) -> list:
     scratch = sorted((s for s in plan.buffers if s not in ("x", "y")),
                      key=lambda s: int(s[1:]))
 
-    lines = [f"ROSENNA_DEVICE_FN static inline void {m}_infer("
+    # Storage class first, then the attribute macro: the order CUDA's own
+    # headers use for `static inline __host__ __device__`.
+    lines = [f"static inline ROSENNA_DEVICE_FN void {m}_infer("
              f"const {ctype} *ROSENNA_RESTRICT x, {ctype} *ROSENNA_RESTRICT y) {{"]
     if plan.embed:
         # Controller ruling R9: in the host pass of a CUDA/HIP build the

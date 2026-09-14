@@ -31,7 +31,7 @@ def test_kernel_source_names_no_runtime_symbol_for_a_file_loaded_plan(golden_mod
     assert 'extern "C" int gemm_big_device_bind(void) {' in cu
     assert "return gemm_big_device_bind_here();" in cu
     assert "ROSENNA_LAUNCH(gemm_big_kernel" in cu
-    # Ruling R10: the launch is checked with a peek (never a sync), status 11.
+    # Ruling R10/R11: the launch is checked with GetLastError (never a sync), status 11.
     assert "if (ROSENNA_LAUNCH_STATUS() != ROSENNA_OK) return 11;" in cu
     # An embedded plan reads its ROSENNA_CONST arrays directly and binds nothing.
     cu_e = emit_kernel(build_plan(load_graph(golden_model("gemm_big")), dtype="f64", embed=True))
@@ -75,6 +75,7 @@ def test_loop_path_never_transfers(golden_model):
             upload = _function_body(source, f"static int {name}_upload(")
             assert f"return {name}_upload();" in init and "ROSENNA_MALLOC" in upload
             rest_c = rest_c.replace(init, "").replace(upload, "")
+            # <name>_release (called by upload) only frees: no transfer token.
         for forbidden in _LOOP_PATH_FORBIDDEN:
             assert forbidden not in rest_c, (embed, forbidden)
             assert forbidden not in cu, (embed, forbidden)
@@ -125,7 +126,17 @@ def test_file_loaded_source_copies_to_the_device_under_the_cuda_guard(golden_mod
     # init ends by publishing the copies to the kernel's translation unit,
     # through the header's per-translation-unit bind (ruling R8), which any
     # user kernel's translation unit must call as well.
-    assert "return gemm_small_device_bind();" in source
+    assert "if (gemm_small_device_bind() != 0) { gemm_small_release(); return 10; }" in source
+    # A failed bind (like a failed allocation or copy) frees and nulls every
+    # copy -- the same release a repeated init starts with -- so infer_batch
+    # then returns 10 instead of launching over a table that still holds the
+    # previous addresses.
+    release = _function_body(source, "static void gemm_small_release(void) {")
+    for sym in ("w0", "b0", "w1", "b1"):
+        assert f"(void)ROSENNA_FREE(gemm_small_{sym}_dev);\n    gemm_small_{sym}_dev = 0;" in release
+    upload = _function_body(source, "static int gemm_small_upload(void) {")
+    assert upload.count("{ gemm_small_release(); return 10; }") == 2 * 4 + 1
+    assert "    gemm_small_release();\n" in upload
     assert "int gemm_small_device_bind(void);" in header
     assert "static inline int gemm_small_device_bind_here(void) {" in header
     assert ("call gemm_small_device_bind_here() after EVERY call to gemm_small_init()\n"

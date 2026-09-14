@@ -61,8 +61,8 @@ def emit_kernel(plan: Plan) -> str:
     lines += [
         "    const int grid = (n + ROSENNA_TILE - 1) / ROSENNA_TILE;",
         f"    ROSENNA_LAUNCH({m}_kernel, grid, ROSENNA_TILE, s, n, x, y);",
-        "    /* A peek, not a sync (ruling R5): a bad configuration or stream is",
-        "       reported now; asynchronous faults surface at the caller's sync. */",
+        "    /* GetLastError, not a sync (ruling R5): a bad configuration or stream",
+        "       is reported now; asynchronous faults surface at the caller's sync. */",
         "    if (ROSENNA_LAUNCH_STATUS() != ROSENNA_OK) return 11;",
         "    return 0;",
         "}",
