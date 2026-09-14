@@ -51,6 +51,42 @@ def test_sum_cudamemcpy_calls_reports_not_parsed_rather_than_a_false_zero():
     assert unrelated.count == 0
 
 
+def test_sum_cudamemcpy_calls_skips_the_stdout_preamble():
+    # `nsys stats --format csv` on stdout is preceded by progress lines and a
+    # report title; the header is the first line naming Num Calls and Name,
+    # not the first line of stdout.
+    preamble = (
+        "Generating SQLite file gate_nsys_profile.sqlite from gate_nsys_profile.nsys-rep\n"
+        "Processing [gate_nsys_profile.sqlite] with [/opt/nvidia/nsight-systems/reports/cuda_api_sum.py]...\n"
+        "\n"
+        " ** CUDA API Summary (cuda_api_sum):\n"
+        "\n"
+    )
+    csv_text = preamble + _NSYS_CSV_HEADER + (
+        '60.0,12000,3,4000.0,4000.0,3900.0,4100.0,50.0,"cudaMemcpy"\n'
+        '40.0,6000,10,600.0,600.0,500.0,700.0,20.0,"cudaLaunchKernel"\n'
+    )
+    result = _sum_cudamemcpy_calls(csv_text)
+    assert result.parsed is True
+    assert result.count == 3
+    # A preamble with no CSV after it is still not parsed.
+    assert _sum_cudamemcpy_calls(preamble) == _sum_cudamemcpy_calls("")
+
+
+def test_gate_flags_follow_the_compiler_basename():
+    # Ruling R24: the gcc-style warning and -std flags only for gcc, gfortran,
+    # cc and clang; a vendor compiler gets -O2 and the user's --flags.
+    from rosenna.gate import _c_flags, _f_flags
+    assert _c_flags("gcc-15") == ["-O2", "-Wall", "-Wextra", "-std=c11"]
+    assert _c_flags("/usr/bin/clang") == ["-O2", "-Wall", "-Wextra", "-std=c11"]
+    assert _c_flags("cc") == ["-O2", "-Wall", "-Wextra", "-std=c11"]
+    assert _f_flags("gfortran") == ["-O2", "-Wall", "-Wextra", "-std=f2008"]
+    for vendor in ("nvc", "nvfortran", "amdclang", "amdflang", "flang", "icx", "ifx",
+                   "/opt/nvidia/hpc_sdk/Linux_x86_64/24.5/compilers/bin/nvc"):
+        assert _c_flags(vendor) == ["-O2"], vendor
+        assert _f_flags(vendor) == ["-O2"], vendor
+
+
 def test_gate_runs_in_host_fallback_mode_and_writes_a_report(tmp_path, golden_model):
     # On a machine without a GPU the gate runs with --host-fallback, which drops the
     # MANDATORY requirement but exercises every other step, so the script itself is tested.
@@ -64,6 +100,12 @@ def test_gate_runs_in_host_fallback_mode_and_writes_a_report(tmp_path, golden_mo
     for key in ("gemm_big", "embedded", "file-loaded", "fortran", "c", "infer_batch",
                "backend: omp", "ns per point", "host-fallback"):
         assert key in report
+    # Rulings R21/R24: the recipes get CFLAGS/FFLAGS explicitly and the host
+    # compiler links the per-point harness against the omp-backend archive.
+    assert f"CC={cc} 'CFLAGS=-O2 -Wall -Wextra -std=c11' ROSENNA_OFFLOAD_FLAGS=-fopenmp" in report
+    assert f"FC={fc} 'FFLAGS=-O2 -Wall -Wextra -std=f2008' ROSENNA_OFFLOAD_FLAGS=-fopenmp" in report
+    assert "backend=omp, host compiler: serves the per-point harness" in report
+    assert f"$ {cc} -fopenmp gate_harness1.o libgemm_big.a -lm -o gate_harness1" in report
 
 
 def test_gate_fails_loudly_when_offload_is_mandatory_and_absent(tmp_path, golden_model):

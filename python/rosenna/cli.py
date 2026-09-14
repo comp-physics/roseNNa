@@ -70,6 +70,21 @@ region, never through --devcc. Concrete pairings:
   --cc nvc      --fc nvfortran --flags "-mp=gpu -gpu=cc80"              --backend cuda --devcc nvcc
   --cc amdclang --fc amdflang  --flags "-fopenmp --offload-arch=gfx90a" --backend hip  --devcc hipcc
   --cc gcc      --fc gfortran  --flags -fopenmp                        --backend omp  --host-fallback   (no GPU)
+
+Under --backend cuda|hip the gate builds TWO C archives per configuration:
+an omp-backend lib<name>.a with --cc and --flags (in the configuration
+directory) that the per-point C harness links, and the cuda|hip lib<name>.a
+with --devcc (in <backend>_lib/) that the infer_batch .cu driver links. That
+is a limitation of the generated library, not only of the gate: a per-point
+OpenMP or OpenACC host calling <name>_infer on a FILE-LOADED model must link
+the omp-backend archive built by that same host compiler
+(make -f <name>.mk ROSENNA_BACKEND=omp CC=<host cc> ROSENNA_OFFLOAD_FLAGS="<host flags>"),
+because only that build gives the weight arrays the declare-target device
+copies the host's offload loop reads; the cuda/hip archive serves
+<name>_infer_batch and CUDA/HIP kernels that call <name>_device_bind_here().
+Embedded models work in every backend. -Wall -Wextra -std=c11|f2008 are added
+only when --cc/--fc is gcc, gfortran, cc or clang (by basename); any other
+compiler gets -O2 and --flags.
 """)
     gate.add_argument("--cc", required=True, help="host C compiler")
     gate.add_argument("--fc", required=True, help="host Fortran compiler")
@@ -80,9 +95,11 @@ region, never through --devcc. Concrete pairings:
     gate.add_argument("--backend", choices=["cuda", "hip", "omp"], required=True,
                       help="which infer_batch implementation to build and exercise")
     gate.add_argument("--devcc", default=None,
-                      help="device compiler for --backend cuda|hip, and the link driver "
-                           "for the file-loaded C harnesses there (ruling R14); NOT "
-                           "required -- default: nvcc for cuda, hipcc for hip")
+                      help="device compiler for --backend cuda|hip: builds the cuda|hip "
+                           "archive and compiles and links the infer_batch .cu driver "
+                           "(ruling R22; the host compiler links every other harness); "
+                           "may carry arguments (\"nvcc -ccbin nvc++\"); NOT required -- "
+                           "default: nvcc for cuda, hipcc for hip")
     # Same dash-valued handling as --flags; see the comment above.
     gate.add_argument("--devflags", default="", help="device compiler flags")
     gate.add_argument("--out", default=".", help="directory for generated sources and gate-report.md")

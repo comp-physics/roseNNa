@@ -3,10 +3,13 @@
 None of the CUDA/HIP path has ever been compiled or run on the machine that
 wrote it (no nvcc, hipcc, or GPU). This script is the evidence that fact
 cannot produce: it generates the gemm_big plan embedded and file-loaded, in
-both languages, builds the C library with the chosen batched backend and the
-Fortran library with the host compiler, then runs three harnesses -- a
-microfd-shaped per-point host in C, the same in Fortran, and a host that
-hands device-resident data to infer_batch -- each compared against
+both languages, builds the omp-backend C archive and the Fortran library
+with the host compiler and, under --backend cuda|hip, the native-kernel
+archive with the device compiler as well (ruling R21: the per-point host
+harness links the host compiler's own archive in every backend, the
+infer_batch driver links the device compiler's), then runs three harnesses
+-- a microfd-shaped per-point host in C, the same in Fortran, and a host
+that hands device-resident data to infer_batch -- each compared against
 onnxruntime and timed per point. Every command, every line of its output,
 the compiler versions and the timings go into gate-report.md; a failure at
 any step still writes the report and the process exits 1.
@@ -26,6 +29,7 @@ import csv
 import io
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -49,6 +53,13 @@ _MODEL = "gemm_big"
 _TIMED_ITERS = 1_000_000
 _RTOL, _ATOL = 1e-5, 1e-6
 _RUN_TIMEOUT = 300
+# Ruling R24: -Wall -Wextra -std=c11|f2008 are added only for a compiler whose
+# basename says it takes them; any other --cc/--fc (nvc, nvfortran, amdclang,
+# amdflang, flang, icx, ifx) gets -O2 and the user's --flags, nothing else.
+_GNU_STYLE_PREFIXES = ("gcc", "gfortran", "cc", "clang")
+# The generated C sources one configuration directory holds; the device
+# compiler's archive is built from a copy of them in its own subdirectory.
+_C_SOURCE_FILES = ("{name}.c", "{name}.h", "rosenna_rt.h", "{name}_kernel.cu", "{name}.mk")
 
 
 class _Report:
@@ -67,8 +78,9 @@ class _Report:
         self.lines.append(f"{label}:\n```\n{text}\n```")
 
     def command(self, label: str, args: list, cwd=None) -> None:
+        """Log one command, shell-quoted so a multi-word argument reads back as one."""
         where = f" (in {cwd})" if cwd is not None else ""
-        self.lines.append(f"\n**{label}**{where}\n\n```\n$ {' '.join(str(a) for a in args)}\n```")
+        self.lines.append(f"\n**{label}**{where}\n\n```\n$ {shlex.join(str(a) for a in args)}\n```")
 
     def outcome(self, proc) -> None:
         self.lines.append(f"exit status: {proc.returncode}")
@@ -105,14 +117,34 @@ def _sh(report: _Report, label: str, args: list, cwd=None, env=None, input_text=
     return proc
 
 
+def _gnu_style(compiler: str) -> bool:
+    return Path(shlex.split(compiler)[0]).name.startswith(_GNU_STYLE_PREFIXES)
+
+
+def _c_flags(cc: str) -> list:
+    """The C flags the gate adds before the user's --flags (ruling R24)."""
+    return ["-O2", "-Wall", "-Wextra", "-std=c11"] if _gnu_style(cc) else ["-O2"]
+
+
+def _f_flags(fc: str) -> list:
+    """The Fortran flags the gate adds before the user's --flags (ruling R24)."""
+    return ["-O2", "-Wall", "-Wextra", "-std=f2008"] if _gnu_style(fc) else ["-O2"]
+
+
 def _record_versions(report: _Report, cc: str, fc: str, devcc) -> None:
     report.h("toolchain", 3)
     report.p(f"platform: {platform.platform()}")
     for label, exe in (("cc", cc), ("fc", fc), ("devcc", devcc)):
         if not exe:
             continue
-        proc = subprocess.run([exe, "--version"], capture_output=True, text=True)
-        report.block(f"{label} ({exe}) --version", proc.stdout or proc.stderr or "(no output)")
+        # --devcc may carry its own arguments ("nvcc -ccbin nvc++"), so it is
+        # split like a shell word list wherever it becomes argv.
+        try:
+            proc = subprocess.run([*shlex.split(exe), "--version"], capture_output=True, text=True)
+            text = proc.stdout or proc.stderr or "(no output)"
+        except FileNotFoundError as e:
+            text = f"{exe}: not found ({e.strerror})"
+        report.block(f"{label} ({exe}) --version", text)
 
 
 def _ensure_model(report: _Report) -> Path:
@@ -143,24 +175,63 @@ def _generate(outdir: Path, onnx_path: Path, embed: bool):
     return plan
 
 
-def _build_c_lib(report: _Report, outdir: Path, plan, cc, flags, backend, devcc, devflags) -> bool:
+@dataclass(frozen=True)
+class _CLibs:
+    """The C archives one configuration builds (ruling R21).
+
+    `host`: lib<name>.a built by the HOST compiler (ROSENNA_BACKEND=omp with
+    the host offload flags) in the configuration directory, for the per-point
+    C harness in every backend. A file-loaded model's weight arrays reach the
+    host compiler's offload region only through the `declare target` device
+    copies that this build makes and that init's `target update` fills; an
+    nvcc/hipcc build of <name>.c has neither (_OPENMP is not defined there),
+    so linking that archive into a per-point OpenMP/OpenACC host leaves the
+    offload loop reading weights that do not exist on the device.
+    `dev`: lib<name>.a built by the device compiler (ROSENNA_BACKEND=cuda|hip)
+    from a copy of the sources in <backend>_lib/, for the .cu driver of the
+    infer_batch harness. None under --backend omp, where that harness links
+    `host` instead. Either is None when its build failed.
+    """
+    host: Path | None
+    dev: Path | None
+
+
+def _build_c_libs(report: _Report, outdir: Path, plan, cc, flags, backend, devcc, devflags) -> _CLibs:
     name = plan.model
     label = "embedded" if plan.embed else "file-loaded"
-    args = ["make", "-f", f"{name}.mk", f"ROSENNA_BACKEND={backend}"]
+    # CFLAGS is passed explicitly (ruling R24): the recipe's own default is the
+    # gcc-style set, which must never reach a vendor host compiler.
+    args = ["make", "-f", f"{name}.mk", "ROSENNA_BACKEND=omp", f"CC={cc}",
+            f"CFLAGS={' '.join(_c_flags(cc))}", f"ROSENNA_OFFLOAD_FLAGS={flags}"]
+    proc = _sh(report, f"build c library ({label}, backend=omp, host compiler: "
+                       "serves the per-point harness)", args, cwd=outdir)
+    host = outdir / f"lib{name}.a"
+    if not (proc.returncode == 0 and host.exists()):
+        host = None
     if backend == "omp":
-        args += [f"CC={cc}", f"ROSENNA_OFFLOAD_FLAGS={flags}"]
-    else:
-        args += [f"DEVCC={devcc or ('nvcc' if backend == 'cuda' else 'hipcc')}"]
-        if devflags:
-            args.append(f"DEVFLAGS={devflags}")
-    proc = _sh(report, f"build c library ({label}, backend={backend})", args, cwd=outdir)
-    return proc.returncode == 0 and (outdir / f"lib{name}.a").exists()
+        return _CLibs(host, None)
+    dev_dir = outdir / f"{backend}_lib"
+    dev_dir.mkdir(exist_ok=True)
+    for f in _C_SOURCE_FILES:
+        shutil.copyfile(outdir / f.format(name=name), dev_dir / f.format(name=name))
+    args = ["make", "-f", f"{name}.mk", f"ROSENNA_BACKEND={backend}", f"DEVCC={devcc}"]
+    if devflags:
+        args.append(f"DEVFLAGS={devflags}")
+    proc = _sh(report, f"build c library ({label}, backend={backend}, device compiler, in "
+                       f"{dev_dir.name}/: serves the infer_batch harness)", args, cwd=dev_dir)
+    dev = dev_dir / f"lib{name}.a"
+    if not (proc.returncode == 0 and dev.exists()):
+        dev = None
+    return _CLibs(host, dev)
 
 
 def _build_fortran_lib(report: _Report, outdir: Path, plan, fc, flags) -> bool:
     name = plan.model
     label = "embedded" if plan.embed else "file-loaded"
-    args = ["make", "-f", f"{name}_fortran.mk", f"FC={fc}", f"ROSENNA_OFFLOAD_FLAGS={flags}"]
+    # FFLAGS explicitly, for the same reason as CFLAGS above (ruling R24):
+    # flang rejects the recipe's default -std=f2008.
+    args = ["make", "-f", f"{name}_fortran.mk", f"FC={fc}", f"FFLAGS={' '.join(_f_flags(fc))}",
+            f"ROSENNA_OFFLOAD_FLAGS={flags}"]
     proc = _sh(report, f"build fortran library ({label})", args, cwd=outdir)
     return proc.returncode == 0 and (outdir / f"lib{name}_f.a").exists()
 
@@ -214,6 +285,10 @@ int main(void) {{
         for (int i = 0; i < {n_out}; ++i) printf("%.17e ", y[p * {n_out} + i]);
         printf("\\n");
     }}
+    /* Timing loop: b cycles through the n (= 8) correctness points, so the
+       iterations sharing a b all write the same eight output slots. That
+       race is benign and intentional: every writer of a slot stores the
+       same value, and y is not read after the loop. */
     long ntime = {ntime}L;
     double t0 = omp_get_wtime();
 #ifdef _OPENMP
@@ -251,6 +326,10 @@ program host
     do p = 1, n
         print '({n_out}(es24.16,1x))', y(:, p)
     end do
+    ! Timing loop: b cycles through the n (= 8) correctness points, so the
+    ! iterations sharing a b all write the same eight output columns. That
+    ! race is benign and intentional: every writer of a column stores the
+    ! same value, and y is not read after the loop.
     ntime = {ntime}
     call system_clock(count=c0, count_rate=crate)
     !$omp target teams loop map(to: x) map(from: y)
@@ -343,8 +422,13 @@ program host
     read(*,*) n
     allocate(x({n_in}, n), y({n_out}, n))
     read(*,*) x
+    ! x and y are mapped first, and the call sees their device addresses
+    ! (use_device_addr): infer_batch's has_device_addr clause needs those,
+    ! not the host addresses (ruling R5).
     !$omp target enter data map(to: x) map(alloc: y)
-    call {name}_infer_batch(n, x, y, status)          ! x, y already on the device (R5)
+    !$omp target data use_device_addr(x, y)
+    call {name}_infer_batch(n, x, y, status)
+    !$omp end target data
     !$omp target exit data map(from: y) map(delete: x)
     if (status /= 0) stop 20
     do p = 1, n
@@ -362,9 +446,11 @@ program host
     ! Ruling R16: map before c0 and unmap after c1, so the timed window
     ! holds only the infer_batch call, matching the cuda/hip .cu driver.
     !$omp target enter data map(to: xt) map(alloc: yt)
+    !$omp target data use_device_addr(xt, yt)
     call system_clock(count=c0, count_rate=crate)
     call {name}_infer_batch(ntime, xt, yt, status)
     call system_clock(count=c1)
+    !$omp end target data
     !$omp target exit data map(from: yt) map(delete: xt)
     if (status /= 0) stop 21
     ns_per_point = real(c1 - c0, real64) / real(crate, real64) * 1.0e9_real64 / real(ntime, real64)
@@ -444,71 +530,32 @@ int main(void) {{
 """
 
 
-def _host_flags_for_devcc_link(flags: str, backend: str) -> list:
-    """Ruling R19: forward the HOST offload flags into the device-compiler link line.
-
-    Ruling R14 uses the device compiler as the link driver for a
-    file-loaded plan under --backend cuda|hip, which resolves the CUDA/HIP
-    runtime symbols init needs -- but on its own it never sees the host
-    compiler's own offload-runtime flags (nvc's -mp=gpu -gpu=cc80), so that
-    runtime can be unresolved at link too, since gate_harness1.o was
-    compiled by the host compiler with those flags. nvcc treats an
-    unrecognised flag as compiler-only unless wrapped -Xcompiler <flag>, so
-    each host flag is forwarded that way for cuda; hipcc is clang-based
-    (like amdclang, the expected host compiler pairing) and accepts the
-    host flags directly. Neither form has been verified against a real
-    toolchain here (see the task report).
-    """
-    host_flags = flags.split()
-    if backend == "hip":
-        return host_flags
-    out = []
-    for f in host_flags:
-        out += ["-Xcompiler", f]
-    return out
-
-
-def _run_c_harness1(report, cfg_dir, plan, cc, flags, backend, devcc, devflags,
-                    inputs, expected, env) -> bool:
+def _run_c_harness1(report, cfg_dir, plan, cc, flags, host_lib, inputs, expected, env) -> bool:
     name = plan.model
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
     init = "" if plan.embed else f'if ({name}_init("{name}.rwt")) return 2;'
     (cfg_dir / "gate_harness1.c").write_text(_C_HARNESS1.format(
         name=name, n_in=n_in, n_out=n_out, init=init, ntime=_TIMED_ITERS))
-    # Ruling R14: compilation always goes through the HOST compiler with its
-    # own offload flags (nvc's -mp=gpu, amdclang's -fopenmp
-    # --offload-arch=..., or plain -fopenmp) -- this step does not change
-    # with --backend. Only the final LINK does: for cuda/hip, a file-loaded
-    # plan's lib<name>.a was built by nvcc/hipcc (init's upload/bind calls
-    # cudaMalloc/cudaMemcpy/cudaMemcpyToSymbol or the hip equivalents), so
-    # linking it with the plain host compiler and -lm leaves those
-    # undefined on every real run. Using the device compiler as the LINK
-    # driver instead pulls in the runtime library and its -L path from the
-    # toolkit itself, with nothing hardcoded here; --backend omp keeps the
-    # host compiler as the link driver, since its infer_batch is pure
-    # OpenMP with no runtime-API calls to resolve.
+    # Rulings R21/R22: the HOST compiler, with its own offload flags (nvc's
+    # -mp=gpu -gpu=cc80, amdclang's -fopenmp --offload-arch=..., or plain
+    # -fopenmp), both compiles and links this harness in every backend. The
+    # archive it links (file-loaded plans only) is the omp-backend one the
+    # same host compiler built (_CLibs.host), so no CUDA/HIP runtime is
+    # involved and nothing is forwarded to a device compiler: nvcc's default
+    # host compiler is g++, which rejects -mp=gpu, so a device-compiler link
+    # of this object cannot work, and the omp archive is the only one whose
+    # weight arrays have the declare-target copies this offload loop reads.
     cc_proc = _sh(report, "compile c per-point harness (host compiler, host offload flags)",
-                 [cc, "-O2", "-Wall", "-Wextra", "-std=c11", *flags.split(),
+                 [cc, *_c_flags(cc), *flags.split(),
                   "-c", "gate_harness1.c", "-o", "gate_harness1.o"], cwd=cfg_dir)
     if cc_proc.returncode != 0:
         return False
     objs = ["gate_harness1.o"]
     if not plan.embed:
-        objs.append(f"lib{name}.a")
-    if backend == "omp":
-        link_cmd = [cc, *flags.split(), *objs, "-lm", "-o", "gate_harness1"]
-        link_label = "link c per-point harness (host compiler, --backend omp)"
-    else:
-        # Ruling R19: the host offload flags (nvc's -mp=gpu -gpu=cc80, or
-        # amdclang's -fopenmp --offload-arch=...) are forwarded into this
-        # link too -- gate_harness1.o's own OpenMP-target runtime needs
-        # them, and devflags alone (nvcc's/hipcc's own flags) does not
-        # supply them.
-        link_cmd = [devcc, *devflags.split(), *_host_flags_for_devcc_link(flags, backend),
-                   *objs, "-lm", "-o", "gate_harness1"]
-        link_label = (f"link c per-point harness (device compiler {devcc}, --backend {backend}, "
-                      f"host offload flags forwarded)")
-    link_proc = _sh(report, link_label, link_cmd, cwd=cfg_dir)
+        objs.append(str(host_lib.relative_to(cfg_dir)))
+    link_proc = _sh(report, "link c per-point harness (host compiler, host offload flags, "
+                            "omp-backend archive)",
+                    [cc, *flags.split(), *objs, "-lm", "-o", "gate_harness1"], cwd=cfg_dir)
     if link_proc.returncode != 0:
         return False
     run_proc = _sh(report, "run c per-point harness", ["./gate_harness1"], cwd=cfg_dir,
@@ -527,7 +574,7 @@ def _run_fortran_harness2(report, cfg_dir, plan, fc, flags, inputs, expected, en
     (cfg_dir / "gate_harness2.f90").write_text(_F_HARNESS2.format(
         name=name, n_in=n_in, n_out=n_out, init_lines=init_lines, ntime=_TIMED_ITERS))
     fc_proc = _sh(report, "compile fortran per-point harness",
-                 [fc, "-O2", "-Wall", "-Wextra", "-std=f2008", *flags.split(),
+                 [fc, *_f_flags(fc), *flags.split(),
                   "gate_harness2.f90", f"lib{name}_f.a", "-o", "gate_harness2"], cwd=cfg_dir)
     if fc_proc.returncode != 0:
         return False
@@ -539,15 +586,15 @@ def _run_fortran_harness2(report, cfg_dir, plan, fc, flags, inputs, expected, en
     return ok
 
 
-def _run_c_harness3_omp(report, cfg_dir, plan, cc, flags, inputs, expected, env) -> bool:
+def _run_c_harness3_omp(report, cfg_dir, plan, cc, flags, host_lib, inputs, expected, env) -> bool:
     name = plan.model
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
     init = "" if plan.embed else f'if ({name}_init("{name}.rwt")) return 2;'
     (cfg_dir / "gate_harness3.c").write_text(_C_HARNESS3_OMP.format(
         name=name, n_in=n_in, n_out=n_out, init=init, ntime=_TIMED_ITERS))
     cc_proc = _sh(report, "compile c infer_batch harness (omp)",
-                 [cc, "-O2", "-Wall", "-Wextra", "-std=c11", *flags.split(),
-                  "gate_harness3.c", f"lib{name}.a", "-lm", "-o", "gate_harness3"], cwd=cfg_dir)
+                 [cc, *_c_flags(cc), *flags.split(), "gate_harness3.c",
+                  str(host_lib.relative_to(cfg_dir)), "-lm", "-o", "gate_harness3"], cwd=cfg_dir)
     if cc_proc.returncode != 0:
         return False
     run_proc = _sh(report, "run c infer_batch harness (omp)", ["./gate_harness3"], cwd=cfg_dir,
@@ -566,7 +613,7 @@ def _run_fortran_harness3_omp(report, cfg_dir, plan, fc, flags, inputs, expected
     (cfg_dir / "gate_harness3.f90").write_text(_F_HARNESS3_OMP.format(
         name=name, n_in=n_in, n_out=n_out, init_lines=init_lines, ntime=_TIMED_ITERS))
     fc_proc = _sh(report, "compile fortran infer_batch harness (omp)",
-                 [fc, "-O2", "-Wall", "-Wextra", "-std=f2008", *flags.split(),
+                 [fc, *_f_flags(fc), *flags.split(),
                   "gate_harness3.f90", f"lib{name}_f.a", "-o", "gate_harness3_f"], cwd=cfg_dir)
     if fc_proc.returncode != 0:
         return False
@@ -578,7 +625,7 @@ def _run_fortran_harness3_omp(report, cfg_dir, plan, fc, flags, inputs, expected
     return ok
 
 
-def _run_dev_harness3(report, cfg_dir, plan, devcc, devflags, backend, inputs, expected) -> bool:
+def _run_dev_harness3(report, cfg_dir, plan, devcc, devflags, backend, dev_lib, inputs, expected) -> bool:
     name = plan.model
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
     prefix = "hip" if backend == "hip" else "cuda"
@@ -586,10 +633,15 @@ def _run_dev_harness3(report, cfg_dir, plan, devcc, devflags, backend, inputs, e
     (cfg_dir / "gate_harness3.cu").write_text(_DEV_HARNESS3.format(
         name=name, n_in=n_in, n_out=n_out, init=init, ntime=_TIMED_ITERS, p=prefix,
         backend=backend))
-    x_flag = "hip" if backend == "hip" else "cu"
-    proc = _sh(report, f"compile {backend} infer_batch harness",
-              [devcc, *devflags.split(), "-x", x_flag,
-               "gate_harness3.cu", f"lib{name}.a", "-o", "gate_harness3_dev"], cwd=cfg_dir)
+    # Ruling R22: the device compiler compiles AND links this driver (it
+    # supplies its own runtime), against the archive it built itself. No
+    # `-x cu|hip`: the driver is a .cu, which both compilers take as device
+    # source by extension, and a -x before the archive would make
+    # clang-based hipcc compile the archive as source too.
+    proc = _sh(report, f"compile and link {backend} infer_batch harness (device compiler)",
+              [*shlex.split(devcc), *devflags.split(),
+               "gate_harness3.cu", str(dev_lib.relative_to(cfg_dir)), "-o", "gate_harness3_dev"],
+              cwd=cfg_dir)
     if proc.returncode != 0:
         return False
     run_proc = _sh(report, f"run {backend} infer_batch harness", ["./gate_harness3_dev"],
@@ -610,7 +662,7 @@ def _probe_nvtx_header(report: _Report, cfg_dir: Path, devcc: str, devflags: str
     (cfg_dir / "gate_nvtx_probe.cu").write_text(
         "#include <nvtx3/nvToolsExt.h>\nint main(void){return 0;}\n")
     proc = _sh(report, "probe for <nvtx3/nvToolsExt.h>",
-              [devcc, *devflags.split(), "-x", "cu", "-c", "gate_nvtx_probe.cu",
+              [*shlex.split(devcc), *devflags.split(), "-c", "gate_nvtx_probe.cu",
                "-o", "gate_nvtx_probe.o"], cwd=cfg_dir)
     return proc.returncode == 0
 
@@ -634,11 +686,20 @@ class NsysParseResult:
 def _sum_cudamemcpy_calls(csv_text: str) -> NsysParseResult:
     """Parse `nsys stats --report cuda_api_sum --format csv` output.
 
-    Column names/casing can drift slightly across Nsight Systems versions,
-    so columns are matched case-insensitively by substring ("name", "num
-    calls") rather than an exact header string.
+    On stdout the CSV comes after a preamble ("Generating SQLite file ...",
+    "Processing ...", a "** CUDA API Summary" title); the gate asks for -q
+    to drop it, but does not rely on that: the header is the first line
+    naming both a "Num Calls" and a "Name" column, case-insensitively, and
+    parsing starts there. Column names/casing can drift slightly across
+    Nsight Systems versions, so the columns are then matched by substring
+    rather than exact string.
     """
-    reader = csv.DictReader(io.StringIO(csv_text))
+    lines = csv_text.splitlines()
+    start = next((i for i, line in enumerate(lines)
+                  if "num calls" in line.lower() and "name" in line.lower()), None)
+    if start is None:
+        return NsysParseResult(False, 0)
+    reader = csv.DictReader(io.StringIO("\n".join(lines[start:])))
     if not reader.fieldnames:
         return NsysParseResult(False, 0)
     name_col = next((f for f in reader.fieldnames if "name" in f.lower()), None)
@@ -663,7 +724,7 @@ def _sum_cudamemcpy_calls(csv_text: str) -> NsysParseResult:
 
 
 def _run_nsys_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: str,
-                    backend: str, inputs) -> bool:
+                    backend: str, dev_lib: Path, inputs) -> bool:
     """Ruling R15: assert zero cudaMemcpy calls inside the timed infer_batch call only.
 
     Profiling the whole harness and counting "cudaMemcpy" across nsys's
@@ -702,8 +763,8 @@ def _run_nsys_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: 
     # Some toolkit versions still expect an explicit link; try without
     # -lnvToolsExt first (the documented form) and retry once with it if
     # linking fails, noting which form was needed. Neither path has run here.
-    base_cmd = [devcc, *devflags.split(), "-DROSENNA_GATE_NVTX=1", "-x", "cu",
-               "gate_harness3.cu", f"lib{name}.a"]
+    base_cmd = [*shlex.split(devcc), *devflags.split(), "-DROSENNA_GATE_NVTX=1",
+                "gate_harness3.cu", str(dev_lib.relative_to(cfg_dir))]
     proc = _sh(report, "compile nvtx-bracketed infer_batch harness (no explicit -lnvToolsExt)",
               [*base_cmd, "-o", "gate_harness3_nvtx"], cwd=cfg_dir)
     if proc.returncode != 0:
@@ -715,18 +776,23 @@ def _run_nsys_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: 
             return True
 
     stats_base = cfg_dir / "gate_nsys_profile"
+    # --capture-range-end=stop: profiling stops when the nvtx range closes
+    # and the harness runs on to completion (the default for an nvtx
+    # capture range shuts the application down instead).
     profile_proc = _sh(
-        report, "nsys profile --capture-range=nvtx --nvtx-capture=rosenna_timed --stats=true",
+        report, "nsys profile --capture-range=nvtx --nvtx-capture=rosenna_timed "
+                "--capture-range-end=stop --stats=true",
         [nsys, "profile", "--capture-range=nvtx", "--nvtx-capture=rosenna_timed",
-         "--stats=true", "--force-overwrite=true", "-o", str(stats_base),
-         "./gate_harness3_nvtx"], cwd=cfg_dir, input_text=_stdin_for(inputs))
+         "--capture-range-end=stop", "--stats=true", "--force-overwrite=true",
+         "-o", str(stats_base), "./gate_harness3_nvtx"], cwd=cfg_dir,
+        input_text=_stdin_for(inputs))
     if profile_proc.returncode != 0:
         report.p("FAIL: nsys profile did not complete successfully")
         return False
 
     report_file = stats_base.with_suffix(".nsys-rep")
-    stats_proc = _sh(report, "nsys stats --report cuda_api_sum --format csv",
-                     [nsys, "stats", "--report", "cuda_api_sum", "--format", "csv",
+    stats_proc = _sh(report, "nsys stats -q --report cuda_api_sum --format csv",
+                     [nsys, "stats", "-q", "--report", "cuda_api_sum", "--format", "csv",
                       str(report_file)], cwd=cfg_dir)
     if stats_proc.returncode != 0:
         report.p("FAIL: nsys stats did not complete successfully")
@@ -807,16 +873,15 @@ def run_gate(*, cc: str, fc: str, flags: str, backend: str, devcc=None, devflags
             cfg_dir = out_dir / ("embedded" if embed else "file_loaded")
             plan = _generate(cfg_dir, onnx_path, embed)
 
-            c_built = _build_c_lib(report, cfg_dir, plan, cc, flags, backend, devcc, devflags)
+            libs = _build_c_libs(report, cfg_dir, plan, cc, flags, backend, resolved_devcc, devflags)
             f_built = _build_fortran_lib(report, cfg_dir, plan, fc, flags)
 
             report.h("c harness: per-point infer via target teams loop", 3)
-            if c_built:
-                if not _run_c_harness1(report, cfg_dir, plan, cc, flags, backend, resolved_devcc,
-                                       devflags, inputs, expected, env):
+            if libs.host is not None:
+                if not _run_c_harness1(report, cfg_dir, plan, cc, flags, libs.host, inputs, expected, env):
                     ok = False
             else:
-                report.p("skipped: c library build failed")
+                report.p("skipped: c library build (omp backend, host compiler) failed")
                 ok = False
 
             report.h("fortran harness: per-point infer via target teams loop", 3)
@@ -829,8 +894,9 @@ def run_gate(*, cc: str, fc: str, flags: str, backend: str, devcc=None, devflags
 
             report.h("infer_batch harness: device-resident data", 3)
             if backend == "omp":
-                if c_built:
-                    if not _run_c_harness3_omp(report, cfg_dir, plan, cc, flags, inputs, expected, env):
+                if libs.host is not None:
+                    if not _run_c_harness3_omp(report, cfg_dir, plan, cc, flags, libs.host,
+                                               inputs, expected, env):
                         ok = False
                 else:
                     report.p("skipped: c library build failed")
@@ -842,9 +908,9 @@ def run_gate(*, cc: str, fc: str, flags: str, backend: str, devcc=None, devflags
                     report.p("skipped: fortran library build failed")
                     ok = False
             else:
-                if c_built:
+                if libs.dev is not None:
                     dev_ok = _run_dev_harness3(report, cfg_dir, plan, resolved_devcc,
-                                               devflags, backend, inputs, expected)
+                                               devflags, backend, libs.dev, inputs, expected)
                     if not dev_ok:
                         ok = False
                     else:
@@ -853,10 +919,10 @@ def run_gate(*, cc: str, fc: str, flags: str, backend: str, devcc=None, devflags
                         # when nsys or the nvtx header is unavailable, none
                         # of which fails the gate on its own.
                         if not _run_nsys_check(report, cfg_dir, plan, resolved_devcc, devflags,
-                                               backend, inputs):
+                                               backend, libs.dev, inputs):
                             ok = False
                 else:
-                    report.p(f"skipped: c library build failed (backend={backend})")
+                    report.p(f"skipped: c library build (backend={backend}, device compiler) failed")
                     ok = False
 
         report.h("result", 2)

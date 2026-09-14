@@ -37,7 +37,12 @@ program host
     do p = 1, n
         call {name}_infer(x(:, p), y(:, p))
     end do
-    call {name}_infer_batch(n, x, yb, status)          ! x, yb already on the device (R5)
+    ! infer_batch's has_device_addr wants the mapped arrays' device addresses,
+    ! which use_device_addr supplies (ruling R5; on this host-only build they
+    ! are the host addresses, so the omission would have been invisible).
+    !$omp target data use_device_addr(x, yb)
+    call {name}_infer_batch(n, x, yb, status)
+    !$omp end target data
     !$omp target exit data map(from: y, yb) map(delete: x)
     if (status /= 0) stop 4
     ! abs(...) > 0, not /=: an exact-bits comparison without tripping
