@@ -20,6 +20,15 @@ def _dtype_from_precision(precision: str | None) -> str | None:
     return _PRECISION_TO_DTYPE.get(precision) if precision else None
 
 
+def _add_embed_flags(sub: argparse.ArgumentParser) -> None:
+    group = sub.add_mutually_exclusive_group()
+    group.add_argument("--embed-weights", dest="embed", action="store_true", default=None,
+                       help="embed weights as constants in the header, regardless of size "
+                            "(default: embed automatically below EMBED_THRESHOLD parameters)")
+    group.add_argument("--no-embed", dest="embed", action="store_false",
+                       help="always load weights from a .rwt file at runtime")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="rosenna", description="ONNX to Fortran/C inference code")
     sub = p.add_subparsers(dest="command", required=True)
@@ -31,12 +40,14 @@ def build_parser() -> argparse.ArgumentParser:
                      help="default: the model's own dtype")
     gen.add_argument("--out", default=".")
     gen.add_argument("--name", default=None, help="symbol prefix; default: the model file stem")
+    _add_embed_flags(gen)
 
     ver = sub.add_parser("verify", help="compile the generated code and compare against onnxruntime")
     ver.add_argument("model")
     ver.add_argument("--lang", choices=["fortran", "c", "both"], default="both")
     ver.add_argument("--precision", choices=["single", "double"], default=None)
     ver.add_argument("--cases", type=int, default=16, help="random inputs to compare")
+    _add_embed_flags(ver)
 
     info = sub.add_parser("info", help="report ops, shapes and whether the model is supported")
     info.add_argument("model")
@@ -61,7 +72,7 @@ def _describe_ops(graph) -> list:
 
 def _cmd_generate(args) -> int:
     graph = load_graph(args.model, name=args.name)
-    plan = build_plan(graph, dtype=_dtype_from_precision(args.precision))
+    plan = build_plan(graph, dtype=_dtype_from_precision(args.precision), embed=args.embed)
     validate_model_name(plan.model)
     outdir = Path(args.out)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -84,9 +95,16 @@ def _cmd_generate(args) -> int:
         mk_path.write_text(recipe)
         written += [c_path, h_path, mk_path]
 
-    rwt_path = outdir / f"{name}.rwt"
-    write_weights(plan, graph, rwt_path)
-    written.append(rwt_path)
+    # An embedded plan has no weights file to write: every weight is already a
+    # ROSENNA_CONST array baked into the header. Fortran generation (unchanged
+    # by this task) still needs a .rwt to load, so it is written whenever
+    # Fortran is one of the requested languages even if the plan embeds.
+    if plan.embed and "fortran" not in langs:
+        print(f"embedded weights ({plan.n_params} parameters)")
+    else:
+        rwt_path = outdir / f"{name}.rwt"
+        write_weights(plan, graph, rwt_path)
+        written.append(rwt_path)
 
     for path in written:
         print(path)
@@ -96,7 +114,7 @@ def _cmd_generate(args) -> int:
 def _cmd_verify(args) -> int:
     with tempfile.TemporaryDirectory() as workdir:
         results = verify_model(args.model, args.lang, _dtype_from_precision(args.precision),
-                                args.cases, workdir)
+                                args.cases, workdir, embed=args.embed)
     all_ok = True
     for r in results:
         status = "ok" if r.ok else "FAIL"

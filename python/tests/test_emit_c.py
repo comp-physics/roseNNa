@@ -12,8 +12,11 @@ DENSE = ["gemm_small", "gemm_big", "gemm_nobias", "droplet", "batchnet"]
 
 
 def _build_and_run(tmp_path, onnx_path, name, inputs, dtype="f64"):
+    # embed=False: this helper's driver always calls `<name>_init` against a
+    # written .rwt file, the file-loaded contract. The dedicated embed=True/
+    # False matrix lives in tests/test_device_c.py and tests/test_embed.py.
     graph = load_graph(onnx_path)
-    plan = build_plan(graph, dtype=dtype)
+    plan = build_plan(graph, dtype=dtype, embed=False)
     source, header = emit_c(plan)
     (tmp_path / f"{name}.c").write_text(source)
     (tmp_path / f"{name}.h").write_text(header)
@@ -86,7 +89,8 @@ def test_infer_is_pure_and_has_literal_bounds(golden_model):
     # `infer` is now defined only in the header (a static inline callable
     # from inside the host's own offload region); the source never defines
     # it.
-    assert "static inline void gemm_small_infer(const double *restrict x, double *restrict y) {" in header
+    assert ("ROSENNA_DEVICE_FN static inline void gemm_small_infer("
+            "const double *ROSENNA_RESTRICT x, double *ROSENNA_RESTRICT y) {") in header
     # The scratch buffers come from plan.buffers now (ruling R13), not from a
     # second allocator private to this emitter: gemm_small's t0 is reused by
     # both gemms, so the plan sizes it at the larger of the two (3), and the
@@ -99,10 +103,12 @@ def test_infer_is_pure_and_has_literal_bounds(golden_model):
 
 
 def test_init_rejects_a_foreign_weights_file(tmp_path, golden_model):
+    # embed=False: this test is specifically about `_init`, which an
+    # embedded plan's header does not declare.
     graph = load_graph(golden_model("gemm_small"))
-    plan = build_plan(graph, dtype="f64")
+    plan = build_plan(graph, dtype="f64", embed=False)
     other_graph = load_graph(golden_model("gemm_big"))
-    other_plan = build_plan(other_graph, dtype="f64")
+    other_plan = build_plan(other_graph, dtype="f64", embed=False)
     source, header = emit_c(plan)
     (tmp_path / "gemm_small.c").write_text(source)
     (tmp_path / "gemm_small.h").write_text(header)

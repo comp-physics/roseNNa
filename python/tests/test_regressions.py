@@ -54,7 +54,11 @@ def _init_status(tmp_path, lang, onnx_path, name, rwt_bytes):
     """Emit `name`'s init for `lang`, hand it `rwt_bytes`, return (exit code, stdout)."""
     work = tmp_path / lang
     work.mkdir(exist_ok=True)
-    plan = build_plan(load_graph(onnx_path), dtype="f64")
+    # embed=False: this helper hands `<name>_init` crafted/corrupted .rwt
+    # bytes and checks the status it returns, so it always needs the
+    # file-loaded contract (and its hash must match the caller's plan, which
+    # also builds with embed=False -- see the two call sites below).
+    plan = build_plan(load_graph(onnx_path), dtype="f64", embed=False)
     (work / f"{name}.rwt").write_bytes(rwt_bytes)
     if lang == "fortran":
         (work / f"{name}_model.f90").write_text(emit_fortran(plan))
@@ -169,7 +173,9 @@ def _long_name_model(tmp_path):
 def test_long_initializer_name_round_trips(tmp_path):
     assert len(_LONG_NAME) > 128
     path = _long_name_model(tmp_path)
-    plan = build_plan(load_graph(path), dtype="f64")
+    # embed=False: this test is about the name buffer inside `init`'s table-
+    # of-contents reader, which an embedded plan's source does not emit.
+    plan = build_plan(load_graph(path), dtype="f64", embed=False)
 
     fsrc = emit_fortran(plan)
     csrc, _ = emit_c(plan)
@@ -192,7 +198,10 @@ def test_oversized_name_length_in_the_file_is_rejected(tmp_path, golden_model, l
     # byte 60; overwrite the first tensor's name length with 4000.
     onnx_path = golden_model("gemm_small")
     graph = load_graph(onnx_path)
-    plan = build_plan(graph, dtype="f64")
+    # embed=False to match _init_status's own plan -- both build the same
+    # model the same way, or their plan hashes (and thus this file's
+    # embedded expected_hash) would disagree.
+    plan = build_plan(graph, dtype="f64", embed=False)
     good = tmp_path / "good.rwt"
     write_weights(plan, graph, good)
     blob = bytearray(good.read_bytes())
@@ -245,7 +254,8 @@ def test_relu_propagates_nan_in_both_backends(tmp_path):
 def test_truncated_weights_file_returns_a_status(tmp_path, golden_model, lang):
     onnx_path = golden_model("gemm_small")
     graph = load_graph(onnx_path)
-    plan = build_plan(graph, dtype="f64")
+    # embed=False: see the comment in the sibling test above.
+    plan = build_plan(graph, dtype="f64", embed=False)
     good = tmp_path / "good.rwt"
     write_weights(plan, graph, good)
     rc, out = _init_status(tmp_path, lang, onnx_path, "gemm_small", good.read_bytes()[:-12])

@@ -41,6 +41,11 @@ jobs:
           pip install -e python
           cd python && python3 -m pytest tests -v
 
+      - name: Device-path tests ran on the host (not skipped)
+        run: |
+          cd python && python3 -m pytest tests/test_device_c.py -v -rs 2>&1 | tee device.log
+          ! grep -q "SKIPPED" device.log
+
       - name: Run test cases
         run: |
           mkdir -p fLibrary/objFiles

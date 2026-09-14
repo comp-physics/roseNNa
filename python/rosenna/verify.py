@@ -31,7 +31,8 @@ class VerifyResult:
     ok: bool
 
 
-def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir) -> list:
+def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir,
+                 embed: bool | None = None) -> list:
     """Generate, compile and run `lang` backend(s) for `model_path`, and compare to onnxruntime.
 
     Draws `cases` random inputs from a fixed seed and compares every backend's output
@@ -56,7 +57,7 @@ def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir) 
     """
     workdir = Path(workdir)
     graph = load_graph(model_path)
-    plan = build_plan(graph, dtype=dtype)
+    plan = build_plan(graph, dtype=dtype, embed=embed)
     validate_model_name(plan.model)
 
     # Model's own dtype, read before --precision is applied: this is what onnxruntime
@@ -76,7 +77,11 @@ def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir) 
     for backend in backends:
         backend_dir = workdir / backend
         backend_dir.mkdir(parents=True, exist_ok=True)
-        write_weights(plan, graph, backend_dir / f"{plan.model}.rwt")
+        # Fortran (unchanged by this task) always loads weights from a file.
+        # The C backend only needs one when the plan is not embedding its
+        # weights as ROSENNA_CONST arrays in the header.
+        if backend == "fortran" or not plan.embed:
+            write_weights(plan, graph, backend_dir / f"{plan.model}.rwt")
         got = _run_backend(backend, plan, backend_dir, inputs)
         abs_err = np.abs(got - expected)
         denom = np.maximum(np.abs(expected), np.finfo(np.float64).tiny)
@@ -134,16 +139,20 @@ end program
 """
 
 
-def _c_driver(name: str, n_in: int, n_out: int, dtype: str) -> str:
+def _c_driver(name: str, n_in: int, n_out: int, dtype: str, embed: bool) -> str:
     c_type = "double" if dtype == "f64" else "float"
     fmt = "%lf" if dtype == "f64" else "%f"
+    # An embedded plan has no `_init`: every weight is already a ROSENNA_CONST
+    # array in the header, resident from program load.
+    init = "" if embed else (
+        f'int status = {name}_init("{name}.rwt");\n'
+        f'    if (status != 0) {{ printf("init status %d\\n", status); return 1; }}\n    ')
     return f"""
 #include <stdio.h>
 #include "{name}.h"
 int main(void) {{
     {c_type} x[{n_in}], y[{n_out}];
-    int ncases, status = {name}_init("{name}.rwt");
-    if (status != 0) {{ printf("init status %d\\n", status); return 1; }}
+    {init}int ncases;
     if (scanf("%d", &ncases) != 1) return 1;
     for (int c = 0; c < ncases; ++c) {{
         for (int i = 0; i < {n_in}; ++i) if (scanf("{fmt}", &x[i]) != 1) return 1;
@@ -197,7 +206,7 @@ def _run_backend(backend: str, plan, workdir: Path, inputs):
         source, header = emit_c(plan)
         (workdir / f"{name}.c").write_text(source)
         (workdir / f"{name}.h").write_text(header)
-        (workdir / "verify_main.c").write_text(_c_driver(name, n_in, n_out, dtype))
+        (workdir / "verify_main.c").write_text(_c_driver(name, n_in, n_out, dtype, plan.embed))
         # Compile the generated source to an object, archive it, and link the
         # driver against the archive -- the library form -- rather than
         # compiling both sources together, so `verify` exercises the same

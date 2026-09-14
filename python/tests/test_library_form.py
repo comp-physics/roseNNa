@@ -19,7 +19,9 @@ def _cc():
 
 
 def test_header_defines_inline_infer_and_source_does_not(golden_model):
-    plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64")
+    # embed=False: this test is specifically about the file-loaded contract
+    # (extern declaration in the header, definition in the source).
+    plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64", embed=False)
     source, header = emit_c(plan)
     assert "static inline void gemm_small_infer(" in header
     # Structural check (controller ruling P1): infer must be defined only in
@@ -37,7 +39,7 @@ def test_header_defines_inline_infer_and_source_does_not(golden_model):
 def test_library_and_header_inline_agree(tmp_path, golden_model):
     name = "gemm_small"
     graph = load_graph(golden_model(name))
-    plan = build_plan(graph, dtype="f64")
+    plan = build_plan(graph, dtype="f64", embed=False)
     source, header = emit_c(plan)
     (tmp_path / f"{name}.c").write_text(source)
     (tmp_path / f"{name}.h").write_text(header)
@@ -92,7 +94,7 @@ def test_two_models_link_into_one_host(tmp_path, golden_model):
     obj_args = []
     for name in names:
         graph = load_graph(golden_model(name))
-        plan = build_plan(graph, dtype="f64")
+        plan = build_plan(graph, dtype="f64", embed=False)
         plans[name] = plan
         source, header = emit_c(plan)
         (tmp_path / f"{name}.c").write_text(source)
@@ -161,7 +163,7 @@ def test_two_models_link_into_one_host(tmp_path, golden_model):
 def test_recipe_builds_the_library(tmp_path, golden_model):
     name = "gemm_small"
     graph = load_graph(golden_model(name))
-    plan = build_plan(graph, dtype="f64")
+    plan = build_plan(graph, dtype="f64", embed=False)
     source, header = emit_c(plan)
     (tmp_path / f"{name}.c").write_text(source)
     (tmp_path / f"{name}.h").write_text(header)

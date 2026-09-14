@@ -11,7 +11,27 @@ from .validate import validate
 
 _ACTIVATIONS = {"Relu": "relu", "Tanh": "tanh", "Sigmoid": "sigmoid"}
 _ITEMSIZE = {"f32": 4, "f64": 8}
+_NUMPY_DTYPE = {"f32": np.float32, "f64": np.float64}
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+# Measured on this machine (gcc-15 -O2 -c on an empty translation unit that
+# only #includes the generated header; see tests/measure_embed_threshold.py
+# and task-2-report.md for the full table, including an extended sweep past
+# 1e6 that locates where the real 5-second crossover falls):
+#
+#      params    compile time (s)
+#        1056           0.05
+#       10100           0.06
+#      100172           0.12
+#      300852           0.25
+#     1001000           0.80
+#
+# Every one of the five measured sizes compiles in under a second, so the
+# largest of them -- already a round number -- is the threshold: a model
+# under 1,000,000 parameters embeds by default. (The crossover past 5s does
+# not occur until several million parameters; see the report for that
+# supporting data point.)
+EMBED_THRESHOLD = 1_000_000
 
 
 def validate_model_name(name: str) -> None:
@@ -37,6 +57,13 @@ class WeightSpec:
     shape: tuple
     offset: int
     nbytes: int
+    # Populated only when the owning Plan embeds its weights (Plan.embed):
+    # the flattened values, at the plan's own dtype, that emit_c prints as a
+    # ROSENNA_CONST array literal. A file-loaded plan leaves this None; the
+    # values live in the .rwt file instead, and this field enters the hash
+    # only for an embedded plan (embed is itself part of the hash, so the
+    # two forms of the same model are already distinct artifacts).
+    values: tuple | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +92,8 @@ class Plan:
     buffers: dict
     assignment: dict
     weights: tuple
+    embed: bool
+    n_params: int
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
@@ -77,7 +106,14 @@ def _length(t: Tensor) -> int:
     return int(np.prod(t.shape)) if t.shape else 1
 
 
-def build_plan(graph: Graph, dtype: str | None = None) -> Plan:
+def _weight_elems(shape: tuple) -> int:
+    n = 1
+    for d in shape:
+        n *= d
+    return n
+
+
+def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None) -> Plan:
     validate(graph)
     if len(graph.inputs) != 1 or len(graph.outputs) != 1:
         raise UnsupportedModel(
@@ -115,7 +151,21 @@ def build_plan(graph: Graph, dtype: str | None = None) -> Plan:
     flat_in = Tensor(in_t.name, (_length(in_t),), dtype)
     flat_out = Tensor(out_t.name, (_length(out_t),), dtype)
     buffers, assignment = _assign_buffers(graph, ops, flat_in, flat_out)
-    return Plan(graph.name, dtype, flat_in, flat_out, tuple(ops), buffers, assignment, tuple(weights))
+
+    n_params = sum(_weight_elems(w.shape) for w in weights)
+    if embed is None:
+        embed = n_params < EMBED_THRESHOLD
+    if embed:
+        np_dtype = _NUMPY_DTYPE[dtype]
+        weights = [
+            WeightSpec(w.name, w.symbol, w.shape, w.offset, w.nbytes,
+                       values=tuple(np.asarray(graph.initializers[w.name], dtype=np_dtype)
+                                    .ravel(order="C").tolist()))
+            for w in weights
+        ]
+
+    return Plan(graph.name, dtype, flat_in, flat_out, tuple(ops), buffers, assignment,
+                tuple(weights), embed, n_params)
 
 
 def _assign_buffers(graph: Graph, ops, flat_in: Tensor, flat_out: Tensor):
