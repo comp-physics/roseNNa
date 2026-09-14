@@ -97,14 +97,25 @@ def _weight_symbol_list(plan: Plan) -> str:
 # _wrap_items alone cannot keep a several-hundred-element weight (e.g.
 # gemm_big's 40x30 = 1200-element layer) legal. Above _EMBED_CHUNK elements,
 # the flat literal list is split into several small `parameter` arrays
-# (each well under the continuation limit) and reassembled with one more
-# `parameter` statement over their names -- a statement with a handful of
-# short identifiers, never close to either limit itself.
+# (each well under the continuation limit) and reassembled by the weight's
+# own initializer over their names -- a statement with a handful of short
+# identifiers, never close to either limit itself.
 _EMBED_CHUNK = 500
 
 
 def _emit_embedded_weights(plan: Plan) -> list:
-    """`plan.embed`'s weights, as `parameter` arrays holding the literal values.
+    """`plan.embed`'s weights, as initialized `protected` module arrays.
+
+    Not `parameter`: gfortran -fopenacc materializes a named-constant array
+    read inside a `routine seq` as a static and then demands an OpenACC
+    `declare` for it, which it refuses on a named constant ("not a
+    variable"), so an embedded module could not be compiled (-c; the error
+    is raised after the front end, so -fsyntax-only does not see it). An
+    initialized `protected` module variable takes `declare copyin` and
+    `declare target`, gets its device copy at program start under either
+    offload family, and is as read-only outside the module as a constant.
+    The chunk arrays a long literal list is split into (see _EMBED_CHUNK)
+    stay `parameter`: only the initializer names them, never the routine.
 
     A rank-1 array (every bias) is a plain bracketed list. A rank-2 array
     (every Gemm/MatMul weight) is `reshape([flat values], [dims])`: `values`
@@ -130,9 +141,9 @@ def _emit_embedded_weights(plan: Plan) -> list:
                                      chunk, " ]", " " * 8)
             flat = chunk_names
         if len(w.shape) <= 1:
-            head, tail = f"    real(wp), parameter :: {w.symbol}{dims} = [ ", " ]"
+            head, tail = f"    real(wp), protected :: {w.symbol}{dims} = [ ", " ]"
         else:
-            head = f"    real(wp), parameter :: {w.symbol}{dims} = reshape([ "
+            head = f"    real(wp), protected :: {w.symbol}{dims} = reshape([ "
             tail = f" ], {_weight_dims_list(plan, w.symbol)})"
         lines += _wrap_items(head, flat, tail, " " * 8)
     return lines
@@ -171,12 +182,12 @@ def emit_fortran(plan: Plan) -> str:
         lines += _emit_embedded_weights(plan)
     if plan.weights:
         lines.append(f"    !$omp declare target({_weight_symbol_list(plan)})")
-        if not plan.embed:
-            # gfortran rejects a `routine seq`/declare-target function that
-            # reads a file-scope array with no OpenACC `declare` directive of
-            # its own; an embedded plan's arrays are compile-time constants
-            # instead and need none.
-            lines.append(f"    !$acc declare create({_weight_symbol_list(plan)})")
+        # gfortran rejects a `routine seq` function that reads a module array
+        # with no OpenACC `declare` directive of its own: `create` for the
+        # file-loaded arrays (init then does `update device`), `copyin` for
+        # the embedded ones, whose initializer is the device copy's value.
+        clause = "copyin" if plan.embed else "create"
+        lines.append(f"    !$acc declare {clause}({_weight_symbol_list(plan)})")
     lines += [
         "",
         "    interface",

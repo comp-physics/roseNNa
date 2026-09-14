@@ -140,17 +140,22 @@ def test_embedded_module_has_no_init_and_file_loaded_does(golden_model):
         plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64", embed=embed)
         src = emit_fortran(plan)
         assert ("subroutine gemm_small_init(" in src) == expect_init
-        assert ("real(wp), parameter :: w0" in src) == embed
-        assert ("real(wp), protected :: w0" in src) == (not embed)
+        # Both forms are `protected` module arrays; the embedded one carries
+        # its initializer (see _emit_embedded_weights for why not `parameter`).
+        assert ("real(wp), protected :: w0(2,2) = reshape([" in src) == embed
+        assert ("real(wp), protected :: w0(2,2)\n" in src) == (not embed)
+        assert ("!$acc declare copyin(w0, b0, w1, b1)" in src) == embed
+        assert ("!$acc declare create(w0, b0, w1, b1)" in src) == (not embed)
 
 
 def test_generated_fortran_is_warning_free_under_openacc(tmp_path, golden_model):
     # Mirrors tests/test_kernel.py::test_generated_c_is_warning_free_under_openacc.
-    # gfortran -fopenacc rejects a `routine seq` function reading a file-scope
-    # array with no `declare` directive of its own (why _emit_embedded_weights
-    # skips `!$acc declare create` -- an embedded plan's arrays are compile-
-    # time constants and need none, but a file-loaded plan's `protected`
-    # arrays do); this is the test that guards that comment.
+    # gfortran -fopenacc rejects a `routine seq` function reading a module
+    # array with no `declare` directive of its own, and refuses a `declare`
+    # on a `parameter` array (why _emit_embedded_weights emits initialized
+    # `protected` arrays with `declare copyin`). A real compile (-c), not
+    # -fsyntax-only: the diagnostic comes after the front end and
+    # -fsyntax-only let an uncompilable embedded module through.
     fc = shutil.which("gfortran")
     if not fc:
         pytest.skip("no gfortran")
@@ -164,8 +169,8 @@ def test_generated_fortran_is_warning_free_under_openacc(tmp_path, golden_model)
             src_path = tmp_path / f"{name}_{embed}_model.f90"
             src_path.write_text(emit_fortran(plan))
             r = subprocess.run(
-                [fc, "-O2", "-Wall", "-Wextra", "-std=f2008", "-fopenacc", "-fsyntax-only",
-                 src_path.name],
+                [fc, "-O2", "-Wall", "-Wextra", "-std=f2008", "-fopenacc", "-c",
+                 src_path.name, "-o", f"{name}_{embed}_model.o"],
                 cwd=tmp_path, capture_output=True, text=True)
             assert r.returncode == 0 and r.stderr == "", (name, embed, r.stderr)
 

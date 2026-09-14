@@ -63,8 +63,10 @@ model file's stem. `generate` prints every file it wrote:
 Both recipes write into the same output directory and build there: a
 `--lang both` run gives you one directory holding both archives.
 
-A model embeds its weights as constants (`ROSENNA_CONST` in C, a Fortran
-`parameter` array) automatically when it has fewer than `EMBED_THRESHOLD`
+A model embeds its weights as constants (`ROSENNA_CONST` in C, an
+initialized `protected` module array in Fortran, since gfortran's OpenACC
+cannot read a `parameter` array from a device routine) automatically when
+it has fewer than `EMBED_THRESHOLD`
 (1,000,000) parameters; above that it is file-loaded by default. `--embed-weights`
 forces embedding regardless of size; `--no-embed` forces a `.rwt` file
 regardless of size. An embedded model has no `<name>_init` at all -- there is

@@ -159,7 +159,7 @@ def _cmd_generate(args) -> int:
         written += [c_path, h_path, mk_path, cu_path, rt_path]
 
     # An embedded plan has no weights file to write in either language: every
-    # weight is already a `parameter`/ROSENNA_CONST array baked into the
+    # weight is already an initialized `protected`/ROSENNA_CONST array baked into the
     # generated source (controller ruling R3, flipped by Task 4: Fortran now
     # embeds by default too, so this no longer depends on which languages
     # were requested).
