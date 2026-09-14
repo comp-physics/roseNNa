@@ -27,8 +27,8 @@ on a GPU machine and its report recorded. For CUDA that has now happened:
 nvfortran -mp=gpu -gpu=cc80, nvcc 13.0), with zero cudaMemcpy inside the
 timed infer_batch call. For HIP too: `--backend hip` PASSes on an MI210
 (gfx90a) under ROCm 7.2.0 (amdclang, amdflang -fopenmp --offload-arch=gfx90a,
-hipcc) and under the TheRock AFAR 23.2.1 drop; the nsys transfer count has no
-rocprof counterpart yet, so that part is skipped and said so in the report.
+hipcc) and under the TheRock AFAR 23.2.1 drop, with zero hipMemcpy inside the
+roctx-scoped timed call (rocprofv3, the nsys check's twin).
 """
 import csv
 import io
@@ -535,14 +535,13 @@ _DEV_HARNESS3 = """/* rosenna gpu-gate: infer_batch over raw device pointers ({b
    compiler this is: nvcc includes its runtime implicitly, hipcc does not. */
 #include "rosenna_rt.h"
 #include "{name}.h"
-#ifdef ROSENNA_GATE_NVTX
-/* Ruling R15: only defined (via -DROSENNA_GATE_NVTX=1) for the separate
-   build the nsys check compiles, so the ordinary timed run above never
-   needs this header. nvtx3 is documented as header-only (it loads
-   libnvToolsExt itself at runtime); _run_nsys_check retries the link with
-   -lnvToolsExt if the no-link form fails, since that has not been verified
-   against every toolkit version here. */
-#include <nvtx3/nvToolsExt.h>
+#ifdef ROSENNA_GATE_MARKERS
+/* Ruling R15: only defined (via -DROSENNA_GATE_MARKERS=1) for the separate
+   build the profiler check compiles, so the ordinary timed run never needs
+   this header: nvtx3 for nsys (documented as header-only; _run_nsys_check
+   retries the link with -lnvToolsExt if the no-link form fails), roctx for
+   rocprofv3 (linked with -lrocprofiler-sdk-roctx). */
+#include {marker_header}
 #endif
 int main(void) {{
     {init}
@@ -577,18 +576,19 @@ int main(void) {{
     if ({p}Memcpy(dxt, hxt, sizeof(double) * (size_t)ntime * {n_in}, {p}MemcpyHostToDevice) != {p}Success) return 4;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    /* No cudaMemcpy/hipMemcpy in this call (ruling R5). Ruling R15: the nsys
-       check brackets ONLY this call with an nvtx range and profiles with
-       --capture-range=nvtx, so its cudaMemcpy count is scoped to the call
-       itself, not to this driver's untimed setup above (which legitimately
-       memcpys) -- counting across the whole profile would fail an
-       R5-compliant infer_batch. */
-#ifdef ROSENNA_GATE_NVTX
-    nvtxRangePushA("rosenna_timed");
+    /* No cudaMemcpy/hipMemcpy in this call (ruling R5). Ruling R15: the
+       profiler check brackets ONLY this call with a named range (nvtx under
+       nsys, which captures just that range; roctx under rocprofv3, whose
+       trace is then cut to the range's timestamps), so the memcpy count is
+       scoped to the call itself, not to this driver's untimed setup above
+       (which legitimately memcpys) -- counting across the whole profile
+       would fail an R5-compliant infer_batch. */
+#ifdef ROSENNA_GATE_MARKERS
+    {marker_push}("rosenna_timed");
 #endif
     status = {name}_infer_batch((int)ntime, dxt, dyt, 0);
-#ifdef ROSENNA_GATE_NVTX
-    nvtxRangePop();
+#ifdef ROSENNA_GATE_MARKERS
+    {marker_pop}();
 #endif
     if (status != 0) return 30 + status;
     {p}DeviceSynchronize();
@@ -699,12 +699,7 @@ def _run_fortran_harness3_omp(report, cfg_dir, plan, fc, flags, inputs, expected
 
 def _run_dev_harness3(report, cfg_dir, plan, devcc, devflags, backend, dev_lib, inputs, expected) -> bool:
     name = plan.model
-    n_in, n_out = plan.input.shape[0], plan.output.shape[0]
-    prefix = "hip" if backend == "hip" else "cuda"
-    init = "" if plan.embed else f'if ({name}_init("{name}.rwt")) return 2;'
-    (cfg_dir / "gate_harness3.cu").write_text(_DEV_HARNESS3.format(
-        name=name, n_in=n_in, n_out=n_out, init=init, ntime=_TIMED_ITERS, p=prefix,
-        backend=backend))
+    (cfg_dir / "gate_harness3.cu").write_text(_dev_harness3(plan, backend))
     # Ruling R22: the device compiler compiles AND links this driver (it
     # supplies its own runtime), against the archive it built itself. The
     # archive goes to the linker as -L/-l rather than as a bare path: hipcc
@@ -726,18 +721,39 @@ def _run_dev_harness3(report, cfg_dir, plan, devcc, devflags, backend, dev_lib, 
     return ok
 
 
-def _probe_nvtx_header(report: _Report, cfg_dir: Path, devcc: str, devflags: str) -> bool:
-    """Compile-only probe for <nvtx3/nvToolsExt.h> with the device compiler.
+# Per backend: the marker header the profiler check's harness includes, and
+# the range push/pop it calls. nvtx3 is what nsys captures on; roctx (the
+# rocprofiler-sdk one, ROCm >= 6.2) is what rocprofv3 --marker-trace records.
+_MARKERS = {
+    "cuda": ("<nvtx3/nvToolsExt.h>", "nvtxRangePushA", "nvtxRangePop"),
+    "hip": ("<rocprofiler-sdk-roctx/roctx.h>", "roctxRangePush", "roctxRangePop"),
+}
 
-    Ruling R15: if the header is not found, the nsys check is skipped with
-    a named reason rather than failing the gate or attempting to build the
-    nvtx-instrumented variant anyway.
+
+def _dev_harness3(plan, backend: str) -> str:
+    """Render the infer_batch driver; the marker bracket is inert without -DROSENNA_GATE_MARKERS."""
+    name = plan.model
+    header, push, pop = _MARKERS[backend]
+    return _DEV_HARNESS3.format(
+        name=name, n_in=plan.input.shape[0], n_out=plan.output.shape[0],
+        init="" if plan.embed else f'if ({name}_init("{name}.rwt")) return 2;',
+        ntime=_TIMED_ITERS, p=backend, backend=backend,
+        marker_header=header, marker_push=push, marker_pop=pop)
+
+
+def _probe_marker_header(report: _Report, cfg_dir: Path, devcc: str, devflags: str,
+                         header: str) -> bool:
+    """Compile-only probe for the marker header with the device compiler.
+
+    Ruling R15: if the header is not found, the profiler check is skipped
+    with a named reason rather than failing the gate or attempting to build
+    the instrumented variant anyway.
     """
-    (cfg_dir / "gate_nvtx_probe.cu").write_text(
-        "#include <nvtx3/nvToolsExt.h>\nint main(void){return 0;}\n")
-    proc = _sh(report, "probe for <nvtx3/nvToolsExt.h>",
-              [*shlex.split(devcc), *devflags.split(), "-c", "gate_nvtx_probe.cu",
-               "-o", "gate_nvtx_probe.o"], cwd=cfg_dir)
+    (cfg_dir / "gate_marker_probe.cu").write_text(
+        f"#include {header}\nint main(void){{return 0;}}\n")
+    proc = _sh(report, f"probe for {header}",
+              [*shlex.split(devcc), *devflags.split(), "-c", "gate_marker_probe.cu",
+               "-o", "gate_marker_probe.o"], cwd=cfg_dir)
     return proc.returncode == 0
 
 
@@ -812,32 +828,23 @@ def _run_nsys_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: 
     report for what remains unexercised.
     """
     report.h("nsys check: cudaMemcpy count inside the nvtx-scoped infer_batch call (ruling R15)", 4)
-    if backend == "hip":
-        report.p("nsys check skipped: --backend hip (rocprof scoping of the call is a "
-                 "follow-up; nsys/nvtx are CUDA-only).")
-        return True
     nsys = shutil.which("nsys")
     if not nsys:
         report.p("nsys not found on PATH; the cudaMemcpy-count check was NOT run "
                  "(recorded here rather than silently skipped).")
         return True
-    if not _probe_nvtx_header(report, cfg_dir, devcc, devflags):
+    if not _probe_marker_header(report, cfg_dir, devcc, devflags, _MARKERS["cuda"][0]):
         report.p("nsys check skipped: nvtx header not found "
                  "(<nvtx3/nvToolsExt.h> did not compile with this device compiler).")
         return True
 
-    name = plan.model
-    n_in, n_out = plan.input.shape[0], plan.output.shape[0]
-    init = "" if plan.embed else f'if ({name}_init("{name}.rwt")) return 2;'
-    (cfg_dir / "gate_harness3.cu").write_text(_DEV_HARNESS3.format(
-        name=name, n_in=n_in, n_out=n_out, init=init, ntime=_TIMED_ITERS, p="cuda",
-        backend=backend))
+    (cfg_dir / "gate_harness3.cu").write_text(_dev_harness3(plan, backend))
     # nvtx3 (<nvtx3/nvToolsExt.h>) is documented as header-only: it loads
     # libnvToolsExt itself at runtime rather than needing it at link time.
     # Some toolkit versions still expect an explicit link; try without
     # -lnvToolsExt first (the documented form) and retry once with it if
-    # linking fails, noting which form was needed. Neither path has run here.
-    base_cmd = [*shlex.split(devcc), *devflags.split(), "-DROSENNA_GATE_NVTX=1",
+    # linking fails, noting which form was needed.
+    base_cmd = [*shlex.split(devcc), *devflags.split(), "-DROSENNA_GATE_MARKERS=1",
                 "gate_harness3.cu", *_link_archive(dev_lib, cfg_dir)]
     proc = _sh(report, "compile nvtx-bracketed infer_batch harness (no explicit -lnvToolsExt)",
               [*base_cmd, "-o", "gate_harness3_nvtx"], cwd=cfg_dir)
@@ -915,6 +922,114 @@ def _run_nsys_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: 
         report.p("FAIL: infer_batch's timed call must never call cudaMemcpy (ruling R5)")
         return False
     return True
+
+
+def _scope_hipmemcpy_calls(hip_csv: str, marker_csv: str) -> NsysParseResult:
+    """Count hipMemcpy* calls whose whole interval lies inside the rosenna_timed range.
+
+    rocprofv3 has no nsys-style capture range, but `--hip-trace
+    --marker-trace -f csv` writes every HIP API call and every roctx range
+    with Start_Timestamp/End_Timestamp on one clock, so the scoping is done
+    here: the range is the marker row whose Function is rosenna_timed, and a
+    HIP row counts when it starts at or after the range starts and ends at
+    or before it ends. Ruling R18 as for nsys: `parsed` is True only when
+    the range was found AND the HIP trace had recognised columns and at
+    least one row; otherwise the count is not evidence.
+    """
+    def rows(text):
+        reader = csv.DictReader(io.StringIO(text))
+        fields = reader.fieldnames or []
+        need = ("Function", "Start_Timestamp", "End_Timestamp")
+        if not all(any(n.lower() == f.lower() for f in fields) for n in need):
+            return None
+        col = {n: next(f for f in fields if f.lower() == n.lower()) for n in need}
+        return [(r[col["Function"]], int(r[col["Start_Timestamp"]]), int(r[col["End_Timestamp"]]))
+                for r in reader]
+
+    markers, calls = rows(marker_csv), rows(hip_csv)
+    if markers is None or calls is None or not calls:
+        return NsysParseResult(False, 0)
+    ranges = [(t0, t1) for fn, t0, t1 in markers if fn == "rosenna_timed"]
+    if len(ranges) != 1:
+        return NsysParseResult(False, 0)
+    t0, t1 = ranges[0]
+    return NsysParseResult(True, sum(1 for fn, a, b in calls
+                                     if fn.startswith("hipMemcpy") and a >= t0 and b <= t1))
+
+
+def _run_rocprof_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: str,
+                       backend: str, dev_lib: Path, inputs) -> bool:
+    """The HIP twin of _run_nsys_check: zero hipMemcpy inside the timed call.
+
+    The harness is rebuilt with roctx markers around the timed call and run
+    under `rocprofv3 --hip-trace --marker-trace -f csv`; the two CSVs are
+    then cut to the marker's timestamps by _scope_hipmemcpy_calls. Validated
+    on an MI210 under ROCm 7.2.0.
+    """
+    report.h("rocprof check: hipMemcpy count inside the roctx-scoped infer_batch call (ruling R15)", 4)
+    rocprof = shutil.which("rocprofv3")
+    if not rocprof:
+        report.p("rocprofv3 not found on PATH; the hipMemcpy-count check was NOT run "
+                 "(recorded here rather than silently skipped).")
+        return True
+    header = _MARKERS["hip"][0]
+    if not _probe_marker_header(report, cfg_dir, devcc, devflags, header):
+        report.p(f"rocprof check skipped: roctx header not found ({header} did not "
+                 "compile with this device compiler).")
+        return True
+
+    (cfg_dir / "gate_harness3.cu").write_text(_dev_harness3(plan, backend))
+    proc = _sh(report, "compile roctx-bracketed infer_batch harness",
+              [*shlex.split(devcc), *devflags.split(), "-DROSENNA_GATE_MARKERS=1",
+               "gate_harness3.cu", *_link_archive(dev_lib, cfg_dir),
+               "-lrocprofiler-sdk-roctx", "-o", "gate_harness3_roctx"], cwd=cfg_dir)
+    if proc.returncode != 0:
+        report.p("rocprof check skipped: the roctx-bracketed driver did not link "
+                 "with -lrocprofiler-sdk-roctx.")
+        return True
+
+    # Absolute for the same reason as the nsys report path: rocprofv3 runs
+    # with cwd=cfg_dir and -d is resolved from there.
+    prof_dir = (cfg_dir / "gate_rocprof").resolve()
+    shutil.rmtree(prof_dir, ignore_errors=True)
+    profile_proc = _sh(
+        report, "rocprofv3 --hip-trace --marker-trace -f csv",
+        [rocprof, "--hip-trace", "--marker-trace", "-f", "csv", "-d", str(prof_dir),
+         "-o", "prof", "--", "./gate_harness3_roctx"], cwd=cfg_dir,
+        input_text=_stdin_for(inputs))
+    if profile_proc.returncode != 0:
+        report.p("FAIL: rocprofv3 did not complete successfully")
+        return False
+    hip_csv, marker_csv = prof_dir / "prof_hip_api_trace.csv", prof_dir / "prof_marker_api_trace.csv"
+    missing = [str(f.name) for f in (hip_csv, marker_csv) if not f.exists()]
+    if missing:
+        report.p(f"FAIL: rocprofv3 exited 0 but wrote no {', '.join(missing)} in {prof_dir}")
+        return False
+
+    result = _scope_hipmemcpy_calls(hip_csv.read_text(), marker_csv.read_text())
+    if not result.parsed:
+        # Ruling R18: an unparseable trace is a gate failure, not a pass.
+        report.p("rocprof check inconclusive: no single rosenna_timed range in the marker "
+                 "trace, or no recognised Function/Start_Timestamp/End_Timestamp rows in "
+                 "the HIP trace.")
+        for f in (hip_csv, marker_csv):
+            raw_lines = f.read_text().splitlines()[:8]
+            report.block(f"first lines of {f.name}", "\n".join(raw_lines) or "(empty)")
+        report.p("FAIL: an inconclusive parse counts as a gate failure, not a pass.")
+        return False
+    report.p(f"hipMemcpy* calls inside the roctx-scoped infer_batch call, from "
+             f"hip_api_trace cut to marker_api_trace: {result.count}")
+    if result.count != 0:
+        report.p("FAIL: infer_batch's timed call must never call hipMemcpy (ruling R5)")
+        return False
+    return True
+
+
+def _run_transfer_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: str,
+                        backend: str, dev_lib: Path, inputs) -> bool:
+    """Ruling R15 for whichever profiler this backend has."""
+    check = _run_rocprof_check if backend == "hip" else _run_nsys_check
+    return check(report, cfg_dir, plan, devcc, devflags, backend, dev_lib, inputs)
 
 
 def run_gate(*, cc: str, fc: str, flags: str, backend: str, devcc=None, devflags: str = "",
@@ -1013,12 +1128,12 @@ def run_gate(*, cc: str, fc: str, flags: str, backend: str, devcc=None, devflags
                     if not dev_ok:
                         ok = False
                     else:
-                        # Ruling R15: invoked for both backends; it skips
-                        # itself (with a named reason) for hip, and for cuda
-                        # when nsys or the nvtx header is unavailable, none
-                        # of which fails the gate on its own.
-                        if not _run_nsys_check(report, cfg_dir, plan, resolved_devcc, devflags,
-                                               backend, libs.dev, inputs):
+                        # Ruling R15: nsys for cuda, rocprofv3 for hip; each
+                        # skips itself (with a named reason) when the profiler
+                        # or the marker header is unavailable, which does not
+                        # fail the gate on its own.
+                        if not _run_transfer_check(report, cfg_dir, plan, resolved_devcc, devflags,
+                                                   backend, libs.dev, inputs):
                             ok = False
                 else:
                     report.p(f"skipped: c library build (backend={backend}, device compiler) failed")

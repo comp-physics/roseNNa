@@ -154,3 +154,20 @@ def test_constant_lstm_initial_state_is_lowered_to_weights(tmp_path):
     f_out, c_out = _both_backends(tmp_path, path, "lstmk", inputs)
     np.testing.assert_allclose(f_out, expected, rtol=1e-5, atol=1e-6)
     np.testing.assert_allclose(c_out, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_lstm_without_its_y_output_is_refused_not_a_traceback(tmp_path):
+    # ONNX lets a graph ask for Y_h alone (outputs ["", "yh"]). The plan reads
+    # the first output's shape and raised KeyError('') on the empty name; the
+    # answer is an UnsupportedModel naming what is missing.
+    rng = np.random.default_rng(9)
+    hidden, n_in = 4, 3
+    W = _f32(rng, (1, 4 * hidden, n_in), "W")
+    R = _f32(rng, (1, 4 * hidden, hidden), "R")
+    nodes = [
+        helper.make_node("LSTM", ["x", "W", "R"], ["", "yh"], name="l0", hidden_size=hidden),
+        helper.make_node("Flatten", ["yh"], ["y"], name="f0"),
+    ]
+    path = save_model(tmp_path, "lstmy", nodes, [W, R], (1, 1, n_in), (1, hidden))
+    with pytest.raises(UnsupportedModel, match="Y"):
+        build_plan(load_graph(path), dtype="f64", embed=False)

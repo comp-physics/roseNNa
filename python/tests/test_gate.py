@@ -1,7 +1,8 @@
 import shutil
 import pytest
 from rosenna.cli import main
-from rosenna.gate import _sum_cudamemcpy_calls
+from rosenna.gate import _scope_hipmemcpy_calls, _sum_cudamemcpy_calls
+from tests.conftest import skip_unless_libgomp_enforces_mandatory
 from tests.test_device_c import _omp_cc
 
 # One header shape `nsys stats --report cuda_api_sum --format csv` actually
@@ -109,10 +110,56 @@ def test_gate_runs_in_host_fallback_mode_and_writes_a_report(tmp_path, golden_mo
 
 
 def test_gate_fails_loudly_when_offload_is_mandatory_and_absent(tmp_path, golden_model):
+    # The gate's rc=1 here IS libgomp refusing the harness under MANDATORY;
+    # where libgomp ignores MANDATORY there is nothing to observe, so skip.
     golden_model("gemm_big")
     cc = _omp_cc()
     fc = shutil.which("gfortran") or pytest.skip("no gfortran")
+    skip_unless_libgomp_enforces_mandatory(cc, tmp_path)
     rc = main(["gpu-gate", "--cc", cc, "--fc", fc, "--flags", "-fopenmp", "--backend", "omp",
               "--out", str(tmp_path)])
     assert rc == 1
     assert "MANDATORY" in (tmp_path / "gate-report.md").read_text()
+
+
+# rocprofv3 --hip-trace --marker-trace -f csv writes one CSV per domain with
+# this header; the marker CSV names the roctx range, the HIP one every API
+# call, both with the same clock. These are the real headers ROCm 7.2 wrote.
+_ROCPROF_HEADER = ('"Domain","Function","Process_Id","Thread_Id","Correlation_Id",'
+                   '"Start_Timestamp","End_Timestamp"\n')
+_MARKER_CSV = _ROCPROF_HEADER + '"MARKER_CORE_RANGE_API","rosenna_timed",1,1,14,1000,2000\n'
+
+
+def test_scope_hipmemcpy_calls_counts_only_inside_the_timed_range():
+    # One hipMemcpy before the range (setup), two inside, one after: 2.
+    hip_csv = _ROCPROF_HEADER + (
+        '"HIP_RUNTIME_API","hipMemcpy",1,1,2,500,600\n'
+        '"HIP_RUNTIME_API","hipMemcpy",1,1,3,1100,1200\n'
+        '"HIP_RUNTIME_API","hipMemcpyAsync",1,1,4,1300,1400\n'
+        '"HIP_RUNTIME_API","hipLaunchKernel",1,1,5,1500,1600\n'
+        '"HIP_RUNTIME_API","hipMemcpy",1,1,6,2100,2200\n'
+    )
+    result = _scope_hipmemcpy_calls(hip_csv, _MARKER_CSV)
+    assert result.parsed is True
+    assert result.count == 2
+
+
+def test_scope_hipmemcpy_calls_is_a_parsed_zero_when_only_launches_are_inside():
+    hip_csv = _ROCPROF_HEADER + (
+        '"HIP_RUNTIME_API","hipMemcpy",1,1,2,500,600\n'
+        '"HIP_RUNTIME_API","hipLaunchKernel",1,1,5,1500,1600\n'
+        '"HIP_RUNTIME_API","hipGetLastError",1,1,6,1700,1750\n'
+    )
+    result = _scope_hipmemcpy_calls(hip_csv, _MARKER_CSV)
+    assert result.parsed is True
+    assert result.count == 0
+
+
+def test_scope_hipmemcpy_calls_reports_not_parsed_rather_than_a_false_zero():
+    # No range named rosenna_timed, an empty HIP trace, or unrelated columns:
+    # none of these is a passing zero.
+    hip_csv = _ROCPROF_HEADER + '"HIP_RUNTIME_API","hipLaunchKernel",1,1,5,1500,1600\n'
+    assert _scope_hipmemcpy_calls(hip_csv, _ROCPROF_HEADER).parsed is False
+    assert _scope_hipmemcpy_calls(_ROCPROF_HEADER, _MARKER_CSV).parsed is False
+    assert _scope_hipmemcpy_calls("foo,bar\n1,2\n", _MARKER_CSV).parsed is False
+    assert _scope_hipmemcpy_calls("", "").parsed is False

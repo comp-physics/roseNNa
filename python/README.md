@@ -455,9 +455,17 @@ get there, none of them in the generated arithmetic:
   The gate hands the archive to the linker as `-L`/`-l`, which both
   compilers take.
 
-What the HIP run does not yet show is the transfer count inside the timed
-call: that check is `nsys`/nvtx-scoped and CUDA-only, and a `rocprof`
-equivalent is a follow-up. A compile-only `nvcc` job also exists in CI
+The HIP run carries the same transfer evidence as the CUDA one. `nsys` has
+no ROCm counterpart with a capture range, so the gate rebuilds the
+`infer_batch` harness with a roctx range around the timed call, runs it
+under `rocprofv3 --hip-trace --marker-trace -f csv`, and cuts the HIP API
+trace to the range's timestamps: **zero `hipMemcpy` inside the timed call**,
+embedded and file-loaded, while the driver's own setup copies and `init`'s
+weight upload are visible in the same trace outside it. That is the
+property a solver needs: `init` is the plan step and the only routine that
+transfers, so nothing in a time-step loop that calls `infer` or
+`infer_batch` moves data -- copies happen at I/O or halo exchange, where
+the solver makes them itself. A compile-only `nvcc` job also exists in CI
 (`.github/workflows/CI.yml`, `nvcc_compile`). See
 `python/examples/microfd_closure/` for a worked example of wiring a
 generated model into a solver.

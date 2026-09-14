@@ -214,6 +214,12 @@ def _validate_lstm(graph: Graph, node) -> None:
     would run and return confident nonsense.
     """
     where = f"node '{node.name}'"
+    if not node.outputs or not node.outputs[0]:
+        # The plan's op is keyed on Y (the full sequence); Y_h and Y_c are
+        # extra results copied out beside it, not stand-ins for it.
+        raise UnsupportedModel(
+            f"{where}: LSTM must produce its Y output (the sequence); a graph that asks "
+            f"only for Y_h or Y_c is not supported")
     direction = node.attrs.get("direction", "forward")
     if direction != "forward":
         raise UnsupportedModel(f"{where}: direction='{direction}'; only 'forward' is supported")

@@ -1,4 +1,6 @@
 """Fixtures for golden file models and for inline models built with onnx.helper."""
+import os
+import platform
 import re
 import subprocess
 from pathlib import Path
@@ -28,6 +30,29 @@ def _source_diagnostics(stderr: str):
     for line in stderr.splitlines():
         (dropped if _DRIVER_NOTICE.match(line) else kept).append(line)
     return "\n".join(kept).strip(), "\n".join(dropped).strip()
+
+
+def skip_unless_libgomp_enforces_mandatory(cc: str, tmp_path: Path) -> None:
+    """Skip when this libgomp runs a target region to completion under MANDATORY.
+
+    A libgomp built with no offload plugins (a plain distro gcc < 13, say)
+    ignores OMP_TARGET_OFFLOAD=MANDATORY and falls back to the host, so a test
+    whose evidence is "the program was refused" cannot run there. Skip, naming
+    the toolchain, rather than fail; the caller keeps a platform-independent
+    assertion (the object references GOMP_target_ext) as its primary evidence.
+    """
+    probe = tmp_path / "mandatory_probe.c"
+    probe.write_text("int main(void) {\n    int v = 0;\n"
+                     "    #pragma omp target map(tofrom: v)\n    v = 1;\n    return v ? 0 : 3;\n}\n")
+    build = subprocess.run([cc, "-fopenmp", str(probe), "-o", str(tmp_path / "mandatory_probe")],
+                           capture_output=True, text=True)
+    assert build.returncode == 0, build.stderr
+    run = subprocess.run([str(tmp_path / "mandatory_probe")], capture_output=True, text=True,
+                         env={**os.environ, "OMP_TARGET_OFFLOAD": "MANDATORY"})
+    if run.returncode == 0:
+        version = subprocess.run([cc, "--version"], capture_output=True, text=True).stdout.splitlines()[0]
+        pytest.skip(f"libgomp did not enforce OMP_TARGET_OFFLOAD=MANDATORY for a C target region "
+                    f"on {platform.platform()} with {version}")
 
 
 def _assert_warning_free(lang: str, stderr: str) -> None:

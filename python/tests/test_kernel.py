@@ -10,6 +10,7 @@ from rosenna.plan import build_plan
 from rosenna.emit_kernel import emit_kernel
 from rosenna.rt_header import rt_header
 from rosenna.emit_c import emit_c, emit_c_recipe, CONSTANT_MEMORY_LIMIT
+from tests.conftest import skip_unless_libgomp_enforces_mandatory
 from tests.conftest import _assert_warning_free, save_model
 
 
@@ -308,9 +309,12 @@ def test_omp_backend_builds_an_embedded_plan_too(tmp_path, golden_model):
 
 
 def test_omp_target_loop_in_infer_batch_is_real(tmp_path, golden_model):
-    # As in test_device_c: a host-only libgomp refuses a target region under
-    # OMP_TARGET_OFFLOAD=MANDATORY, so the library's own loop must fail there
-    # -- proof the pragma is a real target construct and not ignored.
+    # Two-tier evidence, as in test_device_c (ruling R31). Primary: the
+    # compiled library object references GOMP_target_ext, which a real
+    # `#pragma omp target` cannot be compiled without. Corroborating: a
+    # host-only libgomp that enforces OMP_TARGET_OFFLOAD=MANDATORY refuses the
+    # library's own loop; where libgomp ignores MANDATORY (a plain gcc < 13
+    # with no offload plugins) that half is skipped, not failed.
     from tests.test_device_c import _omp_cc
     name = "gemm_small"; plan = build_plan(load_graph(golden_model(name)), dtype="f64", embed=True)
     source, header = emit_c(plan)
@@ -320,7 +324,17 @@ def test_omp_target_loop_in_infer_batch_is_real(tmp_path, golden_model):
 int main(void) {{ double x[2] = {{0.5, 0.5}}, y[3]; return {name}_infer_batch(1, x, y, 0); }}
 """)
     cc = _omp_cc()
-    r = subprocess.run([cc, "-O2", "-std=c11", "-fopenmp", "host.c", f"{name}.c", "-lm", "-o", "host"], cwd=tmp_path, capture_output=True, text=True)
+    flags = ["-O2", "-std=c11", "-fopenmp"]
+    r = subprocess.run([cc, *flags, "-c", f"{name}.c", "-o", f"{name}.o"], cwd=tmp_path,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    nm = shutil.which("nm") or pytest.skip("no nm")
+    nm_out = subprocess.run([nm, "-u", f"{name}.o"], cwd=tmp_path, capture_output=True, text=True).stdout
+    assert "GOMP_target_ext" in nm_out, nm_out
+
+    skip_unless_libgomp_enforces_mandatory(cc, tmp_path)
+    r = subprocess.run([cc, *flags, "host.c", f"{name}.o", "-lm", "-o", "host"], cwd=tmp_path,
+                       capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     r = subprocess.run(["./host"], cwd=tmp_path, capture_output=True, text=True,
                        env={**os.environ, "OMP_TARGET_OFFLOAD": "MANDATORY"})
