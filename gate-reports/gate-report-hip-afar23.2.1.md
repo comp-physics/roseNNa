@@ -117,11 +117,11 @@ stdout:
 5.09260268684951223e-01 
 5.08417446220905567e-01 
 5.03998585398111043e-01 
-TIMING 3.108025
+TIMING 3.117800
 
 ```
 matches the onnxruntime reference (rtol=1e-05, atol=1e-06)
-3.108 ns per point
+3.118 ns per point
 
 ### fortran harness: per-point infer via target teams distribute parallel do
 
@@ -129,7 +129,7 @@ matches the onnxruntime reference (rtol=1e-05, atol=1e-06)
 **compile fortran per-point harness** (in gate-hip-afar/embedded)
 
 ```
-$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/amdflang -O2 -fopenmp --offload-arch=gfx90a gate_harness2.f90 libgemm_big_f.a -o gate_harness2
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/amdflang -O2 -fopenmp --offload-arch=gfx90a gate_harness2.F90 libgemm_big_f.a -o gate_harness2
 ```
 exit status: 0
 stderr:
@@ -155,11 +155,11 @@ stdout:
   5.0926026868495122E-01
   5.0841744622090557E-01
   5.0399858539811104E-01
-TIMING   4.6791049999999998E+00
+TIMING   4.3886992500000002E+00
 
 ```
 matches the onnxruntime reference (rtol=1e-05, atol=1e-06)
-4.679 ns per point
+4.389 ns per point
 
 ### infer_batch harness: device-resident data
 
@@ -172,36 +172,36 @@ $ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.
 exit status: 0
 stderr:
 ```
-gate_harness3.cu:65:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   65 |     hipDeviceSynchronize();
+gate_harness3.cu:62:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   62 |     hipDeviceSynchronize();
       |     ^~~~~~~~~~~~~~~~~~~~~~
-gate_harness3.cu:69:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |     ^~~~~~~~~~~
-gate_harness3.cu:69:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |                  ^~~~~~~~~~~
-gate_harness3.cu:69:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |                               ^~~~~~~~~~~~
-gate_harness3.cu:69:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |                                             ^~~~~~~~~~~~
 5 warnings generated when compiling for gfx90a.
-gate_harness3.cu:65:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   65 |     hipDeviceSynchronize();
+gate_harness3.cu:62:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   62 |     hipDeviceSynchronize();
       |     ^~~~~~~~~~~~~~~~~~~~~~
-gate_harness3.cu:69:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |     ^~~~~~~~~~~
-gate_harness3.cu:69:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |                  ^~~~~~~~~~~
-gate_harness3.cu:69:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |                               ^~~~~~~~~~~~
-gate_harness3.cu:69:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |                                             ^~~~~~~~~~~~
 5 warnings generated when compiling for host.
 
@@ -223,13 +223,13 @@ stdout:
 5.09260268684951223e-01 
 5.08417446220905567e-01 
 5.03998585398111043e-01 
-TIMING 4.049408
+TIMING 3.991087
 
 ```
 matches the onnxruntime reference (rtol=1e-05, atol=1e-06)
-4.049 ns per point
+3.991 ns per point
 
-#### rocprof check: hipMemcpy count inside the roctx-scoped infer_batch call (ruling R15)
+#### rocprofv3 check: transfers inside the marker-scoped 4-step loop, every harness (ruling R15)
 
 
 **probe for <rocprofiler-sdk-roctx/roctx.h>** (in gate-hip-afar/embedded)
@@ -239,53 +239,17 @@ $ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.
 ```
 exit status: 0
 
-**compile roctx-bracketed infer_batch harness** (in gate-hip-afar/embedded)
+**compile marker-bracketed c per-point harness** (in gate-hip-afar/embedded)
 
 ```
-$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/hipcc -DROSENNA_GATE_MARKERS=1 gate_harness3.cu -Lhip_lib -lgemm_big -lrocprofiler-sdk-roctx -o gate_harness3_roctx
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/amdclang -O2 -fopenmp --offload-arch=gfx90a -DROSENNA_GATE_MARKERS=1 gate_harness1.c -lm -L/work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/lib -I/work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/include -lrocprofiler-sdk-roctx -o gate_harness1_prof
 ```
 exit status: 0
-stderr:
-```
-gate_harness3.cu:65:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   65 |     hipDeviceSynchronize();
-      |     ^~~~~~~~~~~~~~~~~~~~~~
-gate_harness3.cu:69:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |     ^~~~~~~~~~~
-gate_harness3.cu:69:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |                  ^~~~~~~~~~~
-gate_harness3.cu:69:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |                               ^~~~~~~~~~~~
-gate_harness3.cu:69:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |                                             ^~~~~~~~~~~~
-5 warnings generated when compiling for gfx90a.
-gate_harness3.cu:65:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   65 |     hipDeviceSynchronize();
-      |     ^~~~~~~~~~~~~~~~~~~~~~
-gate_harness3.cu:69:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |     ^~~~~~~~~~~
-gate_harness3.cu:69:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |                  ^~~~~~~~~~~
-gate_harness3.cu:69:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |                               ^~~~~~~~~~~~
-gate_harness3.cu:69:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |                                             ^~~~~~~~~~~~
-5 warnings generated when compiling for host.
+
+**rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv (c per-point)** (in gate-hip-afar/embedded)
 
 ```
-
-**rocprofv3 --hip-trace --marker-trace -f csv** (in gate-hip-afar/embedded)
-
-```
-$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/rocprofv3 --hip-trace --marker-trace -f csv -d /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof -o prof -- ./gate_harness3_roctx
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv -d /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness1_prof -o prof -- ./gate_harness1_prof
 ```
 exit status: 0
 stdout:
@@ -298,26 +262,152 @@ stdout:
 5.09260268684951223e-01 
 5.08417446220905567e-01 
 5.03998585398111043e-01 
-TIMING 4.748946
+TIMING 2.026796
 
 ```
 stderr:
 ```
-W20260914 18:29:04.811827 140542279145920 simple_timer.cpp:55] [rocprofv3] tool initialization ::     0.002735 sec
-W20260914 18:29:04.814598 140542279145920 tool.cpp:2693] HIP (compiler) version 7.2.0 initialized (instance=0)
-W20260914 18:29:04.814685 140542279145920 simple_timer.cpp:55] [rocprofv3] './gate_harness3_roctx' ::     0.000000 sec
-W20260914 18:29:04.815863 140542279145920 tool.cpp:2693] HIP (runtime) version 7.2.0 initialized (instance=0)
-W20260914 18:29:04.856001 140542279145920 tool.cpp:2693] HSA version 8.20.0 initialized (instance=0)
-W20260914 18:29:04.945172 140542279145920 tool.cpp:2693] MARKER (ROCTx) version 1.2.3 initialized (instance=0)
-W20260914 18:29:04.949859 140542279145920 simple_timer.cpp:55] [rocprofv3] './gate_harness3_roctx' ::     0.135174 sec
-E20260914 18:29:04.985285 140542279145920 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof/prof_hip_api_trace.csv
-E20260914 18:29:05.007173 140542279145920 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof/prof_marker_api_trace.csv
-E20260914 18:29:05.011072 140542279145920 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof/prof_agent_info.csv
-W20260914 18:29:05.015614 140542279145920 simple_timer.cpp:55] [rocprofv3] output generation ::     0.063641 sec
-W20260914 18:29:05.015691 140542279145920 simple_timer.cpp:55] [rocprofv3] tool finalization ::     0.063782 sec
+W20260914 18:49:03.729322 140227785853376 simple_timer.cpp:55] [rocprofv3] tool initialization ::     0.004049 sec
+W20260914 18:49:03.782225 140227785853376 tool.cpp:2693] HSA version 8.20.0 initialized (instance=0)
+W20260914 18:49:03.800850 140227785853376 simple_timer.cpp:55] [rocprofv3] './gate_harness1_prof' ::     0.000000 sec
+W20260914 18:49:03.865925 140227785853376 tool.cpp:2693] MARKER (ROCTx) version 1.2.3 initialized (instance=0)
+W20260914 18:49:03.882189 140227785853376 simple_timer.cpp:55] [rocprofv3] './gate_harness1_prof' ::     0.081339 sec
+E20260914 18:49:03.906540 140227785853376 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness1_prof/prof_memory_copy_trace.csv
+E20260914 18:49:03.924291 140227785853376 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness1_prof/prof_marker_api_trace.csv
+E20260914 18:49:03.927697 140227785853376 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness1_prof/prof_agent_info.csv
+W20260914 18:49:03.931128 140227785853376 simple_timer.cpp:55] [rocprofv3] output generation ::     0.046586 sec
+W20260914 18:49:03.931184 140227785853376 simple_timer.cpp:55] [rocprofv3] tool finalization ::     0.046823 sec
 
 ```
-hipMemcpy* calls inside the roctx-scoped infer_batch call, from hip_api_trace cut to marker_api_trace: 0
+c per-point: hipMemcpy* API calls plus MEMORY_COPY operations inside the roctx-scoped 4-step loop: 0
+
+**compile marker-bracketed fortran per-point harness** (in gate-hip-afar/embedded)
+
+```
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/amdflang -O2 -fopenmp --offload-arch=gfx90a -DROSENNA_GATE_MARKERS=1 gate_harness2.F90 libgemm_big_f.a -L/work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/lib -I/work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/include -lrocprofiler-sdk-roctx -o gate_harness2_prof
+```
+exit status: 0
+stderr:
+```
+ld.lld: warning: <unknown>:0:0: in function __keep_alive void (): local memory global used by non-kernel function
+
+
+```
+
+**rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv (fortran per-point)** (in gate-hip-afar/embedded)
+
+```
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv -d /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness2_prof -o prof -- ./gate_harness2_prof
+```
+exit status: 0
+stdout:
+```
+  5.0699097988606456E-01
+  5.0709649319119932E-01
+  5.0907971274422026E-01
+  5.0763811665286485E-01
+  5.0533406255129398E-01
+  5.0926026868495122E-01
+  5.0841744622090557E-01
+  5.0399858539811104E-01
+TIMING   4.5770320000000000E+00
+
+```
+stderr:
+```
+W20260914 18:49:32.976246 140508978219456 simple_timer.cpp:55] [rocprofv3] tool initialization ::     0.003968 sec
+W20260914 18:49:33.049459 140508978219456 tool.cpp:2693] HSA version 8.20.0 initialized (instance=0)
+W20260914 18:49:33.068030 140508978219456 simple_timer.cpp:55] [rocprofv3] './gate_harness2_prof' ::     0.000000 sec
+W20260914 18:49:33.114637 140508978219456 tool.cpp:2693] MARKER (ROCTx) version 1.2.3 initialized (instance=0)
+E20260914 18:49:33.189916 140508978219456 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness2_prof/prof_memory_copy_trace.csv
+E20260914 18:49:33.207321 140508978219456 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness2_prof/prof_marker_api_trace.csv
+E20260914 18:49:33.211642 140508978219456 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness2_prof/prof_agent_info.csv
+W20260914 18:49:33.215269 140508978219456 simple_timer.cpp:55] [rocprofv3] output generation ::     0.045435 sec
+W20260914 18:49:33.215329 140508978219456 simple_timer.cpp:55] [rocprofv3] tool finalization ::     0.045669 sec
+
+```
+fortran per-point: hipMemcpy* API calls plus MEMORY_COPY operations inside the roctx-scoped 4-step loop: 0
+
+**compile marker-bracketed hip infer_batch harness** (in gate-hip-afar/embedded)
+
+```
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/hipcc -DROSENNA_GATE_MARKERS=1 gate_harness3.cu -Lhip_lib -lgemm_big -L/work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/lib -I/work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/include -lrocprofiler-sdk-roctx -o gate_harness3_prof
+```
+exit status: 0
+stderr:
+```
+gate_harness3.cu:62:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   62 |     hipDeviceSynchronize();
+      |     ^~~~~~~~~~~~~~~~~~~~~~
+gate_harness3.cu:70:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |     ^~~~~~~~~~~
+gate_harness3.cu:70:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |                  ^~~~~~~~~~~
+gate_harness3.cu:70:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |                               ^~~~~~~~~~~~
+gate_harness3.cu:70:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |                                             ^~~~~~~~~~~~
+5 warnings generated when compiling for gfx90a.
+gate_harness3.cu:62:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   62 |     hipDeviceSynchronize();
+      |     ^~~~~~~~~~~~~~~~~~~~~~
+gate_harness3.cu:70:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |     ^~~~~~~~~~~
+gate_harness3.cu:70:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |                  ^~~~~~~~~~~
+gate_harness3.cu:70:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |                               ^~~~~~~~~~~~
+gate_harness3.cu:70:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |                                             ^~~~~~~~~~~~
+5 warnings generated when compiling for host.
+
+```
+
+**rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv (hip infer_batch)** (in gate-hip-afar/embedded)
+
+```
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv -d /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness3_prof -o prof -- ./gate_harness3_prof
+```
+exit status: 0
+stdout:
+```
+5.06990979886064563e-01 
+5.07096493191199316e-01 
+5.09079712744220259e-01 
+5.07638116652864846e-01 
+5.05334062551293983e-01 
+5.09260268684951223e-01 
+5.08417446220905567e-01 
+5.03998585398111043e-01 
+TIMING 4.546332
+
+```
+stderr:
+```
+W20260914 18:49:35.681255 140472742382016 simple_timer.cpp:55] [rocprofv3] tool initialization ::     0.004997 sec
+W20260914 18:49:35.683250 140472742382016 tool.cpp:2693] HIP (compiler) version 7.2.0 initialized (instance=0)
+W20260914 18:49:35.683331 140472742382016 simple_timer.cpp:55] [rocprofv3] './gate_harness3_prof' ::     0.000000 sec
+W20260914 18:49:35.684406 140472742382016 tool.cpp:2693] HIP (runtime) version 7.2.0 initialized (instance=0)
+W20260914 18:49:35.722258 140472742382016 tool.cpp:2693] HSA version 8.20.0 initialized (instance=0)
+W20260914 18:49:35.803864 140472742382016 tool.cpp:2693] MARKER (ROCTx) version 1.2.3 initialized (instance=0)
+W20260914 18:49:35.822094 140472742382016 simple_timer.cpp:55] [rocprofv3] './gate_harness3_prof' ::     0.138763 sec
+E20260914 18:49:35.851882 140472742382016 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness3_prof/prof_hip_api_trace.csv
+E20260914 18:49:35.884449 140472742382016 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness3_prof/prof_memory_copy_trace.csv
+E20260914 18:49:35.901833 140472742382016 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness3_prof/prof_marker_api_trace.csv
+E20260914 18:49:35.905189 140472742382016 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/embedded/gate_rocprof_gate_harness3_prof/prof_agent_info.csv
+W20260914 18:49:35.911456 140472742382016 simple_timer.cpp:55] [rocprofv3] output generation ::     0.085674 sec
+W20260914 18:49:35.911515 140472742382016 simple_timer.cpp:55] [rocprofv3] tool finalization ::     0.085865 sec
+
+```
+hip infer_batch: hipMemcpy* API calls plus MEMORY_COPY operations inside the roctx-scoped 4-step loop: 0
 
 ## gemm_big: file-loaded
 
@@ -401,11 +491,11 @@ stdout:
 5.09260268684951223e-01 
 5.08417446220905567e-01 
 5.03998585398111043e-01 
-TIMING 5.787134
+TIMING 5.824268
 
 ```
 matches the onnxruntime reference (rtol=1e-05, atol=1e-06)
-5.787 ns per point
+5.824 ns per point
 
 ### fortran harness: per-point infer via target teams distribute parallel do
 
@@ -413,7 +503,7 @@ matches the onnxruntime reference (rtol=1e-05, atol=1e-06)
 **compile fortran per-point harness** (in gate-hip-afar/file_loaded)
 
 ```
-$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/amdflang -O2 -fopenmp --offload-arch=gfx90a gate_harness2.f90 libgemm_big_f.a -o gate_harness2
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/amdflang -O2 -fopenmp --offload-arch=gfx90a gate_harness2.F90 libgemm_big_f.a -o gate_harness2
 ```
 exit status: 0
 stderr:
@@ -439,11 +529,11 @@ stdout:
   5.0926026868495122E-01
   5.0841744622090557E-01
   5.0399858539811104E-01
-TIMING   4.6752870000000000E+00
+TIMING   4.3751034999999998E+00
 
 ```
 matches the onnxruntime reference (rtol=1e-05, atol=1e-06)
-4.675 ns per point
+4.375 ns per point
 
 ### infer_batch harness: device-resident data
 
@@ -456,36 +546,36 @@ $ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.
 exit status: 0
 stderr:
 ```
-gate_harness3.cu:65:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   65 |     hipDeviceSynchronize();
+gate_harness3.cu:62:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   62 |     hipDeviceSynchronize();
       |     ^~~~~~~~~~~~~~~~~~~~~~
-gate_harness3.cu:69:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |     ^~~~~~~~~~~
-gate_harness3.cu:69:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |                  ^~~~~~~~~~~
-gate_harness3.cu:69:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |                               ^~~~~~~~~~~~
-gate_harness3.cu:69:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |                                             ^~~~~~~~~~~~
 5 warnings generated when compiling for gfx90a.
-gate_harness3.cu:65:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   65 |     hipDeviceSynchronize();
+gate_harness3.cu:62:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   62 |     hipDeviceSynchronize();
       |     ^~~~~~~~~~~~~~~~~~~~~~
-gate_harness3.cu:69:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |     ^~~~~~~~~~~
-gate_harness3.cu:69:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |                  ^~~~~~~~~~~
-gate_harness3.cu:69:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |                               ^~~~~~~~~~~~
-gate_harness3.cu:69:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+gate_harness3.cu:70:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
       |                                             ^~~~~~~~~~~~
 5 warnings generated when compiling for host.
 
@@ -507,13 +597,13 @@ stdout:
 5.09260268684951223e-01 
 5.08417446220905567e-01 
 5.03998585398111043e-01 
-TIMING 6.764579
+TIMING 6.513516
 
 ```
 matches the onnxruntime reference (rtol=1e-05, atol=1e-06)
-6.765 ns per point
+6.514 ns per point
 
-#### rocprof check: hipMemcpy count inside the roctx-scoped infer_batch call (ruling R15)
+#### rocprofv3 check: transfers inside the marker-scoped 4-step loop, every harness (ruling R15)
 
 
 **probe for <rocprofiler-sdk-roctx/roctx.h>** (in gate-hip-afar/file_loaded)
@@ -523,53 +613,23 @@ $ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.
 ```
 exit status: 0
 
-**compile roctx-bracketed infer_batch harness** (in gate-hip-afar/file_loaded)
+**compile marker-bracketed c per-point harness** (in gate-hip-afar/file_loaded)
 
 ```
-$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/hipcc -DROSENNA_GATE_MARKERS=1 gate_harness3.cu -Lhip_lib -lgemm_big -lrocprofiler-sdk-roctx -o gate_harness3_roctx
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/amdclang -O2 -fopenmp --offload-arch=gfx90a -DROSENNA_GATE_MARKERS=1 gate_harness1.c libgemm_big.a -lm -L/work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/lib -I/work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/include -lrocprofiler-sdk-roctx -o gate_harness1_prof
 ```
 exit status: 0
 stderr:
 ```
-gate_harness3.cu:65:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   65 |     hipDeviceSynchronize();
-      |     ^~~~~~~~~~~~~~~~~~~~~~
-gate_harness3.cu:69:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |     ^~~~~~~~~~~
-gate_harness3.cu:69:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |                  ^~~~~~~~~~~
-gate_harness3.cu:69:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |                               ^~~~~~~~~~~~
-gate_harness3.cu:69:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |                                             ^~~~~~~~~~~~
-5 warnings generated when compiling for gfx90a.
-gate_harness3.cu:65:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   65 |     hipDeviceSynchronize();
-      |     ^~~~~~~~~~~~~~~~~~~~~~
-gate_harness3.cu:69:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |     ^~~~~~~~~~~
-gate_harness3.cu:69:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |                  ^~~~~~~~~~~
-gate_harness3.cu:69:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |                               ^~~~~~~~~~~~
-gate_harness3.cu:69:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
-   69 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
-      |                                             ^~~~~~~~~~~~
-5 warnings generated when compiling for host.
+ld.lld: warning: <unknown>:0:0: in function __keep_alive void (): local memory global used by non-kernel function
+
 
 ```
 
-**rocprofv3 --hip-trace --marker-trace -f csv** (in gate-hip-afar/file_loaded)
+**rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv (c per-point)** (in gate-hip-afar/file_loaded)
 
 ```
-$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/rocprofv3 --hip-trace --marker-trace -f csv -d /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof -o prof -- ./gate_harness3_roctx
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv -d /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness1_prof -o prof -- ./gate_harness1_prof
 ```
 exit status: 0
 stdout:
@@ -582,26 +642,152 @@ stdout:
 5.09260268684951223e-01 
 5.08417446220905567e-01 
 5.03998585398111043e-01 
-TIMING 7.532587
+TIMING 3.804266
 
 ```
 stderr:
 ```
-W20260914 18:29:53.650217 140609835399616 simple_timer.cpp:55] [rocprofv3] tool initialization ::     0.002760 sec
-W20260914 18:29:53.652074 140609835399616 tool.cpp:2693] HIP (compiler) version 7.2.0 initialized (instance=0)
-W20260914 18:29:53.652202 140609835399616 simple_timer.cpp:55] [rocprofv3] './gate_harness3_roctx' ::     0.000000 sec
-W20260914 18:29:53.653632 140609835399616 tool.cpp:2693] HIP (runtime) version 7.2.0 initialized (instance=0)
-W20260914 18:29:53.695199 140609835399616 tool.cpp:2693] HSA version 8.20.0 initialized (instance=0)
-W20260914 18:29:53.784754 140609835399616 tool.cpp:2693] MARKER (ROCTx) version 1.2.3 initialized (instance=0)
-W20260914 18:29:53.792123 140609835399616 simple_timer.cpp:55] [rocprofv3] './gate_harness3_roctx' ::     0.139921 sec
-E20260914 18:29:53.823831 140609835399616 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof/prof_hip_api_trace.csv
-E20260914 18:29:53.845970 140609835399616 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof/prof_marker_api_trace.csv
-E20260914 18:29:53.849494 140609835399616 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof/prof_agent_info.csv
-W20260914 18:29:53.853504 140609835399616 simple_timer.cpp:55] [rocprofv3] output generation ::     0.058800 sec
-W20260914 18:29:53.853620 140609835399616 simple_timer.cpp:55] [rocprofv3] tool finalization ::     0.059012 sec
+W20260914 18:50:24.849485 139978296252864 simple_timer.cpp:55] [rocprofv3] tool initialization ::     0.003800 sec
+W20260914 18:50:24.900050 139978296252864 tool.cpp:2693] HSA version 8.20.0 initialized (instance=0)
+W20260914 18:50:24.919155 139978296252864 simple_timer.cpp:55] [rocprofv3] './gate_harness1_prof' ::     0.000000 sec
+W20260914 18:50:24.967140 139978296252864 tool.cpp:2693] MARKER (ROCTx) version 1.2.3 initialized (instance=0)
+W20260914 18:50:24.989294 139978296252864 simple_timer.cpp:55] [rocprofv3] './gate_harness1_prof' ::     0.070139 sec
+E20260914 18:50:25.014390 139978296252864 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness1_prof/prof_memory_copy_trace.csv
+E20260914 18:50:25.031902 139978296252864 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness1_prof/prof_marker_api_trace.csv
+E20260914 18:50:25.035279 139978296252864 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness1_prof/prof_agent_info.csv
+W20260914 18:50:25.038784 139978296252864 simple_timer.cpp:55] [rocprofv3] output generation ::     0.046761 sec
+W20260914 18:50:25.038845 139978296252864 simple_timer.cpp:55] [rocprofv3] tool finalization ::     0.047033 sec
 
 ```
-hipMemcpy* calls inside the roctx-scoped infer_batch call, from hip_api_trace cut to marker_api_trace: 0
+c per-point: hipMemcpy* API calls plus MEMORY_COPY operations inside the roctx-scoped 4-step loop: 0
+
+**compile marker-bracketed fortran per-point harness** (in gate-hip-afar/file_loaded)
+
+```
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/amdflang -O2 -fopenmp --offload-arch=gfx90a -DROSENNA_GATE_MARKERS=1 gate_harness2.F90 libgemm_big_f.a -L/work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/lib -I/work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/include -lrocprofiler-sdk-roctx -o gate_harness2_prof
+```
+exit status: 0
+stderr:
+```
+ld.lld: warning: <unknown>:0:0: in function __keep_alive void (): local memory global used by non-kernel function
+
+
+```
+
+**rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv (fortran per-point)** (in gate-hip-afar/file_loaded)
+
+```
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv -d /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness2_prof -o prof -- ./gate_harness2_prof
+```
+exit status: 0
+stdout:
+```
+  5.0699097988606456E-01
+  5.0709649319119932E-01
+  5.0907971274422026E-01
+  5.0763811665286485E-01
+  5.0533406255129398E-01
+  5.0926026868495122E-01
+  5.0841744622090557E-01
+  5.0399858539811104E-01
+TIMING   4.3886667499999996E+00
+
+```
+stderr:
+```
+W20260914 18:50:52.471899 139875084802496 simple_timer.cpp:55] [rocprofv3] tool initialization ::     0.003950 sec
+W20260914 18:50:52.522429 139875084802496 tool.cpp:2693] HSA version 8.20.0 initialized (instance=0)
+W20260914 18:50:52.540120 139875084802496 simple_timer.cpp:55] [rocprofv3] './gate_harness2_prof' ::     0.000000 sec
+W20260914 18:50:52.588741 139875084802496 tool.cpp:2693] MARKER (ROCTx) version 1.2.3 initialized (instance=0)
+E20260914 18:50:52.662956 139875084802496 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness2_prof/prof_memory_copy_trace.csv
+E20260914 18:50:52.680791 139875084802496 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness2_prof/prof_marker_api_trace.csv
+E20260914 18:50:52.685233 139875084802496 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness2_prof/prof_agent_info.csv
+W20260914 18:50:52.689442 139875084802496 simple_timer.cpp:55] [rocprofv3] output generation ::     0.047139 sec
+W20260914 18:50:52.689497 139875084802496 simple_timer.cpp:55] [rocprofv3] tool finalization ::     0.047491 sec
+
+```
+fortran per-point: hipMemcpy* API calls plus MEMORY_COPY operations inside the roctx-scoped 4-step loop: 0
+
+**compile marker-bracketed hip infer_batch harness** (in gate-hip-afar/file_loaded)
+
+```
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/hipcc -DROSENNA_GATE_MARKERS=1 gate_harness3.cu -Lhip_lib -lgemm_big -L/work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/lib -I/work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/include -lrocprofiler-sdk-roctx -o gate_harness3_prof
+```
+exit status: 0
+stderr:
+```
+gate_harness3.cu:62:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   62 |     hipDeviceSynchronize();
+      |     ^~~~~~~~~~~~~~~~~~~~~~
+gate_harness3.cu:70:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |     ^~~~~~~~~~~
+gate_harness3.cu:70:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |                  ^~~~~~~~~~~
+gate_harness3.cu:70:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |                               ^~~~~~~~~~~~
+gate_harness3.cu:70:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |                                             ^~~~~~~~~~~~
+5 warnings generated when compiling for gfx90a.
+gate_harness3.cu:62:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   62 |     hipDeviceSynchronize();
+      |     ^~~~~~~~~~~~~~~~~~~~~~
+gate_harness3.cu:70:5: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |     ^~~~~~~~~~~
+gate_harness3.cu:70:18: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |                  ^~~~~~~~~~~
+gate_harness3.cu:70:31: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |                               ^~~~~~~~~~~~
+gate_harness3.cu:70:45: warning: ignoring return value of type 'hipError_t' declared with 'nodiscard' attribute [-Wunused-value]
+   70 |     hipFree(dx); hipFree(dy); hipFree(dxt); hipFree(dyt);
+      |                                             ^~~~~~~~~~~~
+5 warnings generated when compiling for host.
+
+```
+
+**rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv (hip infer_batch)** (in gate-hip-afar/file_loaded)
+
+```
+$ /work1/spencerbryngelson/sbryngelson/software/therock-afar-23.2.1-gfx90a-7.13.0-7357b5084b/bin/rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv -d /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness3_prof -o prof -- ./gate_harness3_prof
+```
+exit status: 0
+stdout:
+```
+5.06990979886064563e-01 
+5.07096493191199316e-01 
+5.09079712744220259e-01 
+5.07638116652864846e-01 
+5.05334062551293983e-01 
+5.09260268684951223e-01 
+5.08417446220905567e-01 
+5.03998585398111043e-01 
+TIMING 7.551397
+
+```
+stderr:
+```
+W20260914 18:50:54.893868 139754316601792 simple_timer.cpp:55] [rocprofv3] tool initialization ::     0.004541 sec
+W20260914 18:50:54.896050 139754316601792 tool.cpp:2693] HIP (compiler) version 7.2.0 initialized (instance=0)
+W20260914 18:50:54.896139 139754316601792 simple_timer.cpp:55] [rocprofv3] './gate_harness3_prof' ::     0.000000 sec
+W20260914 18:50:54.897376 139754316601792 tool.cpp:2693] HIP (runtime) version 7.2.0 initialized (instance=0)
+W20260914 18:50:54.942224 139754316601792 tool.cpp:2693] HSA version 8.20.0 initialized (instance=0)
+W20260914 18:50:55.028708 139754316601792 tool.cpp:2693] MARKER (ROCTx) version 1.2.3 initialized (instance=0)
+W20260914 18:50:55.058906 139754316601792 simple_timer.cpp:55] [rocprofv3] './gate_harness3_prof' ::     0.162767 sec
+E20260914 18:50:55.087826 139754316601792 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness3_prof/prof_hip_api_trace.csv
+E20260914 18:50:55.137775 139754316601792 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness3_prof/prof_memory_copy_trace.csv
+E20260914 18:50:55.153227 139754316601792 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness3_prof/prof_marker_api_trace.csv
+E20260914 18:50:55.156646 139754316601792 output_stream.cpp:111] Opened result file: /work1/spencerbryngelson/sbryngelson/rosenna/gate-hip-afar/file_loaded/gate_rocprof_gate_harness3_prof/prof_agent_info.csv
+W20260914 18:50:55.162279 139754316601792 simple_timer.cpp:55] [rocprofv3] output generation ::     0.099238 sec
+W20260914 18:50:55.162337 139754316601792 simple_timer.cpp:55] [rocprofv3] tool finalization ::     0.099414 sec
+
+```
+hip infer_batch: hipMemcpy* API calls plus MEMORY_COPY operations inside the roctx-scoped 4-step loop: 0
 
 ## result
 

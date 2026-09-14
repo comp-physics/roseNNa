@@ -204,6 +204,27 @@ never even looks at it beyond passing it to the launch. An embedded model's
 instantiation asserts -- so on those compilers call it from a kernel, or use
 `infer_batch`.
 
+The point of that contract is a solver's time-step loop: the weights go to
+the device once, in `init` (or, embedded, as constants in the device
+image), and a loop that calls `infer` from its own target region or
+`infer_batch` once per step moves no model data at all -- the only copies
+in the loop are the solver's own, at I/O or halo exchange. `rosenna
+gpu-gate` measures exactly that: every harness runs a 4-step loop over the
+same resident points, with a profiler range around the whole loop, and
+the count of transfers inside it must be zero. That holds for all three
+harnesses (per-point C, per-point Fortran, native `infer_batch`), embedded
+and file-loaded, on the MI210 (`rocprofv3`; see [Verify](#verify)) and,
+for the `infer_batch` driver, on the A100 (`nsys`).
+
+One thing the gate found on the way is worth knowing if your solver is
+Fortran: an `allocatable` array referenced inside a target region carries
+a descriptor, and `amdflang`'s OpenMP re-maps that descriptor on every
+region entry -- two small host-to-device copies per step for two arrays,
+in a loop whose data is fully resident. The gate's Fortran harness reaches
+its resident arrays through explicit-shape dummies instead (no descriptor,
+no per-step copy); a solver's step loop should do the same, or pass raw
+`c_ptr`s as the C path does.
+
 Host offload flags, for the per-point path and the `omp` backend:
 
 | Host compiler | Host flags (the per-point path and the `omp` backend) |
@@ -455,17 +476,22 @@ get there, none of them in the generated arithmetic:
   The gate hands the archive to the linker as `-L`/`-l`, which both
   compilers take.
 
-The HIP run carries the same transfer evidence as the CUDA one. `nsys` has
-no ROCm counterpart with a capture range, so the gate rebuilds the
-`infer_batch` harness with a roctx range around the timed call, runs it
-under `rocprofv3 --hip-trace --marker-trace -f csv`, and cuts the HIP API
-trace to the range's timestamps: **zero `hipMemcpy` inside the timed call**,
-embedded and file-loaded, while the driver's own setup copies and `init`'s
-weight upload are visible in the same trace outside it. That is the
-property a solver needs: `init` is the plan step and the only routine that
-transfers, so nothing in a time-step loop that calls `infer` or
-`infer_batch` moves data -- copies happen at I/O or halo exchange, where
-the solver makes them itself. A compile-only `nvcc` job also exists in CI
+The HIP run carries stronger transfer evidence than the CUDA one so far.
+`nsys` has no ROCm counterpart with a capture range, so the gate rebuilds
+each harness with a roctx range around its 4-step loop, runs it under
+`rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv`, and cuts
+both the HIP API trace and the memory-copy trace to the range's timestamps
+(both are needed: a small `hipMemcpy` is staged by the host and never
+appears as a copy operation, and OpenMP offload's copies go over HSA and
+never appear as a HIP API call). Result: **zero transfers inside the
+4-step loop for all three harnesses**, per-point C, per-point Fortran and
+native `infer_batch`, embedded and file-loaded, while the drivers' own
+setup copies and `init`'s weight upload are visible in the same traces
+outside the range. On CUDA the same check brackets the same loops with
+nvtx and counts `cudaMemcpy*` and `cuMemcpy*` (the driver API nvc's
+offload uses) in `nsys`'s `cuda_api_sum`; it has been run on an A100 for
+the `infer_batch` driver, and the per-point harnesses go through the same
+path but have not yet been run there. A compile-only `nvcc` job also exists in CI
 (`.github/workflows/CI.yml`, `nvcc_compile`). See
 `python/examples/microfd_closure/` for a worked example of wiring a
 generated model into a solver.

@@ -1,7 +1,7 @@
 import shutil
 import pytest
 from rosenna.cli import main
-from rosenna.gate import _scope_hipmemcpy_calls, _sum_cudamemcpy_calls
+from rosenna.gate import _scope_hip_transfers, _sum_cudamemcpy_calls
 from tests.conftest import skip_unless_libgomp_enforces_mandatory
 from tests.test_device_c import _omp_cc
 
@@ -122,16 +122,21 @@ def test_gate_fails_loudly_when_offload_is_mandatory_and_absent(tmp_path, golden
     assert "MANDATORY" in (tmp_path / "gate-report.md").read_text()
 
 
-# rocprofv3 --hip-trace --marker-trace -f csv writes one CSV per domain with
-# this header; the marker CSV names the roctx range, the HIP one every API
-# call, both with the same clock. These are the real headers ROCm 7.2 wrote.
+# rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv writes one
+# CSV per domain. The marker CSV names the roctx range, the HIP one every API
+# call, the memory-copy one every copy the runtime actually performed (which
+# is how OpenMP offload's copies, made over HSA rather than the HIP API,
+# appear) -- all on the same clock. These are the real headers ROCm 7.2 wrote.
 _ROCPROF_HEADER = ('"Domain","Function","Process_Id","Thread_Id","Correlation_Id",'
                    '"Start_Timestamp","End_Timestamp"\n')
+_COPY_HEADER = ('"Kind","Direction","Stream_Id","Source_Agent_Id","Destination_Agent_Id",'
+                '"Correlation_Id","Start_Timestamp","End_Timestamp"\n')
 _MARKER_CSV = _ROCPROF_HEADER + '"MARKER_CORE_RANGE_API","rosenna_timed",1,1,14,1000,2000\n'
 
 
-def test_scope_hipmemcpy_calls_counts_only_inside_the_timed_range():
-    # One hipMemcpy before the range (setup), two inside, one after: 2.
+def test_scope_hip_transfers_counts_api_calls_and_copies_inside_the_timed_range():
+    # One hipMemcpy and one copy before the range (setup), two API calls and
+    # one copy inside, one of each after: 3.
     hip_csv = _ROCPROF_HEADER + (
         '"HIP_RUNTIME_API","hipMemcpy",1,1,2,500,600\n'
         '"HIP_RUNTIME_API","hipMemcpy",1,1,3,1100,1200\n'
@@ -139,27 +144,58 @@ def test_scope_hipmemcpy_calls_counts_only_inside_the_timed_range():
         '"HIP_RUNTIME_API","hipLaunchKernel",1,1,5,1500,1600\n'
         '"HIP_RUNTIME_API","hipMemcpy",1,1,6,2100,2200\n'
     )
-    result = _scope_hipmemcpy_calls(hip_csv, _MARKER_CSV)
+    copy_csv = _COPY_HEADER + (
+        '"MEMORY_COPY","MEMORY_COPY_HOST_TO_DEVICE",0,"Agent 0","Agent 1",7,500,700\n'
+        '"MEMORY_COPY","MEMORY_COPY_HOST_TO_DEVICE",0,"Agent 0","Agent 1",8,1250,1260\n'
+        '"MEMORY_COPY","MEMORY_COPY_DEVICE_TO_HOST",0,"Agent 1","Agent 0",9,2100,2300\n'
+    )
+    result = _scope_hip_transfers(_MARKER_CSV, hip_csv, copy_csv)
     assert result.parsed is True
-    assert result.count == 2
+    assert result.count == 3
 
 
-def test_scope_hipmemcpy_calls_is_a_parsed_zero_when_only_launches_are_inside():
+def test_scope_hip_transfers_is_a_parsed_zero_when_only_launches_are_inside():
     hip_csv = _ROCPROF_HEADER + (
         '"HIP_RUNTIME_API","hipMemcpy",1,1,2,500,600\n'
         '"HIP_RUNTIME_API","hipLaunchKernel",1,1,5,1500,1600\n'
-        '"HIP_RUNTIME_API","hipGetLastError",1,1,6,1700,1750\n'
     )
-    result = _scope_hipmemcpy_calls(hip_csv, _MARKER_CSV)
+    copy_csv = _COPY_HEADER + '"MEMORY_COPY","MEMORY_COPY_HOST_TO_DEVICE",0,"Agent 0","Agent 1",7,500,700\n'
+    result = _scope_hip_transfers(_MARKER_CSV, hip_csv, copy_csv)
     assert result.parsed is True
     assert result.count == 0
 
 
-def test_scope_hipmemcpy_calls_reports_not_parsed_rather_than_a_false_zero():
-    # No range named rosenna_timed, an empty HIP trace, or unrelated columns:
-    # none of these is a passing zero.
+def test_scope_hip_transfers_takes_an_absent_api_trace_for_an_openmp_harness():
+    # An OpenMP-offload harness makes no HIP API calls, so rocprofv3 writes
+    # no hip_api_trace.csv at all; the memory-copy trace alone is then the
+    # evidence, and its rows outside the range prove it was recorded.
+    copy_csv = _COPY_HEADER + '"MEMORY_COPY","MEMORY_COPY_HOST_TO_DEVICE",0,"Agent 0","Agent 1",7,500,700\n'
+    result = _scope_hip_transfers(_MARKER_CSV, None, copy_csv)
+    assert result.parsed is True
+    assert result.count == 0
+
+
+def test_scope_hip_transfers_reports_not_parsed_rather_than_a_false_zero():
+    # No range named rosenna_timed, no trace rows at all, or unrelated
+    # columns: none of these is a passing zero.
     hip_csv = _ROCPROF_HEADER + '"HIP_RUNTIME_API","hipLaunchKernel",1,1,5,1500,1600\n'
-    assert _scope_hipmemcpy_calls(hip_csv, _ROCPROF_HEADER).parsed is False
-    assert _scope_hipmemcpy_calls(_ROCPROF_HEADER, _MARKER_CSV).parsed is False
-    assert _scope_hipmemcpy_calls("foo,bar\n1,2\n", _MARKER_CSV).parsed is False
-    assert _scope_hipmemcpy_calls("", "").parsed is False
+    assert _scope_hip_transfers(_ROCPROF_HEADER, hip_csv, None).parsed is False
+    assert _scope_hip_transfers(_MARKER_CSV, _ROCPROF_HEADER, _COPY_HEADER).parsed is False
+    assert _scope_hip_transfers(_MARKER_CSV, None, None).parsed is False
+    assert _scope_hip_transfers(_MARKER_CSV, "foo,bar\n1,2\n", None).parsed is False
+    assert _scope_hip_transfers("", "", "").parsed is False
+
+
+def test_sum_cudamemcpy_calls_counts_driver_api_memcpys_too():
+    # nvc's OpenMP offload transfers through the CUDA driver API
+    # (cuMemcpyHtoDAsync_v2 and friends), which nsys lists in cuda_api_sum
+    # next to the runtime's cudaMemcpy*; a per-point harness's copies are
+    # only visible if both spellings count.
+    csv_text = _NSYS_CSV_HEADER + (
+        '45.0,12345,3,4115.0,4000.0,3900.0,4500.0,120.5,"cuMemcpyHtoDAsync_v2"\n'
+        '30.0,8000,2,4000.0,4000.0,3900.0,4100.0,50.0,"cudaMemcpy"\n'
+        '25.0,6000,10,600.0,600.0,500.0,700.0,20.0,"cuLaunchKernel"\n'
+    )
+    result = _sum_cudamemcpy_calls(csv_text)
+    assert result.parsed is True
+    assert result.count == 5
