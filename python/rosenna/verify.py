@@ -207,12 +207,17 @@ def _run_backend(backend: str, plan, workdir: Path, inputs):
         _run("compile", backend,
              ["gfortran", "-O2", "-Wall", "-Wextra", "-c", f"{name}_model.f90"],
              cwd=workdir)
+        # lib<name>_f.a, not lib<name>.a (ruling R13): the C backend's own
+        # archive is lib<name>.a, and although verify's fortran/c backends
+        # build in separate directories (no collision here), the two names
+        # must never be the same anywhere a caller might build both recipes
+        # in one place (cli.py's `generate --lang both`, in particular).
         _run("archive", backend,
-             ["ar", "rcs", f"lib{name}.a", f"{name}_model.o"],
+             ["ar", "rcs", f"lib{name}_f.a", f"{name}_model.o"],
              cwd=workdir)
         _run("compile/link", backend,
              ["gfortran", "-O2", "-Wall", "-Wextra", "-o", "verify_run",
-              "verify_main.f90", f"lib{name}.a"],
+              "verify_main.f90", f"lib{name}_f.a"],
              cwd=workdir)
     elif backend == "c":
         source, header = emit_c(plan)

@@ -137,6 +137,32 @@ def test_embedded_module_has_no_init_and_file_loaded_does(golden_model):
         assert ("real(wp), protected :: w0" in src) == (not embed)
 
 
+def test_generated_fortran_is_warning_free_under_openacc(tmp_path, golden_model):
+    # Mirrors tests/test_kernel.py::test_generated_c_is_warning_free_under_openacc.
+    # gfortran -fopenacc rejects a `routine seq` function reading a file-scope
+    # array with no `declare` directive of its own (why _emit_embedded_weights
+    # skips `!$acc declare create` -- an embedded plan's arrays are compile-
+    # time constants and need none, but a file-loaded plan's `protected`
+    # arrays do); this is the test that guards that comment.
+    fc = shutil.which("gfortran")
+    if not fc:
+        pytest.skip("no gfortran")
+    probe = subprocess.run([fc, "-fopenacc", "-x", "f95", "-", "-o", os.devnull],
+                           input="end\n", capture_output=True, text=True)
+    if probe.returncode != 0:
+        pytest.skip(f"{fc} does not accept -fopenacc")
+    for name in ["gemm_small", "gemm_big", "gemm_nobias", "droplet", "batchnet"]:
+        for embed in (True, False):
+            plan = build_plan(load_graph(golden_model(name)), dtype="f64", embed=embed)
+            src_path = tmp_path / f"{name}_{embed}_model.f90"
+            src_path.write_text(emit_fortran(plan))
+            r = subprocess.run(
+                [fc, "-O2", "-Wall", "-Wextra", "-std=f2008", "-fopenacc", "-fsyntax-only",
+                 src_path.name],
+                cwd=tmp_path, capture_output=True, text=True)
+            assert r.returncode == 0 and r.stderr == "", (name, embed, r.stderr)
+
+
 def test_bind_c_interface_targets_the_c_infer_batch_symbol(golden_model):
     plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64")
     src = emit_fortran(plan)
@@ -152,8 +178,11 @@ def test_fortran_recipe_builds_the_library(tmp_path, golden_model):
     (tmp_path / "Makefile").write_text(emit_fortran_recipe(plan))
     fc = _omp_fc()
     subprocess.run(["make", f"FC={fc}"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    assert (tmp_path / f"lib{name}.a").exists()
+    # lib<name>_f.a, not lib<name>.a (ruling R13): see
+    # tests/test_cli.py::test_both_recipes_build_distinct_archives_in_one_directory
+    # for why the two names must never collide.
+    assert (tmp_path / f"lib{name}_f.a").exists()
     assert (tmp_path / f"{name}_model.o").exists()
     subprocess.run(["make", "clean"], cwd=tmp_path, check=True, capture_output=True, text=True)
-    assert not (tmp_path / f"lib{name}.a").exists()
+    assert not (tmp_path / f"lib{name}_f.a").exists()
     assert not (tmp_path / f"{name}_model.o").exists()

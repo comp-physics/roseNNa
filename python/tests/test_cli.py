@@ -1,5 +1,8 @@
+import subprocess
 import rosenna.verify as verify_mod
 from rosenna.cli import main
+from tests.test_library_form import _cc
+from tests.test_device_fortran import _omp_fc
 
 
 def test_generate_writes_all_artifacts(tmp_path, capsys, golden_model):
@@ -45,10 +48,65 @@ def test_generate_writes_the_fortran_recipe(tmp_path, golden_model):
     assert (tmp_path / "gemm_small_model.f90").exists()
     mk = tmp_path / "gemm_small_fortran.mk"
     assert mk.exists()
-    assert "libgemm_small.a: gemm_small_model.o" in mk.read_text()
+    # Ruling R13: the Fortran archive is lib<name>_f.a, not lib<name>.a --
+    # the latter is the C recipe's archive, and the two must never collide
+    # when both recipes build in the same directory (see the two-archive
+    # test below, which is what would have caught that defect).
+    assert "libgemm_small_f.a: gemm_small_model.o" in mk.read_text()
     # The C recipe (a separate file, a separate object) is untouched by a
     # Fortran-only generate.
     assert not (tmp_path / "gemm_small.mk").exists()
+
+
+def test_both_recipes_build_distinct_archives_in_one_directory(tmp_path, golden_model):
+    # Controller ruling R13, reproducing the reviewer's finding on 352c14a:
+    # `generate --lang both` writes both <name>.mk (C) and <name>_fortran.mk
+    # (Fortran) into ONE output directory, and both recipes used to archive
+    # into the same lib<name>.a -- `ar rcs` APPENDS, so building both there
+    # in sequence silently merged gemm_small_model.o into gemm_small.a's own
+    # archive, and either recipe's `clean` then deleted the shared file.
+    # This is exactly the scenario the bind(C) interface serves: a Fortran
+    # host that `use`s the module AND links the native CUDA/HIP kernel needs
+    # both archives to coexist, distinctly, in one place.
+    name = "gemm_small"
+    onnx_path = golden_model(name)
+    rc = main(["generate", str(onnx_path), "--lang", "both", "--out", str(tmp_path), "--no-embed"])
+    assert rc == 0
+
+    cc, fc = _cc(), _omp_fc()
+    subprocess.run(["make", "-f", f"{name}.mk", f"CC={cc}"], cwd=tmp_path,
+                   check=True, capture_output=True, text=True)
+    subprocess.run(["make", "-f", f"{name}_fortran.mk", f"FC={fc}"], cwd=tmp_path,
+                   check=True, capture_output=True, text=True)
+
+    c_archive, f_archive = tmp_path / f"lib{name}.a", tmp_path / f"lib{name}_f.a"
+    assert c_archive.exists() and f_archive.exists()
+    assert c_archive != f_archive
+
+    def _members(archive):
+        # One member per line; BSD ar (macOS) also lists a "__.SYMDEF SORTED"
+        # pseudo-member (its own symbol table) that GNU ar's `ar t` omits --
+        # filter it out rather than split() on whitespace, since its name
+        # itself contains a space.
+        out = subprocess.run(["ar", "t", str(archive)], cwd=tmp_path,
+                             check=True, capture_output=True, text=True).stdout
+        return [line for line in out.splitlines() if not line.startswith("__.SYMDEF")]
+
+    # Each archive holds only its own object -- not the other's, and not both
+    # (the merged-archive defect: one .a holding gemm_small_model.o AND
+    # gemm_small.o together, silently, because `ar rcs` appends).
+    assert _members(c_archive) == [f"{name}.o"]
+    assert _members(f_archive) == [f"{name}_model.o"]
+
+    # `clean` on one recipe never touches the other's archive or object.
+    subprocess.run(["make", "-f", f"{name}_fortran.mk", "clean"], cwd=tmp_path,
+                   check=True, capture_output=True, text=True)
+    assert not f_archive.exists() and not (tmp_path / f"{name}_model.o").exists()
+    assert c_archive.exists() and (tmp_path / f"{name}.o").exists()
+
+    subprocess.run(["make", "-f", f"{name}.mk", "clean"], cwd=tmp_path,
+                   check=True, capture_output=True, text=True)
+    assert not c_archive.exists() and not (tmp_path / f"{name}.o").exists()
 
 
 def test_verify_passes_on_a_dense_model(capsys, golden_model):
