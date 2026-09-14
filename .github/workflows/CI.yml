@@ -41,10 +41,14 @@ jobs:
           pip install -e python
           cd python && python3 -m pytest tests -v
 
-      - name: Device-path tests ran on the host (not skipped)
+      # A dead-model skip (the golden models are regenerated unseeded each run
+      # and can come out all-zero) is legitimate; a skip for a missing compiler
+      # is not. pipefail keeps pytest's own exit status through the tee.
+      - name: Device-path tests ran on the host (not skipped for a missing compiler)
         run: |
+          set -o pipefail
           cd python && python3 -m pytest tests/test_device_c.py -v -rs 2>&1 | tee device.log
-          ! grep -q "SKIPPED" device.log
+          ! grep -E -q "SKIPPED.*(no C compiler|-fopenmp|no gfortran)" device.log
 
       - name: Run test cases
         run: |

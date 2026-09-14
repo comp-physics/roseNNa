@@ -114,14 +114,26 @@ must stop at `nx+2*NG-2` (i.e. `i<nx+2*NG-1`) to keep that read in bounds.
 
 ## 5. The `muf` line in `face`
 
-Inside the existing `if(mu>0)` viscous block, blend the molecular viscosity
-with the face-averaged turbulent viscosity from the two cells straddling
-the face, and use that blend (`muf`, not `mu`) in the stress:
+`face()` hoists every `g.*` it uses into locals before its `FOR3` region
+(`microfd.c:18`: kernels copy scalars to locals before offloading), so the
+closure field is hoisted the same way -- a `g.nut` dereference inside the
+region would map the whole `g` struct with an unattached host pointer
+instead of using the `nut` array section mapped in section 6:
+
+```diff
+ static void face(int d){                                               // flux through the face c+1/2 normal to d, stored in F at cell c
+-  LOCALS; const double gam=g.gamma, mu=g.mu, kap=mu*gam/((gam-1)*g.pr), h0=g.h[0],h1=g.h[1],h2=g.h[2]; const double*w=g.w; double*F=g.F+(size_t)d*NV*nc;
++  LOCALS; const double gam=g.gamma, mu=g.mu, kap=mu*gam/((gam-1)*g.pr), h0=g.h[0],h1=g.h[1],h2=g.h[2]; const double*w=g.w, *nut=g.nut; double*F=g.F+(size_t)d*NV*nc;
+```
+
+Then, inside the existing `if(mu>0)` viscous block, blend the molecular
+viscosity with the face-averaged turbulent viscosity from the two cells
+straddling the face, and use that blend (`muf`, not `mu`) in the stress:
 
 ```diff
      if(mu>0){                                                            // viscous stress and heat flux at the face, 2nd-order central
        const long st[3]={1,sx,sy}; const double h[3]={h0,h1,h2}; double du[3][3], div=0;
-+      const double muf=mu+.5*(g.nut[c]+g.nut[c+s]);                      // molecular + face-averaged closure viscosity
++      const double muf=mu+.5*(nut[c]+nut[c+s]);                          // molecular + face-averaged closure viscosity
        for(int a=0;a<3;a++) for(int b=0;b<3;b++) if(a==b||a==d||b==d){ const double*u=w+(1+a)*nc+c; const long t=st[b];   // off-normal off-diagonal terms are dead
          du[a][b]= b==d ? (u[s]-u[0])/h[d] : (u[t]-u[-t]+u[s+t]-u[s-t])/(4*h[b]); }  // normal: two cells; tangential: averaged central
        for(int a=0;a<3;a++) div+=du[a][a];
