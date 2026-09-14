@@ -1,4 +1,5 @@
 """Fixtures for golden file models and for inline models built with onnx.helper."""
+import os
 import re
 import subprocess
 import tempfile
@@ -89,10 +90,23 @@ def golden_model():
         if name not in generated:
             model_path = root / "goldenFiles" / name / f"{name}.onnx"
             if not model_path.exists():
+                # The LSTM generators `import nnLSTM`, a shared helper that
+                # lives beside them in goldenFiles/, so that directory has to be
+                # importable from the scratch cwd they run in.
+                env = dict(os.environ)
+                env["PYTHONPATH"] = os.pathsep.join(
+                    [str(root / "goldenFiles")] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
                 subprocess.run(
                     [sys.executable, str(root / "goldenFiles" / name / f"{name}.py")],
-                    cwd=cwd, check=True,
+                    cwd=cwd, check=True, env=env,
                 )
+            if not model_path.exists():
+                # goldenFiles/mnist/mnist.py reads its .onnx rather than
+                # writing one -- that model is checked in. Say so, instead of
+                # handing back a path that does not exist.
+                raise FileNotFoundError(
+                    f"{model_path} is missing and {name}.py did not create it; "
+                    f"if it is a checked-in model, restore it with git checkout")
             generated[name] = model_path
         return generated[name]
 
