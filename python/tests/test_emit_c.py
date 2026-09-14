@@ -83,14 +83,18 @@ def test_matches_onnxruntime_f32(tmp_path, golden_model):
 def test_infer_is_pure_and_has_literal_bounds(golden_model):
     plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64")
     source, header = emit_c(plan)
-    assert "void gemm_small_infer(const double *restrict x, double *restrict y) {" in source
+    # `infer` is now defined only in the header (a static inline callable
+    # from inside the host's own offload region); the source never defines
+    # it.
+    assert "static inline void gemm_small_infer(const double *restrict x, double *restrict y) {" in header
     # The scratch buffers come from plan.buffers now (ruling R13), not from a
     # second allocator private to this emitter: gemm_small's t0 is reused by
     # both gemms, so the plan sizes it at the larger of the two (3), and the
     # Fortran backend declares exactly the same set.
-    assert "double t0[3];" in source
-    assert "double t1[2];" in source
+    assert "double t0[3];" in header
+    assert "double t1[2];" in header
     assert "malloc" not in source
+    assert "malloc" not in header
     assert "restrict" in header
 
 
@@ -138,11 +142,11 @@ def test_both_backends_agree(tmp_path, golden_model):
 def test_f32_plan_uses_single_precision_math(golden_model):
     """An f32 build must call tanhf/expf, not promote every activation to double."""
     plan = build_plan(load_graph(golden_model("gemm_big")), dtype="f32")
-    source, _ = emit_c(plan)
-    assert "tanhf(" in source
-    assert "expf(" in source
-    assert "0.0f" in source
-    body = "\n".join(l for l in source.splitlines() if "_infer" not in l)
+    _, header = emit_c(plan)
+    assert "tanhf(" in header
+    assert "expf(" in header
+    assert "0.0f" in header
+    body = "\n".join(l for l in header.splitlines() if "_infer" not in l)
     assert " tanh(" not in body and "=tanh(" not in body
     assert " exp(" not in body and "(exp(" not in body
 

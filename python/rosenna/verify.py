@@ -198,9 +198,19 @@ def _run_backend(backend: str, plan, workdir: Path, inputs):
         (workdir / f"{name}.c").write_text(source)
         (workdir / f"{name}.h").write_text(header)
         (workdir / "verify_main.c").write_text(_c_driver(name, n_in, n_out, dtype))
+        # Compile the generated source to an object, archive it, and link the
+        # driver against the archive -- the library form -- rather than
+        # compiling both sources together, so `verify` exercises the same
+        # delivery shape a downstream host build uses.
+        _run("compile", backend,
+             ["gcc", "-O2", "-Wall", "-Wextra", "-std=c11", "-c", f"{name}.c", "-o", f"{name}.o"],
+             cwd=workdir)
+        _run("archive", backend,
+             ["ar", "rcs", f"lib{name}.a", f"{name}.o"],
+             cwd=workdir)
         _run("compile/link", backend,
              ["gcc", "-O2", "-Wall", "-Wextra", "-std=c11", "-o", "verify_run",
-              f"{name}.c", "verify_main.c", "-lm"],
+              "verify_main.c", f"lib{name}.a", "-lm"],
              cwd=workdir)
     else:
         raise ValueError(f"unknown backend {backend!r}")

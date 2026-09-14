@@ -6,7 +6,7 @@ from pathlib import Path
 
 from google.protobuf.message import DecodeError
 
-from .emit_c import emit_c
+from .emit_c import emit_c, emit_c_recipe
 from .emit_fortran import emit_fortran
 from .frontend import UnsupportedModel, load_graph
 from .plan import build_plan, validate_model_name
@@ -75,11 +75,14 @@ def _cmd_generate(args) -> int:
         written.append(f90_path)
     if "c" in langs:
         source, header = emit_c(plan)
+        recipe = emit_c_recipe(plan)
         c_path = outdir / f"{name}.c"
         h_path = outdir / f"{name}.h"
+        mk_path = outdir / f"{name}.mk"
         c_path.write_text(source)
         h_path.write_text(header)
-        written += [c_path, h_path]
+        mk_path.write_text(recipe)
+        written += [c_path, h_path, mk_path]
 
     rwt_path = outdir / f"{name}.rwt"
     write_weights(plan, graph, rwt_path)
