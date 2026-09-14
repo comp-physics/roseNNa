@@ -109,8 +109,10 @@ def _sh(report: _Report, label: str, args: list, cwd=None, env=None, input_text=
     try:
         proc = subprocess.run(args, cwd=cwd, env=env, input=input_text,
                               capture_output=True, text=True, timeout=timeout)
-    except FileNotFoundError as e:
-        proc = _FakeProc(127, f"{args[0]}: not found ({e.strerror})")
+    except OSError as e:
+        # A missing executable, or one the previous step left unrunnable:
+        # recorded as a failed step, so the remaining configurations still run.
+        proc = _FakeProc(127, f"{args[0]}: cannot run ({e.strerror})")
     except subprocess.TimeoutExpired as e:
         proc = _FakeProc(124, f"timed out after {timeout}s\nstdout so far:\n{e.stdout}\nstderr so far:\n{e.stderr}")
     report.outcome(proc)
