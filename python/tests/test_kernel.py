@@ -128,7 +128,7 @@ def test_file_loaded_source_copies_to_the_device_under_the_cuda_guard(golden_mod
     assert "return gemm_small_device_bind();" in source
     assert "int gemm_small_device_bind(void);" in header
     assert "static inline int gemm_small_device_bind_here(void) {" in header
-    assert ("call gemm_small_device_bind_here() once after gemm_small_init()\n"
+    assert ("call gemm_small_device_bind_here() after EVERY call to gemm_small_init()\n"
             "   in every translation unit whose kernels call gemm_small_infer. Embedded\n"
             "   models need nothing.") in header
     assert '#include "rosenna_rt.h"' in header

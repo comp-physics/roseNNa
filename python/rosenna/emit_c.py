@@ -477,7 +477,7 @@ def _emit_device_weight_table(plan: Plan, ctype: str) -> list:
     lines += ["#endif", ""]
     nw = len(plan.weights)
     lines += [
-        f"/* In a CUDA/HIP build, call {m}_device_bind_here() once after {m}_init()",
+        f"/* In a CUDA/HIP build, call {m}_device_bind_here() after EVERY call to {m}_init()",
         f"   in every translation unit whose kernels call {m}_infer. Embedded",
         "   models need nothing. Each translation unit holds its own copy of the",
         "   table above; this fills the including translation unit's copy from",

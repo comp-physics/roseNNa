@@ -25,7 +25,7 @@ _RT_HEADER = """\
 #define ROSENNA_OK hipSuccess
 #define ROSENNA_SYNC(s) hipStreamSynchronize(s)
 #define ROSENNA_LAUNCH(k, g, b, s, ...) k<<<(g), (b), 0, (s)>>>(__VA_ARGS__)
-#define ROSENNA_LAUNCH_STATUS() hipPeekAtLastError()
+#define ROSENNA_LAUNCH_STATUS() hipGetLastError()
 #elif defined(__CUDACC__)
 #include <cuda_runtime.h>
 #define ROSENNA_STREAM_T cudaStream_t
@@ -37,7 +37,7 @@ _RT_HEADER = """\
 #define ROSENNA_OK cudaSuccess
 #define ROSENNA_SYNC(s) cudaStreamSynchronize(s)
 #define ROSENNA_LAUNCH(k, g, b, s, ...) k<<<(g), (b), 0, (s)>>>(__VA_ARGS__)
-#define ROSENNA_LAUNCH_STATUS() cudaPeekAtLastError()
+#define ROSENNA_LAUNCH_STATUS() cudaGetLastError()
 #else
 #error "rosenna_rt.h is for nvcc or hipcc only"
 #endif
