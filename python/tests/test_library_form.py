@@ -23,7 +23,7 @@ def test_header_defines_inline_infer_and_source_does_not(golden_model):
     # (extern declaration in the header, definition in the source).
     plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64", embed=False)
     source, header = emit_c(plan)
-    assert "static inline void gemm_small_infer(" in header
+    assert "static inline ROSENNA_DEVICE_FN void gemm_small_infer(" in header
     # Structural check (controller ruling P1): infer must be defined only in
     # the header, never in the source, regardless of how the source happens
     # to spell a call to it.
