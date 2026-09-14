@@ -77,19 +77,17 @@ OpenMP-target fallback on either. Only after that report exists for the
 backend and hardware you actually run microfd on should the closure above be
 described as device-validated rather than host-validated.
 
-For the file-loaded configuration's per-point harness under `--backend
-cuda|hip`, the gate links the generated library with the device compiler as
-the link driver (`nvcc`/`hipcc`, forwarding the host offload flags through
-as `-Xcompiler <flag>` for cuda, directly for hip -- ruling R14/R19); this
-is the form `gate.py` builds and neither form has been verified against a
-real toolchain here. If that link fails on a toolchain that rejects a
-device compiler as the driver for a host-compiled object, the documented
-way out is linking with the HOST compiler instead and naming the CUDA/HIP
-runtime explicitly:
-
-```
-# cuda
-nvc -mp=gpu -gpu=cc80 gate_harness1.o libgemm_big.a -L$CUDA_HOME/lib64 -lcudart -lm -o gate_harness1
-# hip
-amdclang -fopenmp --offload-arch=gfx90a gate_harness1.o libgemm_big.a -L$ROCM_PATH/lib -lamdhip64 -lm -o gate_harness1
-```
+Under `--backend cuda|hip` the gate builds two C archives per
+configuration (rulings R21/R22): the per-point C harness is compiled and
+linked by the HOST compiler with its offload flags against an `omp`-backend
+`libgemm_big.a` that the same host compiler built, and the `.cu` driver of
+the `infer_batch` harness is compiled and linked by the device compiler
+against the `cuda|hip` archive in `<backend>_lib/`. That is the same rule a
+solver has to follow: a per-point OpenMP/OpenACC host calling
+`<name>_infer` on a file-loaded model links the `omp`-backend archive its
+own compiler built, never the cuda/hip one (see the `Call it from C`
+section of `python/README.md`); microfd's closure embeds, so it is not
+affected. A host that does link the cuda/hip archive itself (for
+`<name>_infer_batch`) names the runtime explicitly, `-L$CUDA_HOME/lib64
+-lcudart` or `-L$ROCM_PATH/lib -lamdhip64`, unless `nvcc`/`hipcc` or
+`nvfortran -cuda` drives the link.

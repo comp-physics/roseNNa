@@ -8,12 +8,16 @@ or HIP.
 
 ## What you get
 
-`rosenna generate model.onnx` turns an ONNX model into `lib<name>.a` (C) and
-`lib<name>_f.a` (Fortran, a module in the archive): `<name>_infer` is a
-plain per-point function you call inside your own GPU loop, exactly like any
-other device-callable routine in your solver, and its weights are
-device-resident -- baked into the generated source as constants for a small
-model, or loaded once at startup and copied to the device for a large one.
+`rosenna generate model.onnx` writes the sources and build recipes for a C
+library and a Fortran module; `make -f <name>.mk` and `make -f
+<name>_fortran.mk` then build `lib<name>.a` (C) and `lib<name>_f.a`
+(Fortran, a module in the archive). `<name>_infer` is a plain per-point
+function you call inside your own GPU loop, exactly like any other
+device-callable routine in your solver. Its weights are baked into the
+generated source as constants for a small model, or loaded once at startup
+by `<name>_init` for a large one, and the generated code is written so that
+they live on the device in either case -- with the caveat, stated under
+[Verify](#verify), that the device path has not yet been run on a GPU.
 
 ## Install
 
@@ -30,7 +34,9 @@ The generator itself only needs Python (`onnx`, `numpy`, `onnxruntime` for
 - GPU path: `nvc`/`nvfortran` (NVIDIA HPC SDK) for OpenMP-target or OpenACC on
   an NVIDIA GPU; `amdclang`/`amdflang` for OpenMP-target on an AMD GPU; `icx`/`ifx`
   for OpenMP-target on an Intel GPU. `nvcc` or `hipcc` if you also want the
-  native batched kernel (`--backend cuda|hip`, see [Call it from C](#call-it-from-c)).
+  native batched kernel: `ROSENNA_BACKEND=cuda|hip` when you run the C recipe
+  (and `--backend cuda|hip` to `rosenna gpu-gate`); `generate` itself has no
+  backend flag and always writes every file (see [Call it from C](#call-it-from-c)).
 
 ## Generate
 
@@ -151,6 +157,27 @@ fallback shown above. The two are never linked together. A cuda/hip build
 of a *file-loaded* model needs one more call: after every `model_init`, call
 `model_device_bind_here()` in every translation unit whose kernels call
 `model_infer` (an embedded model needs neither).
+
+A cuda/hip archive does not serve the per-point path of a file-loaded
+model. `nvcc`/`hipcc` compile `model.c` with `_OPENMP` and `_OPENACC`
+undefined, so the weight arrays get no `declare target` device copies and
+`model_init`'s `target update` is not compiled; a host translation unit
+compiled by `nvc -mp=gpu` (or `amdclang`, or `gcc` with offload) that calls
+`model_infer` inside its own offload loop then reads device copies that do
+not exist. So a per-point OpenMP or OpenACC host calling `model_infer` on a
+file-loaded model must link the `omp`-backend archive built by that same
+host compiler with its offload flags:
+
+```sh
+make -f model.mk ROSENNA_BACKEND=omp CC=nvc ROSENNA_OFFLOAD_FLAGS="-mp=gpu -gpu=cc80"
+```
+
+The cuda/hip archive serves `model_infer_batch` and your own CUDA/HIP
+kernels that call `model_infer` after `model_device_bind_here()`. Build
+both archives in separate directories if one program needs both. Embedded
+models are unaffected: every translation unit holds its own copy of the
+constants, so they work with every backend. See [Limits](#limits) for the
+planned resolution.
 
 Embedded weights on a CUDA/HIP build go to one of two storage classes,
 decided per model at generate time, not at build time: under 48 KB (12,288
@@ -276,7 +303,12 @@ status = model_infer_batch_dev(npts, c_loc(x), c_loc(y_batch), c_null_ptr)
 !$acc end host_data
 ```
 
-and links both archives: `-lmodel_f -lmodel`.
+and links both archives plus the runtime the cuda/hip archive was built
+against, which a host that is not itself linked by `nvcc`/`hipcc` has to
+name explicitly: `-lmodel_f -lmodel -L$CUDA_HOME/lib64 -lcudart` for CUDA
+(or `nvfortran -cuda`, which links it for you), `-lmodel_f -lmodel
+-L$ROCM_PATH/lib -lamdhip64` for HIP. With an `omp`-backend `libmodel.a`
+nothing extra is needed.
 
 `model_infer` is not itself inlined across the `use model_model` boundary by
 every compiler, so a Fortran host's own offload loop generally gets a real
@@ -362,10 +394,12 @@ per-point Fortran host, and a host that hands device-resident data to
 command and its output to `gate-report.md`.
 
 Until `gpu-gate` has been run on a GPU machine, the device path is
-unvalidated: everything above compiles and runs on the host, and the CUDA
-and HIP decoration compiles under `nvcc`/`hipcc` in CI, but none of it has
-executed on a device. See `python/examples/microfd_closure/` for a worked
-example of wiring a generated model into a solver, with the same caveat.
+unvalidated: everything above compiles and runs on the host, but none of
+it has executed on a device. A compile-only `nvcc` job exists in CI
+(`.github/workflows/CI.yml`, `nvcc_compile`) and its result will be
+reported here after its first run; `hipcc` is only ever exercised by the
+gate. See `python/examples/microfd_closure/` for a worked example of
+wiring a generated model into a solver, with the same caveat.
 
 ## Limits
 
@@ -380,6 +414,12 @@ example of wiring a generated model into a solver, with the same caveat.
   The `omp` backend's `<name>_infer_batch` fallback calls `<name>_infer` per
   point and has the same silent behavior; only the cuda/hip path's
   `<name>_infer_batch` catches this, returning status 10.
+- A cuda/hip archive of a file-loaded model serves `<name>_infer_batch` and
+  CUDA/HIP kernels only; a per-point OpenMP/OpenACC host must link the
+  `omp`-backend archive built by its own compiler (see [Call it from
+  C](#call-it-from-c)). The planned resolution is that the host compiler
+  always compiles `<name>.c` and `<name>_kernel.cu` owns every CUDA/HIP
+  symbol behind `-DROSENNA_NATIVE_KERNEL`, so one archive serves both paths.
 - The native batched kernel (`ROSENNA_BACKEND=cuda|hip`) launches one thread
   per point in this release; a fused, tiled batched GEMM is planned once the
   GPU gate has timed this one.
