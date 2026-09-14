@@ -6,7 +6,7 @@ _emit_infer_batch), and a capital-F suffix is the one way to ask for the
 preprocessor that every Fortran compiler honours without a flag.
 """
 from .abi import name_capacity, rank_capacity, status_code_comment
-from .plan import Plan
+from .plan import Plan, lstm_initial_state
 
 _KIND = {"f32": "real32", "f64": "real64"}
 # relu is written as merge, not max: max(v, 0) returns 0 for a NaN input, and
@@ -236,6 +236,7 @@ def _emit_init(plan: Plan) -> list:
             "        integer :: toclen, k, namelen, rank",
             "        integer(int64) :: dims(%d), off, length, data_start, tocpos" % rank_capacity(plan),
             "        character(len=%d) :: name" % name_capacity(plan),
+            "        logical :: seen(%d)" % len(plan.weights),
         ]
     lines += [
         "        status = 0",
@@ -270,6 +271,7 @@ def _emit_init(plan: Plan) -> list:
         "        read(u, iostat=ios) toclen",
         "        if (ios /= 0) then; status = 9; close(u); return; end if",
         "        data_start = int(60, int64) + int(toclen, int64) + 1_int64",
+        "        seen = .false.",
         "        do k = 1, ntensors",
         "            read(u, iostat=ios) namelen",
         "            if (ios /= 0) then; status = 9; close(u); return; end if",
@@ -289,12 +291,13 @@ def _emit_init(plan: Plan) -> list:
         "            read(u, iostat=ios) off, length",
         "            if (ios /= 0) then; status = 9; close(u); return; end if",
         "            inquire(unit=u, pos=tocpos)",
-        "            call load_tensor(u, name(1:namelen), data_start + off, length, status)",
+        "            call load_tensor(u, name(1:namelen), data_start + off, length, seen, status)",
         "            if (status /= 0) then; close(u); return; end if",
         "            read(u, pos=tocpos, iostat=ios)",
         "            if (ios /= 0) then; status = 9; close(u); return; end if",
         "        end do",
         "        close(u)",
+        "        if (.not. all(seen)) then; status = 9; return; end if",
         "        ! The plan step's transfer (ruling R5): make the freshly loaded",
         "        ! weights device-resident. Fortran has no runtime-API path without",
         "        ! CUDA Fortran, so this directive form is the whole of init's device",
@@ -311,21 +314,27 @@ def _emit_load(plan: Plan) -> list:
     if not plan.weights:
         return []
     lines = [
-        "    subroutine load_tensor(u, name, pos, length, status)",
+        "    ! seen(k) is set when plan weight k has been filled: a table of",
+        "    ! contents that names a tensor twice, or not at all, is status 9",
+        "    ! (inconsistent), never a zero array that infer then runs on.",
+        "    subroutine load_tensor(u, name, pos, length, seen, status)",
         "        integer, intent(in) :: u",
         "        character(*), intent(in) :: name",
         "        integer(int64), intent(in) :: pos, length",
+        "        logical, intent(inout) :: seen(:)",
         "        integer, intent(out) :: status",
         "        integer :: ios",
         "        status = 0",
         "        ios = 0",
         "        select case (name)",
     ]
-    for w in plan.weights:
+    for k, w in enumerate(plan.weights, start=1):
         # `length` comes from the file's own table of contents; a tensor whose
         # declared byte count disagrees with the array it is about to fill
         # means a corrupt file, not a short read, so reject before reading.
         lines += _wrap_literal("        case (", w.name, ")", " " * 12)
+        lines.append(f"            if (seen({k})) then; status = 9; return; end if")
+        lines.append(f"            seen({k}) = .true.")
         lines.append(f"            if (length /= {w.nbytes}_int64) then; status = 9; return; end if")
         lines.append(f"            read(u, pos=pos, iostat=ios) {w.symbol}")
     lines += [
@@ -392,7 +401,8 @@ def _emit_infer(plan: Plan) -> list:
         ("seen", "maxpool" in kinds),
         ("cnt", "avgpool" in kinds),
         ("lt, lb, lk", "lstm" in kinds),
-        (", ".join(f"c{k}" for k in range(_max_add_rank(plan))), "add" in kinds)) if used]
+        (", ".join(f"c{k}" for k in range(_max_counter_rank(plan))),
+         bool(kinds & {"add", "transpose"}))) if used]
     if loop_vars:
         lines.append("        integer :: " + ", ".join(loop_vars))
     if spatial or "lstm" in kinds:
@@ -447,10 +457,9 @@ def _emit_infer(plan: Plan) -> list:
         elif op.kind == "transpose":
             lines += _emit_transpose_f(op, plan.assignment[op.out], plan.assignment[op.inp])
         elif op.kind == "lstm":
+            h0, c0 = lstm_initial_state(op, lambda sym: sym, plan.assignment)
             lines += _emit_lstm_f(
-                op, plan.assignment[op.out], plan.assignment[op.inp],
-                plan.assignment[op.extra_in[0]] if op.extra_in else None,
-                plan.assignment[op.extra_in[1]] if len(op.extra_in) > 1 else None,
+                op, plan.assignment[op.out], plan.assignment[op.inp], h0, c0,
                 [plan.assignment[o] for o in op.outs])
         elif op.kind == "add":
             lines += _emit_add_f(op, plan.assignment[op.out], plan.assignment[op.inp])
@@ -484,9 +493,10 @@ def _flat_index_f(names, shape):
     return f"{expr} + 1"
 
 
-def _max_add_rank(plan) -> int:
-    """How many counters the widest Add nest in this model needs."""
-    return max((len(op.bcast.out_shape) for op in plan.ops if op.kind == "add"), default=0)
+def _max_counter_rank(plan) -> int:
+    """How many c-counters the widest Add or Transpose nest in this model needs."""
+    return max((len(op.bcast.out_shape) if op.kind == "add" else len(op.out_shape)
+                for op in plan.ops if op.kind in ("add", "transpose")), default=0)
 
 
 def _emit_transpose_f(op, dst, src):
@@ -626,7 +636,7 @@ def _emit_spatial_f(op, dst, src):
         L.append(f"            {dst}({idx_out}) = acc")
     else:
         full = sp.kh * sp.kw
-        if (sp.ph == 0 and sp.pw == 0) or sp.count_include_pad:
+        if sp.every_window_is_inside or sp.count_include_pad:
             L.append(f"            {dst}({idx_out}) = acc / real({full}, wp)")
         else:
             L.append("            if (cnt > 0) then")

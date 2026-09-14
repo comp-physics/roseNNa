@@ -96,6 +96,20 @@ class Spatial:
     # cells that actually fell inside the input (False, the ONNX default).
     count_include_pad: bool = False
 
+    @property
+    def every_window_is_inside(self) -> bool:
+        """True when no window reaches past the input on any side.
+
+        The begin pads say whether the first window starts early; the last
+        window's reach says whether it runs off the end -- an end-only pad
+        (pads=[0,0,1,1]) is exactly that case, and it is not carried here, so
+        it has to be read off the output extent. An AveragePool divides every
+        window by the full kernel only when this holds (or count_include_pad).
+        """
+        return (self.ph == 0 and self.pw == 0
+                and (self.h_out - 1) * self.sh + (self.kh - 1) * self.dh + 1 <= self.h_in
+                and (self.w_out - 1) * self.sw + (self.kw - 1) * self.dw + 1 <= self.w_in)
+
 
 @dataclass(frozen=True)
 class Broadcast:
@@ -156,6 +170,10 @@ class Op:
     lstm: "Lstm | None" = None
     extra_in: tuple = ()
     outs: tuple = ()
+    # kind == "lstm": weight symbols holding a constant (initializer) initial
+    # hidden and cell state -- the case a folded `Constant` node leaves behind.
+    # Exclusive with extra_in, which names them when they are graph values.
+    init_syms: tuple = ()
     # kind == "copy": read the source starting this far into its buffer. Used to
     # hand each secondary graph input its slice of the concatenated x.
     src_offset: int = 0
@@ -280,6 +298,19 @@ def _flat_preserving(in_shape, perm) -> bool:
     return kept == sorted(kept)
 
 
+def lstm_initial_state(op, weight_ref, assignment) -> tuple:
+    """(h0, c0) array names for an LSTM op, for either emitter.
+
+    `weight_ref` renders a weight symbol the way that emitter spells it;
+    `assignment` maps a value name to its buffer. Constant states are weights,
+    caller-supplied ones are buffers, and an LSTM without them gets None.
+    """
+    if op.init_syms:
+        return tuple(weight_ref(sym) for sym in op.init_syms)
+    return (assignment[op.extra_in[0]] if op.extra_in else None,
+            assignment[op.extra_in[1]] if len(op.extra_in) > 1 else None)
+
+
 def _transpose_strides(in_shape, perm) -> tuple:
     """Per-output-axis stride into the source's flat layout."""
     src_stride, step = [0] * len(in_shape), 1
@@ -314,6 +345,30 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
         raise UnsupportedModel(f"dtype {dtype} is not supported")
 
     ops, weights, offset, widx = [], [], 0, 0
+    by_name = {}
+
+    def weight(name: str, symbol: str, shape: tuple) -> str:
+        """Register initializer `name` once and return its symbol.
+
+        A second node using the same initializer (a tied weight) gets the
+        first node's symbol: one WeightSpec, one file entry, one array. The
+        loaders match file entries by name, so a duplicate spec was filled
+        once in C (the other stayed zero) and was a duplicate CASE in Fortran.
+        """
+        nonlocal offset
+        if name in by_name:
+            prior = by_name[name]
+            if prior.shape != shape:
+                raise UnsupportedModel(
+                    f"initializer '{name}' is used by two nodes that need it declared "
+                    f"with different shapes ({prior.shape} and {shape})")
+            return prior.symbol
+        a = graph.initializers[name]
+        spec = WeightSpec(name, symbol, shape, offset, a.size * _ITEMSIZE[dtype])
+        weights.append(spec)
+        by_name[name] = spec
+        offset += spec.nbytes
+        return spec.symbol
     for node in graph.nodes:
         if node.op in _ACTIVATIONS:
             # n_in/n_out carry the activation's OWN length, taken from the
@@ -354,33 +409,35 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
                 if idx < len(node.inputs) and node.inputs[idx]:
                     a = graph.initializers[node.inputs[idx]]
                     sym = f"{'w' if role != 'bias' else 'b'}{widx}{'r' if role == 'weight2' else ''}"
-                    weights.append(WeightSpec(node.inputs[idx], sym, (int(a.size),),
-                                              offset, a.size * _ITEMSIZE[dtype]))
-                    offset += weights[-1].nbytes
-                    syms[role] = sym
-            extra = tuple(i for i in node.inputs[5:7] if i) if len(node.inputs) > 5 else ()
+                    syms[role] = weight(node.inputs[idx], sym, (int(a.size),))
+            states = tuple(i for i in node.inputs[5:7] if i) if len(node.inputs) > 5 else ()
+            if states and states[0] in graph.initializers:
+                # Constant initial state (validate checked both are): a weight
+                # each, flat, read like any other by the emitters.
+                init_syms = tuple(weight(nm, f"{role}{widx}", (int(graph.initializers[nm].size),))
+                                  for role, nm in zip(("h", "c"), states))
+                extra = ()
+            else:
+                init_syms, extra = (), states
             outs = tuple(o for o in node.outputs[1:] if o)
             ops.append(Op("lstm", node.outputs[0], node.inputs[0],
                           syms.get("weight"), syms.get("bias"),
                           _length(graph.values[node.inputs[0]]),
                           _length(graph.values[node.outputs[0]]),
                           weight2=syms.get("weight2"), lstm=spec,
-                          extra_in=extra, outs=outs))
+                          extra_in=extra, outs=outs, init_syms=init_syms))
             widx += 1
             continue
         if node.op == "Add":
             const_name = next(i for i in node.inputs if i in graph.initializers)
             src_name = next(i for i in node.inputs if i not in graph.initializers)
             c = graph.initializers[const_name]
-            csym = f"w{widx}"
             # Declared flat, not with the ONNX shape: the broadcast strides are
             # offsets into the constant's row-major flat layout, so a rank-1
             # declaration is what both emitters subscript. (emit_fortran would
             # otherwise declare a rank-3 (1,1,8) array and reject the single
             # subscript the stride arithmetic produces.)
-            weights.append(WeightSpec(const_name, csym, (int(c.size),),
-                                      offset, c.size * _ITEMSIZE[dtype]))
-            offset += weights[-1].nbytes
+            csym = weight(const_name, f"w{widx}", (int(c.size),))
             out_t = graph.values[node.outputs[0]]
             ops.append(Op("add", node.outputs[0], src_name, csym, None,
                           _length(out_t), _length(out_t),
@@ -396,17 +453,11 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
         if node.op == "Conv":
             sp = _spatial(graph, node)
             w = graph.initializers[node.inputs[1]]
-            wsym = f"w{widx}"
-            weights.append(WeightSpec(node.inputs[1], wsym, tuple(int(d) for d in w.shape),
-                                      offset, w.size * _ITEMSIZE[dtype]))
-            offset += weights[-1].nbytes
+            wsym = weight(node.inputs[1], f"w{widx}", tuple(int(d) for d in w.shape))
             bsym = None
             if len(node.inputs) > 2 and node.inputs[2]:
                 b = graph.initializers[node.inputs[2]]
-                bsym = f"b{widx}"
-                weights.append(WeightSpec(node.inputs[2], bsym, tuple(int(d) for d in b.shape),
-                                          offset, b.size * _ITEMSIZE[dtype]))
-                offset += weights[-1].nbytes
+                bsym = weight(node.inputs[2], f"b{widx}", tuple(int(d) for d in b.shape))
             ops.append(Op("conv", node.outputs[0], node.inputs[0], wsym, bsym,
                           _length(graph.values[node.inputs[0]]),
                           _length(graph.values[node.outputs[0]]), spatial=sp))
@@ -415,17 +466,11 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
         w = graph.initializers[node.inputs[1]]
         trans_b = int(node.attrs.get("transB", 0)) if node.op == "Gemm" else 0
         n_out, n_in = (w.shape[0], w.shape[1]) if trans_b else (w.shape[1], w.shape[0])
-        wsym = f"w{widx}"
-        weights.append(WeightSpec(node.inputs[1], wsym, tuple(int(d) for d in w.shape),
-                                  offset, w.size * _ITEMSIZE[dtype]))
-        offset += weights[-1].nbytes
+        wsym = weight(node.inputs[1], f"w{widx}", tuple(int(d) for d in w.shape))
         bsym = None
         if node.op == "Gemm" and len(node.inputs) > 2:
             b = graph.initializers[node.inputs[2]]
-            bsym = f"b{widx}"
-            weights.append(WeightSpec(node.inputs[2], bsym, tuple(int(d) for d in b.shape), offset,
-                                      b.size * _ITEMSIZE[dtype]))
-            offset += weights[-1].nbytes
+            bsym = weight(node.inputs[2], f"b{widx}", tuple(int(d) for d in b.shape))
         in_len = _length(graph.values[node.inputs[0]])
         if in_len % int(n_in):
             raise UnsupportedModel(

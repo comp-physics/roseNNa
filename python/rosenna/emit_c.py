@@ -1,6 +1,6 @@
 """Render a plan as a self-contained C source/header pair."""
 from .abi import name_capacity, rank_capacity, status_code_comment
-from .plan import Plan
+from .plan import Plan, lstm_initial_state
 
 _CTYPE = {"f32": "float", "f64": "double"}
 _DTYPE_CODE = {"f32": 0, "f64": 1}
@@ -707,10 +707,13 @@ def _emit_load(plan: Plan) -> list:
         return []
     m = plan.model
     lines = [
+        "/* seen[k] is set when plan weight k has been filled: a table of contents",
+        "   that names a tensor twice, or not at all, is status 9 (inconsistent),",
+        "   never a zero array that infer then runs on. */",
         "static int load_tensor(FILE *f, const char *name, int32_t namelen, long pos,",
-        "                       int64_t length) {",
+        "                       int64_t length, unsigned char *seen) {",
     ]
-    for w in plan.weights:
+    for k, w in enumerate(plan.weights):
         c_sym = _c_weight_symbol(m, w.symbol)
         # `length` comes from the file's own table of contents; a tensor whose
         # declared byte count disagrees with the array it is about to fill
@@ -719,6 +722,8 @@ def _emit_load(plan: Plan) -> list:
         lines.append(
             f"    if (namelen == {len(w.name)} && "
             f"memcmp(name, {_c_string(w.name)}, {len(w.name)}) == 0) {{")
+        lines.append(f"        if (seen[{k}]) return 9;")
+        lines.append(f"        seen[{k}] = 1;")
         lines.append(f"        if (length != (int64_t)sizeof {c_sym}) return 9;")
         lines.append("        if (fseek(f, pos, SEEK_SET) != 0) return 9;")
         lines.append(f"        if (fread({c_sym}, sizeof {c_sym}, 1, f) != 1) return 9;")
@@ -769,6 +774,7 @@ def _emit_init(plan: Plan) -> list:
         "    int32_t toclen;",
         "    if (fread(&toclen, sizeof toclen, 1, f) != 1) { fclose(f); return 9; }",
         "    long data_start = 60L + (long)toclen;",
+        f"    unsigned char seen[{len(plan.weights)}] = {{0}};",
         "    for (int32_t k = 0; k < ntensors; ++k) {",
         "        int32_t namelen;",
         "        if (fread(&namelen, sizeof namelen, 1, f) != 1) { fclose(f); return 9; }",
@@ -787,11 +793,12 @@ def _emit_init(plan: Plan) -> list:
         "        if (fread(&off, sizeof off, 1, f) != 1) { fclose(f); return 9; }",
         "        if (fread(&length, sizeof length, 1, f) != 1) { fclose(f); return 9; }",
         "        long tocpos = ftell(f);",
-        "        int status = load_tensor(f, name, namelen, data_start + (long)off, length);",
+        "        int status = load_tensor(f, name, namelen, data_start + (long)off, length, seen);",
         "        if (status != 0) { fclose(f); return status; }",
         "        if (fseek(f, tocpos, SEEK_SET) != 0) { fclose(f); return 9; }",
         "    }",
         "    fclose(f);",
+        f"    for (int k = 0; k < {len(plan.weights)}; ++k) if (!seen[k]) return 9;",
         "    /* The plan step's transfer: the device copies of the arrays, under",
         "       whichever offload family this build has. */",
         "#ifdef _OPENMP",
@@ -966,9 +973,9 @@ def _emit_spatial_c(op, ctype, dst, src, weight_sym, bias_sym, zero):
         L.append(f"        {dst}[{idx_out}] = best;")
     else:
         full = sp.kh * sp.kw
-        if sp.ph == 0 and sp.pw == 0 or sp.count_include_pad:
-            # No pad cell can fall in a window (ceil_mode is refused), or the
-            # caller asked for the full-kernel divisor: a literal either way.
+        if sp.every_window_is_inside or sp.count_include_pad:
+            # No pad cell can fall in a window, or the caller asked for the
+            # full-kernel divisor: a literal either way.
             L.append(f"        {dst}[{idx_out}] = acc / ({ctype}){full};")
         else:
             L.append(f"        {dst}[{idx_out}] = cnt ? acc / ({ctype})cnt : {zero};")
@@ -1044,10 +1051,9 @@ def _emit_infer(plan: Plan, ctype: str) -> list:
         elif op.kind == "transpose":
             lines += _emit_transpose_c(op, dst, src)
         elif op.kind == "lstm":
+            h0, c0 = lstm_initial_state(op, lambda sym: _weight_ref(plan, m, sym), plan.assignment)
             lines += _emit_lstm_c(
-                op, ctype, act, dst, src,
-                plan.assignment[op.extra_in[0]] if op.extra_in else None,
-                plan.assignment[op.extra_in[1]] if len(op.extra_in) > 1 else None,
+                op, ctype, act, dst, src, h0, c0,
                 _weight_ref(plan, m, op.weight), _weight_ref(plan, m, op.weight2),
                 _weight_ref(plan, m, op.bias) if op.bias else None,
                 [plan.assignment[o] for o in op.outs], _ZERO[plan.dtype])

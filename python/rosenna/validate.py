@@ -89,6 +89,13 @@ def _validate_gemm(graph: Graph, node) -> None:
         if bias.ndim != 1:
             raise UnsupportedModel(
                 f"node '{node.name}': Gemm bias has rank {bias.ndim}; only rank 1 is supported")
+        # The emitters index b[i] for every output: a (1,) bias, though a
+        # legal ONNX broadcast, would be read past its end.
+        n_out = gw.shape[0] if int(node.attrs.get("transB", 0)) else gw.shape[1]
+        if bias.shape[0] != n_out:
+            raise UnsupportedModel(
+                f"node '{node.name}': Gemm bias has {bias.shape[0]} values for {n_out} outputs; "
+                f"a broadcast bias is not supported")
 
 
 def _validate_spatial(graph: Graph, node) -> None:
@@ -236,12 +243,25 @@ def _validate_lstm(graph: Graph, node) -> None:
         b = graph.initializers.get(node.inputs[3])
         if b is None or b.ndim != 2 or b.shape[0] != 1:
             raise UnsupportedModel(f"{where}: LSTM B must be a constant of shape (1, 8*hidden)")
+    # The initial state is either a graph value (the caller supplies it, in
+    # x) or an initializer (a folded Constant: it becomes a weight); either
+    # way rank 3, and both of the pair the same way.
+    kinds = set()
     for idx, role in ((5, "initial_h"), (6, "initial_c")):
         if len(node.inputs) > idx and node.inputs[idx]:
-            v = graph.values.get(node.inputs[idx])
-            if v is None or len(v.shape) != 3:
+            name = node.inputs[idx]
+            if name in graph.initializers:
+                shape, kinds = graph.initializers[name].shape, kinds | {"initializer"}
+            else:
+                v = graph.values.get(name)
+                shape, kinds = (v.shape if v is not None else ()), kinds | {"value"}
+            if len(shape) != 3:
                 raise UnsupportedModel(
-                    f"{where}: {role} must be a rank-3 (num_directions, batch, hidden) value")
+                    f"{where}: {role} must be a rank-3 (num_directions, batch, hidden) "
+                    f"value or initializer")
     if (len(node.inputs) > 5 and bool(node.inputs[5])) != (len(node.inputs) > 6 and bool(node.inputs[6])):
         raise UnsupportedModel(
             f"{where}: initial_h and initial_c must be supplied together or not at all")
+    if len(kinds) > 1:
+        raise UnsupportedModel(
+            f"{where}: initial_h and initial_c must both be values or both be initializers")

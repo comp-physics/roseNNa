@@ -76,9 +76,13 @@ def _evaluate(node, inits):
         axes = _axes(node, inits, a.ndim)
         return np.squeeze(a, axis=axes or None)
     if node.op == "Unsqueeze":
-        axes = _axes(node, inits, a.ndim + len(_axes(node, inits, a.ndim + 1) or (0,)))
+        # Negative axes count from the OUTPUT rank (ONNX): with two axes to
+        # add, -1 is the last of ndim + 2, not of ndim + 1. Resolve against
+        # the output rank, then insert in ascending order so each position
+        # is final when it is written.
+        n_new = len(_axes(node, inits, a.ndim + 1))
         out = a
-        for ax in sorted(int(x) for x in _axes(node, inits, a.ndim + 1)):
+        for ax in sorted(_axes(node, inits, a.ndim + n_new)):
             out = np.expand_dims(out, ax)
         return out
     if node.op == "Flatten":

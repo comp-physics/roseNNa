@@ -468,8 +468,11 @@ generated model into a solver.
   `Add`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`,
   `Identity`, `Relu`, `Tanh`, `Sigmoid`. Values may be rank 1 to 4; the
   spatial ops are 2-D (rank-4 NCHW) only, `Conv` must be ungrouped, and
-  `LSTM` must be forward-direction with the default activations. No batch
-  norm, no `Concat`, no `Softmax`, no `Pad` node, no GRU.
+  `LSTM` must be forward-direction with the default activations; its
+  initial state may be a graph input (it arrives in `x`) or a constant (it
+  becomes a weight). A `Gemm` bias must have one value per output, not a
+  broadcast `(1,)`. No batch norm, no `Concat`, no `Softmax`, no `Pad` node,
+  no GRU.
 - One output tensor. Several *inputs* are fine: they arrive concatenated in
   `x` in declaration order, so `infer(x, y)` -- and with it `infer_batch`,
   the native kernel and the whole device contract -- is unchanged.
