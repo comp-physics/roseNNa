@@ -11,7 +11,7 @@ step and is called from init. Compiles and runs on the host (through the
 omp backend) only; the device path is unvalidated until nvcc has built it
 on CI and the GPU gate has run it.
 """
-from .emit_c import KERNEL_TILE, _CTYPE, _c_weight_symbol, _device_bind, _device_weight_table
+from .emit_c import KERNEL_TILE, _CTYPE, _c_weight_symbol, _device_bind
 from .plan import Plan
 
 
@@ -30,24 +30,13 @@ def emit_kernel(plan: Plan) -> str:
         "",
     ]
     if not plan.embed and plan.weights:
-        table = _device_weight_table(m)
-        nw = len(plan.weights)
         lines += [
             "/* Plan step (controller ruling R5), called by init after it has made",
-            "   the device copies: publishes their addresses to this translation",
-            "   unit's __constant__ table, the one the kernel below reads. This is",
-            "   the only transfer in this file; infer_batch launches and nothing",
-            "   else. */",
+            "   the device copies: binds this translation unit's __constant__ table,",
+            "   the one the kernel below reads, through the header's",
+            f"   {_device_bind(m)}_here. Nothing else in this file transfers. */",
             f'extern "C" int {_device_bind(m)}(void) {{',
-            f"    const {ctype} *table[{nw}] = {{",
-        ]
-        for w in plan.weights:
-            lines.append(f"        {_c_weight_symbol(m, w.symbol)}_dev,")
-        lines += [
-            "    };",
-            f"    for (int k = 0; k < {nw}; ++k) if (table[k] == 0) return 10;",
-            f"    if (ROSENNA_MEMCPY_TO_SYMBOL({table}, table, sizeof table) != ROSENNA_OK) return 10;",
-            "    return 0;",
+            f"    return {_device_bind(m)}_here();",
             "}",
             "",
         ]
@@ -61,7 +50,7 @@ def emit_kernel(plan: Plan) -> str:
         f"    {m}_infer(x + (size_t)p * {n_in}, y + (size_t)p * {n_out});",
         "}",
         "",
-        f'extern "C" int {m}_infer_batch(int n, const {ctype} *x, {ctype} *y, void *stream) {{',
+        f'extern "C" int {m}_infer_batch(int n, const {ctype} *__restrict__ x, {ctype} *__restrict__ y, void *stream) {{',
         "    if (n <= 0) return 0;",
         "    const ROSENNA_STREAM_T s = (ROSENNA_STREAM_T)stream;",
     ]
@@ -72,6 +61,9 @@ def emit_kernel(plan: Plan) -> str:
     lines += [
         "    const int grid = (n + ROSENNA_TILE - 1) / ROSENNA_TILE;",
         f"    ROSENNA_LAUNCH({m}_kernel, grid, ROSENNA_TILE, s, n, x, y);",
+        "    /* A peek, not a sync (ruling R5): a bad configuration or stream is",
+        "       reported now; asynchronous faults surface at the caller's sync. */",
+        "    if (ROSENNA_LAUNCH_STATUS() != ROSENNA_OK) return 11;",
         "    return 0;",
         "}",
         "",

@@ -29,8 +29,10 @@ def test_kernel_source_names_no_runtime_symbol_for_a_file_loaded_plan(golden_mod
     cu = emit_kernel(plan)
     assert re.search(r"\b(cuda|hip)[A-Z]", cu) is None
     assert 'extern "C" int gemm_big_device_bind(void) {' in cu
-    assert "ROSENNA_MEMCPY_TO_SYMBOL(gemm_big_devw, table, sizeof table)" in cu
+    assert "return gemm_big_device_bind_here();" in cu
     assert "ROSENNA_LAUNCH(gemm_big_kernel" in cu
+    # Ruling R10: the launch is checked with a peek (never a sync), status 11.
+    assert "if (ROSENNA_LAUNCH_STATUS() != ROSENNA_OK) return 11;" in cu
     # An embedded plan reads its ROSENNA_CONST arrays directly and binds nothing.
     cu_e = emit_kernel(build_plan(load_graph(golden_model("gemm_big")), dtype="f64", embed=True))
     assert "ROSENNA_MEMCPY_TO_SYMBOL" not in cu_e and "device_bind" not in cu_e
@@ -46,46 +48,41 @@ def _function_body(text: str, signature_start: str) -> str:
 _LOOP_PATH_FORBIDDEN = ("map(to", "map(from", "map(tofrom", "copyin", "copyout",
                         "ROSENNA_MALLOC", "ROSENNA_MEMCPY", "ROSENNA_SYNC",
                         "cudaMemcpy", "hipMemcpy", "cudaMalloc", "hipMalloc",
-                        "cudaDeviceSynchronize", "hipDeviceSynchronize")
+                        "cudaDeviceSynchronize", "hipDeviceSynchronize",
+                        "target update", "update device", "enter data", "exit data",
+                        "omp_target_memcpy", "acc_memcpy")
 
 
 def test_loop_path_never_transfers(golden_model):
-    # Controller ruling R5: init is the plan step and the only routine that
+    # Controller rulings R5/R6: init is the plan step and the only routine that
     # allocates, transfers or synchronizes; x and y are device-resident in
     # every backend. No transfer can be observed on a host-only build, so
-    # this structural check is the CI-able guarantee. Scope: the omp-backend
-    # infer_batch body in the .c (init is exempt), and in the kernel file the
-    # kernel and infer_batch bodies. The kernel file's third function,
-    # <name>_device_bind, is the tail of the plan step: a __constant__ symbol
-    # can be written only from its own translation unit without relocatable
-    # device code, so init reaches into the kernel's file to publish the
-    # weight addresses. It is exempt like init, and checked below to be the
-    # one place in that file a transfer name appears.
+    # this structural check is the CI-able guarantee. Exempt: the body of
+    # `<name>_init` and of `<name>_upload`, the static tail of init that
+    # holds the cuda/hip allocation and copies (init calls it and nothing
+    # else does). Everything else in the .c, and the whole kernel file, must
+    # be free of every transfer token. The kernel file's `<name>_device_bind`
+    # only forwards to the header's `<name>_device_bind_here`, which is where
+    # the one symbol copy of the plan step lives; that header function is
+    # checked here to be the sole holder of ROSENNA_MEMCPY_TO_SYMBOL.
     for embed in (True, False):
         name = "gemm_big"; plan = build_plan(load_graph(golden_model(name)), dtype="f64", embed=embed)
-        source, _ = emit_c(plan)
+        source, header = emit_c(plan)
         cu = emit_kernel(plan)
-        loop_path = [
-            _function_body(source, f"int {name}_infer_batch("),
-            _function_body(cu, f"static __global__ void {name}_kernel("),
-            _function_body(cu, f'extern "C" int {name}_infer_batch('),
-        ]
-        for body in loop_path:
-            for forbidden in _LOOP_PATH_FORBIDDEN:
-                assert forbidden not in body, (embed, forbidden, body)
-        rest = cu
-        for body in loop_path[1:]:
-            rest = rest.replace(body, "")
-        if embed:
-            for forbidden in _LOOP_PATH_FORBIDDEN:
-                assert forbidden not in rest, (forbidden, rest)
-        else:
-            bind = _function_body(cu, f'extern "C" int {name}_device_bind(')
-            rest = rest.replace(bind, "")
-            for forbidden in _LOOP_PATH_FORBIDDEN:
-                assert forbidden not in rest, (forbidden, rest)
-            assert "ROSENNA_MEMCPY_TO_SYMBOL" in bind
-            assert f"return {name}_device_bind();" in _function_body(source, f"static int {name}_upload(")
+        rest_c = source
+        if not embed:
+            init = _function_body(source, f"int {name}_init(")
+            upload = _function_body(source, f"static int {name}_upload(")
+            assert f"return {name}_upload();" in init and "ROSENNA_MALLOC" in upload
+            rest_c = rest_c.replace(init, "").replace(upload, "")
+        for forbidden in _LOOP_PATH_FORBIDDEN:
+            assert forbidden not in rest_c, (embed, forbidden)
+            assert forbidden not in cu, (embed, forbidden)
+        if not embed:
+            bind_here = _function_body(header, f"static inline int {name}_device_bind_here(")
+            assert "ROSENNA_MEMCPY_TO_SYMBOL" in bind_here
+            assert header.count("ROSENNA_MEMCPY_TO_SYMBOL") == 1
+            assert f"return {name}_device_bind_here();" in _function_body(cu, f'extern "C" int {name}_device_bind(')
 
 
 def test_rt_header_maps_both_runtimes():
@@ -93,20 +90,26 @@ def test_rt_header_maps_both_runtimes():
     assert "__HIPCC__" in h and "__CUDACC__" in h and "ROSENNA_LAUNCH" in h
     # Every macro the generated sources use is defined once per runtime.
     for macro in ("ROSENNA_STREAM_T", "ROSENNA_MALLOC", "ROSENNA_MEMCPY_H2D", "ROSENNA_FREE",
-                  "ROSENNA_OK", "ROSENNA_SYNC", "ROSENNA_LAUNCH", "ROSENNA_MEMCPY_TO_SYMBOL"):
-        assert h.count(f"#define {macro}") == 2, macro
+                  "ROSENNA_OK", "ROSENNA_SYNC", "ROSENNA_LAUNCH", "ROSENNA_MEMCPY_TO_SYMBOL",
+                  "ROSENNA_LAUNCH_STATUS"):
+        assert h.count(f"#define {macro}(") + h.count(f"#define {macro} ") == 2, macro
 
 
 def test_header_declares_infer_batch_with_c_linkage_on_both_forms(golden_model):
     for embed in (True, False):
         plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64", embed=embed)
         source, header = emit_c(plan)
-        assert "int gemm_small_infer_batch(int n, const double *x, double *y, void *stream);" in header
+        # Ruling R7: the batch's pointers are restrict-qualified.
+        assert ("int gemm_small_infer_batch(int n, const double *ROSENNA_RESTRICT x, "
+                "double *ROSENNA_RESTRICT y, void *stream);") in header
         assert 'extern "C" {' in header and "__cplusplus" in header
         assert "x and y must already be on\n   the device; init is the only routine that transfers." in header
         # The OpenMP fallback lives in the .c under the negation of the CUDA/HIP
         # guard, over device pointers (ruling R5), each pragma under its own guard.
-        assert "int gemm_small_infer_batch(int n, const double *x, double *y, void *stream) {" in source
+        assert ("int gemm_small_infer_batch(int n, const double *ROSENNA_RESTRICT x, "
+                "double *ROSENNA_RESTRICT y, void *stream) {") in source
+        assert ('extern "C" int gemm_small_infer_batch(int n, const double *__restrict__ x, '
+                "double *__restrict__ y, void *stream) {") in emit_kernel(plan)
         assert "#if !defined(__CUDACC__) && !defined(__HIPCC__)" in source
         assert "#if defined(_OPENMP)\n#pragma omp target teams loop is_device_ptr(x, y)\n" in source
         assert "#elif defined(_OPENACC)\n#pragma acc parallel loop deviceptr(x, y)\n#endif" in source
@@ -118,10 +121,17 @@ def test_file_loaded_source_copies_to_the_device_under_the_cuda_guard(golden_mod
     assert "double *gemm_small_w0_dev = 0;" in source
     assert "ROSENNA_MALLOC(&gemm_small_w0_dev, sizeof gemm_small_w0)" in source
     assert "ROSENNA_MEMCPY_H2D(gemm_small_w0_dev, gemm_small_w0, sizeof gemm_small_w0)" in source
-    assert "return 10;" in source and '#include "rosenna_rt.h"' in source
-    # init ends by publishing the copies to the kernel's translation unit.
+    assert "return 10;" in source and '#include "rosenna_rt.h"' not in source   # the header includes it
+    # init ends by publishing the copies to the kernel's translation unit,
+    # through the header's per-translation-unit bind (ruling R8), which any
+    # user kernel's translation unit must call as well.
     assert "return gemm_small_device_bind();" in source
     assert "int gemm_small_device_bind(void);" in header
+    assert "static inline int gemm_small_device_bind_here(void) {" in header
+    assert ("call gemm_small_device_bind_here() once after gemm_small_init()\n"
+            "   in every translation unit whose kernels call gemm_small_infer. Embedded\n"
+            "   models need nothing.") in header
+    assert '#include "rosenna_rt.h"' in header
     # Under an offloading OpenMP/OpenACC build the host arrays have device
     # copies that init updates in the same call (the plan step); each
     # directive under its own guard.
@@ -165,6 +175,27 @@ int main(void) {{ double x[2] = {{0.5, 0.5}}, y[3]; return {name}_infer_batch(1,
     assert "#define ROSENNA_REF_gemm_small_w0 gemm_small_devw[0]" in header
     assert "#define ROSENNA_REF_gemm_small_w0 gemm_small_w0" in header
     assert "__CUDA_ARCH__" in header and "__HIP_DEVICE_COMPILE__" in header
+
+
+def test_embedded_infer_is_a_stub_in_the_host_pass_of_a_device_build(golden_model):
+    # Ruling R9: the host instantiation of __host__ __device__ infer must not
+    # read the __constant__/__device__ arrays (nvcc diagnoses it; hip-clang's
+    # host shadow is undefined). It asserts instead, a no-op under NDEBUG.
+    # The literals are emitted once; there is no host twin.
+    plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64", embed=True)
+    _, header = emit_c(plan)
+    assert "#include <assert.h>" in header
+    assert "#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)\n#define ROSENNA_INFER_HOST_STUB 0\n#else\n#define ROSENNA_INFER_HOST_STUB 1\n#endif" in header
+    assert ('#if ROSENNA_INFER_HOST_STUB\n    (void)x;\n    (void)y;\n    assert(0 && "rosenna: gemm_small_infer '
+            'is device-only in a CUDA/HIP build; call it from a kernel or use gemm_small_infer_batch");\n#else') in header
+    assert header.count("gemm_small_w0[4] = {") == 1
+    assert "host instantiation\n   of infer is a stub" in header
+    # A file-loaded plan computes on the host in every pass (it reads the host arrays).
+    _, header_f = emit_c(build_plan(load_graph(golden_model("gemm_small")), dtype="f64", embed=False))
+    assert "ROSENNA_INFER_HOST_STUB 1" not in header_f and "assert(" not in header_f
+    # Both headers can share one translation unit: every macro is #undef'd first.
+    for macro in ("ROSENNA_DEVICE_FN", "ROSENNA_CONST", "ROSENNA_RESTRICT", "ROSENNA_INFER_HOST_STUB"):
+        assert f"#undef {macro}" in header and f"#undef {macro}" in header_f
 
 
 def _embedded_plan(tmp_path, name, n_in, n_out):
@@ -304,6 +335,15 @@ def test_generated_c_compiles_as_cpp_with_the_rt_header_stubbed(tmp_path, golden
     # between the header's extern "C" block and the definitions, and any use
     # of a runtime name outside rosenna_rt.h. It proves nothing about device
     # code generation; that waits for the nvcc CI job.
+    #
+    # Two variants of the kernel translation unit. With __CUDA_ARCH__ defined
+    # (as in nvcc's device pass) infer reads the file-loaded weights through
+    # the per-translation-unit table that device_bind_here fills, and the
+    # embedded body is the real one: init -> upload -> bind -> launch must
+    # agree bit for bit with the inline, and an unbound table is status 10.
+    # Without it (nvcc's host pass) the file-loaded kernel reads the host
+    # arrays and the embedded kernel is the R9 stub, so that variant is
+    # compiled and linked, and run only for the file-loaded plan.
     cxx = shutil.which("clang++") or shutil.which("g++")
     if cxx is None:
         pytest.skip("no C++ compiler found")
@@ -327,58 +367,65 @@ static inline int rosenna_stub_sync(void *s) { (void)s; return 0; }
 #define ROSENNA_SYNC(s) rosenna_stub_sync(s)
 #define ROSENNA_LAUNCH(k, g, b, s, ...) \\
     do { for (blockIdx.x = 0; blockIdx.x < (unsigned)((g) * (b)); ++blockIdx.x) k(__VA_ARGS__); } while (0)
+#define ROSENNA_LAUNCH_STATUS() 0
 #endif
 """
     from rosenna.weights import write_weights
     for embed in (True, False):
-        name = "gemm_small"; graph = load_graph(golden_model(name)); plan = build_plan(graph, dtype="f64", embed=embed)
-        d = tmp_path / ("e" if embed else "f"); d.mkdir()
-        source, header = emit_c(plan)
-        (d / f"{name}.c").write_text(source); (d / f"{name}.h").write_text(header)
-        (d / "rosenna_rt.h").write_text(stub)
-        if not embed:
-            write_weights(plan, graph, d / f"{name}.rwt")
-        (d / f"{name}_kernel.cu").write_text(emit_kernel(plan))
-        # blockIdx/blockDim/threadIdx are CUDA builtins; give the stub the
-        # three as plain objects so the kernel body parses, with one thread
-        # per block so the stub launch's loop over blockIdx.x walks the points.
-        (d / "builtins.h").write_text(
-            "struct rosenna_dim3 { unsigned int x, y, z; };\n"
-            "static struct rosenna_dim3 blockIdx = {0, 0, 0};\n"
-            "static const struct rosenna_dim3 blockDim = {1, 0, 0}, threadIdx = {0, 0, 0};\n")
-        # -ffp-contract=off on every translation unit: the host may be built
-        # by a different compiler than the library, and clang contracts
-        # `acc += a * b` to an FMA by default where g++ in ISO mode does not,
-        # which breaks the bit-for-bit comparison below for no real reason.
-        common = [cxx, "-x", "c++", "-std=c++11", "-ffp-contract=off", "-Wall", "-Wextra", "-c",
-                  "-D__CUDACC__=1", "-D__host__=", "-D__device__=", "-D__constant__=", "-D__global__=",
-                  "-include", "builtins.h"]
-        r = subprocess.run(common + [f"{name}.c", "-o", f"{name}.o"], cwd=d, capture_output=True, text=True)
-        assert r.returncode == 0, r.stderr
-        r = subprocess.run(common + [f"{name}_kernel.cu", "-o", f"{name}_kernel.o"], cwd=d, capture_output=True, text=True)
-        assert r.returncode == 0, r.stderr
-        # A plain C host TU links against the C++-compiled objects: the API
-        # has C linkage. With the stubbed runtime, init's upload and bind run
-        # on host memory and the "launch" is a serial call of the kernel body,
-        # so the batch must agree with the inline exactly.
-        n_in, n_out = plan.input.shape[0], plan.output.shape[0]
-        (d / "host.c").write_text(f"""
+        for arch in (None, "800"):
+            name = "gemm_small"; graph = load_graph(golden_model(name)); plan = build_plan(graph, dtype="f64", embed=embed)
+            d = tmp_path / f"{'e' if embed else 'f'}{arch or ''}"; d.mkdir()
+            source, header = emit_c(plan)
+            (d / f"{name}.c").write_text(source); (d / f"{name}.h").write_text(header)
+            (d / "rosenna_rt.h").write_text(stub)
+            if not embed:
+                write_weights(plan, graph, d / f"{name}.rwt")
+            (d / f"{name}_kernel.cu").write_text(emit_kernel(plan))
+            # blockIdx/blockDim/threadIdx are CUDA builtins; give the stub the
+            # three as plain objects so the kernel body parses, with one thread
+            # per block so the stub launch's loop over blockIdx.x walks the points.
+            (d / "builtins.h").write_text(
+                "struct rosenna_dim3 { unsigned int x, y, z; };\n"
+                "static struct rosenna_dim3 blockIdx = {0, 0, 0};\n"
+                "static const struct rosenna_dim3 blockDim = {1, 0, 0}, threadIdx = {0, 0, 0};\n")
+            # -ffp-contract=off on every translation unit: the host may be built
+            # by a different compiler than the library, and clang contracts
+            # `acc += a * b` to an FMA by default where g++ in ISO mode does not,
+            # which breaks the bit-for-bit comparison below for no real reason.
+            common = [cxx, "-x", "c++", "-std=c++11", "-ffp-contract=off", "-Wall", "-Wextra", "-c",
+                      "-D__CUDACC__=1", "-D__host__=", "-D__device__=", "-D__constant__=", "-D__global__=",
+                      "-include", "builtins.h"]
+            r = subprocess.run(common + [f"{name}.c", "-o", f"{name}.o"], cwd=d, capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+            arch_flag = [f"-D__CUDA_ARCH__={arch}"] if arch else []
+            r = subprocess.run(common + arch_flag + [f"{name}_kernel.cu", "-o", f"{name}_kernel.o"], cwd=d, capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+            # A plain C host TU links against the C++-compiled objects: the API
+            # has C linkage. With the stubbed runtime, init's upload and bind run
+            # on host memory and the "launch" is a serial call of the kernel body.
+            n_in, n_out = plan.input.shape[0], plan.output.shape[0]
+            unbound = "" if embed else f"if ({name}_infer_batch(4, x, yb, 0) != 10) return 6;"
+            init = "" if embed else f'if ({name}_init("none.rwt") != 1) return 2; if ({name}_init("{name}.rwt") != 0) return 3;'
+            (d / "host.c").write_text(f"""
 #include "{name}.h"
 int main(void) {{ double x[4 * {n_in}], y[4 * {n_out}], yb[4 * {n_out}];
-  {'' if embed else f'if ({name}_init("none.rwt") != 1) return 2; if ({name}_init("{name}.rwt") != 0) return 3;'}
   for (int c = 0; c < 4 * {n_in}; ++c) x[c] = 0.1 * c - 0.2;
+  {unbound}
+  {init}
   for (int p = 0; p < 4; ++p) {name}_infer(x + p * {n_in}, y + p * {n_out});
   if ({name}_infer_batch(4, x, yb, 0)) return 4;
   for (int c = 0; c < 4 * {n_out}; ++c) if (y[c] != yb[c]) return 5;
   return {name}_infer_batch(0, x, yb, 0); }}
 """)
-        cc = shutil.which("clang") or shutil.which("cc") or shutil.which("gcc")
-        r = subprocess.run([cc, "-std=c11", "-ffp-contract=off", "-c", "host.c", "-o", "host.o"], cwd=d, capture_output=True, text=True)
-        assert r.returncode == 0, r.stderr
-        r = subprocess.run([cxx, "host.o", f"{name}.o", f"{name}_kernel.o", "-lm", "-o", "host"], cwd=d, capture_output=True, text=True)
-        assert r.returncode == 0, r.stderr
-        r = subprocess.run(["./host"], cwd=d, capture_output=True, text=True)
-        assert r.returncode == 0, (r.returncode, r.stderr)
+            cc = shutil.which("clang") or shutil.which("cc") or shutil.which("gcc")
+            r = subprocess.run([cc, "-std=c11", "-ffp-contract=off", "-c", "host.c", "-o", "host.o"], cwd=d, capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+            r = subprocess.run([cxx, "host.o", f"{name}.o", f"{name}_kernel.o", "-lm", "-o", "host"], cwd=d, capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+            if embed and arch is None:
+                continue        # the kernel would hit the R9 host stub's assert
+            r = subprocess.run(["./host"], cwd=d, capture_output=True, text=True)
+            assert r.returncode == 0, (embed, arch, r.returncode, r.stderr)
 
 
 def test_recipe_selects_the_backend(golden_model):

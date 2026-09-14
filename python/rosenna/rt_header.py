@@ -17,12 +17,15 @@ _RT_HEADER = """\
 #define ROSENNA_STREAM_T hipStream_t
 #define ROSENNA_MALLOC(p, n) hipMalloc((void **)(p), (n))
 #define ROSENNA_MEMCPY_H2D(d, h, n) hipMemcpy((d), (h), (n), hipMemcpyHostToDevice)
+/* HIP_SYMBOL is how HIP spells a symbol argument portably: it expands to X
+   on hip-clang and to &X on the retired hcc path. */
 #define ROSENNA_MEMCPY_TO_SYMBOL(sym, src, n) \\
     hipMemcpyToSymbol(HIP_SYMBOL(sym), (src), (n), 0, hipMemcpyHostToDevice)
 #define ROSENNA_FREE(p) hipFree(p)
 #define ROSENNA_OK hipSuccess
 #define ROSENNA_SYNC(s) hipStreamSynchronize(s)
 #define ROSENNA_LAUNCH(k, g, b, s, ...) k<<<(g), (b), 0, (s)>>>(__VA_ARGS__)
+#define ROSENNA_LAUNCH_STATUS() hipPeekAtLastError()
 #elif defined(__CUDACC__)
 #include <cuda_runtime.h>
 #define ROSENNA_STREAM_T cudaStream_t
@@ -34,6 +37,7 @@ _RT_HEADER = """\
 #define ROSENNA_OK cudaSuccess
 #define ROSENNA_SYNC(s) cudaStreamSynchronize(s)
 #define ROSENNA_LAUNCH(k, g, b, s, ...) k<<<(g), (b), 0, (s)>>>(__VA_ARGS__)
+#define ROSENNA_LAUNCH_STATUS() cudaPeekAtLastError()
 #else
 #error "rosenna_rt.h is for nvcc or hipcc only"
 #endif
