@@ -156,8 +156,11 @@ nvc -O2 -mp=gpu -gpu=cc80 teams_mapping_repro.c -lm -o repro && ./repro
   teams distribute parallel for, bias after   -> OK
 ```
 
-The bailout is a compiler defect and should go to NVIDIA; the bias
-reordering is a workaround, not a fix.
+The bailout is a compiler defect, not something roseNNa can fix, and it has
+not been reported to NVIDIA. The reproducer above is kept so that whoever
+next wonders why a dense layer adds its bias where it does has the evidence
+in one file -- and so it can be re-checked against a later HPC SDK, since
+the reordering is a workaround that a fixed compiler would make unnecessary.
 
 ## What this means for a solver
 
