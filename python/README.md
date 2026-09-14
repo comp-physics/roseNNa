@@ -152,6 +152,18 @@ of a *file-loaded* model needs one more call: after every `model_init`, call
 `model_device_bind_here()` in every translation unit whose kernels call
 `model_infer` (an embedded model needs neither).
 
+Embedded weights on a CUDA/HIP build go to one of two storage classes,
+decided per model at generate time, not at build time: under 48 KB (12,288
+float32 or 6,144 float64 parameters) `ROSENNA_CONST` is `__constant__`
+(cached, broadcast to every thread reading the same address in a warp); at
+or over 48 KB it is `__device__ const` (ordinary global memory), because
+CUDA constant memory is 64 KB per module and the cut leaves 16 KB of that
+for anything else the translation unit puts there. Both storage classes
+compute the same result -- a model over the threshold still runs correctly,
+just without the constant-cache broadcast -- and the header's own comment
+on `ROSENNA_CONST` states which one a given model got, so check it there if
+a per-grid-point call's throughput is on the critical path.
+
 ### No transfers in the loop
 
 `<name>_init` is the plan step and the only routine that allocates or
@@ -326,6 +338,14 @@ batched device path (`<name>_infer_batch`, the native kernel, or the
 `omp`/`acc` fallbacks under a real offload device), because that needs a GPU
 this machine may not have.
 
+The comparison tolerance is keyed on the ONNX model's own dtype, not on
+`--precision`: onnxruntime always computes a float32 model's reference in
+float32, so `rosenna verify --precision double` on a float32 PyTorch export
+is still compared at float32 tolerance (`rtol=1e-5`, `atol=1e-6`), not
+float64, however precisely the generated code itself computes. A genuinely
+float64 ONNX model is compared at the tight tolerance (`rtol=1e-9`,
+`atol=1e-12`) regardless of `--precision`.
+
 ```sh
 rosenna gpu-gate --help
 ```
@@ -357,6 +377,9 @@ example of wiring a generated model into a solver, with the same caveat.
   weights if `<name>_init` was never called, or failed, before it. Nothing
   in the loop path checks this -- checking it there would be the transfer
   and synchronization ruled out under [No transfers in the loop](#no-transfers-in-the-loop).
+  The `omp` backend's `<name>_infer_batch` fallback calls `<name>_infer` per
+  point and has the same silent behavior; only the cuda/hip path's
+  `<name>_infer_batch` catches this, returning status 10.
 - The native batched kernel (`ROSENNA_BACKEND=cuda|hip`) launches one thread
   per point in this release; a fused, tiled batched GEMM is planned once the
   GPU gate has timed this one.
