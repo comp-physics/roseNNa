@@ -8,6 +8,8 @@ from google.protobuf.message import DecodeError
 
 from .emit_c import emit_c, emit_c_recipe
 from .emit_fortran import emit_fortran
+from .emit_kernel import emit_kernel
+from .rt_header import rt_header
 from .frontend import UnsupportedModel, load_graph
 from .plan import build_plan, validate_model_name
 from .verify import VerificationError, verify_model
@@ -90,10 +92,16 @@ def _cmd_generate(args) -> int:
         c_path = outdir / f"{name}.c"
         h_path = outdir / f"{name}.h"
         mk_path = outdir / f"{name}.mk"
+        cu_path = outdir / f"{name}_kernel.cu"
+        rt_path = outdir / "rosenna_rt.h"
         c_path.write_text(source)
         h_path.write_text(header)
         mk_path.write_text(recipe)
-        written += [c_path, h_path, mk_path]
+        # The native batched kernel and its runtime map: built only when the
+        # recipe runs with ROSENNA_BACKEND=cuda|hip, inert otherwise.
+        cu_path.write_text(emit_kernel(plan))
+        rt_path.write_text(rt_header())
+        written += [c_path, h_path, mk_path, cu_path, rt_path]
 
     # An embedded plan has no weights file to write: every weight is already a
     # ROSENNA_CONST array baked into the header. Fortran generation (unchanged

@@ -51,3 +51,45 @@ jobs:
           mkdir -p fLibrary/objFiles
           chmod +x test/run.sh
           cd test && ./run.sh
+
+  # Compile-only check of the generated CUDA sources. There is no GPU here and
+  # no driver is installed: nvcc builds the kernel and the .c-as-C++ library for
+  # sm_80 and the test asserts the archive exists. Running it is the GPU gate's
+  # job. This job is the first time the generated CUDA code meets a compiler.
+  # ubuntu-22.04 on purpose: NVIDIA's ubuntu2404 apt repository starts at CUDA
+  # 12.5, and 12.4 is the toolkit version this job pins.
+  nvcc_compile:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Install the CUDA 12.4 compiler and runtime headers (no driver)
+        run: |
+          set -euo pipefail
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cuda-nvcc-12-4 cuda-cudart-dev-12-4
+          echo "/usr/local/cuda-12.4/bin" >> "$GITHUB_PATH"
+
+      - name: Check nvcc
+        run: nvcc --version && gcc --version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e python
+
+      - name: CUDA backend compiles under nvcc (not skipped)
+        run: |
+          set -o pipefail
+          cd python && python3 -m pytest tests/test_kernel.py -v -rs -s -k cuda 2>&1 | tee cuda.log
+          ! grep -q "SKIPPED" cuda.log
+          grep -q "PASSED" cuda.log
