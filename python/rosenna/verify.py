@@ -22,6 +22,44 @@ class VerificationError(RuntimeError):
     """A comparison would not mean anything (e.g. the reference is dead)."""
 
 
+def _live_reference(session, shape, dtype, seed=0, batch=8, max_attempts=10):
+    """Resample input batches until the onnxruntime reference itself is alive.
+
+    Non-degeneracy is a property of the randomly generated fixture, not of
+    the code under test: several golden models (e.g. gemm_small) have no
+    manual_seed, so their weights differ on every regeneration, and an
+    all-zero reference (a dead model, e.g. every pre-activation negative
+    into a final ReLU) is a property of that draw of weights -- correct
+    generated code reproducing a dead model must *also* be all zero, so no
+    assertion on our own output can tell the two cases apart. The fix
+    belongs here, on the reference, before we ever build or run anything.
+
+    `dtype` is a numpy dtype (e.g. np.float64), not a plan dtype string
+    ("f32"/"f64") -- this helper draws and feeds inputs at that numpy dtype
+    directly.
+
+    Returns (inputs, expected) for the first batch whose reference has at
+    least two non-zero values across the whole batch, or (None, None) if
+    max_attempts batches all came back dead.
+
+    Moved here (from tests/test_emit_fortran.py) so that `rosenna/gate.py`
+    can reuse it without importing test code; tests/test_emit_fortran.py
+    re-exports the same name so every existing `from tests.test_emit_fortran
+    import _live_reference` keeps working unchanged.
+    """
+    rng = np.random.default_rng(seed)
+    for _ in range(max_attempts):
+        inputs = rng.uniform(-2, 2, (batch, int(np.prod(shape)))).astype(dtype)
+        expected = np.array([
+            session.run(None, {session.get_inputs()[0].name:
+                                row.reshape(shape).astype(np.float32)})[0].ravel()
+            for row in inputs
+        ])
+        if np.count_nonzero(expected) >= 2:
+            return inputs, expected
+    return None, None
+
+
 @dataclass(frozen=True)
 class VerifyResult:
     lang: str          # "fortran" | "c"

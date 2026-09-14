@@ -14,6 +14,7 @@
 !*.toml
 !goldenFiles/mnist/mnist.onnx
 !instructions/*
+!python/examples/**/*.md
 reading.f90
 userTesting.f90
 linearV3copy.f90

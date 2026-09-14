@@ -6,6 +6,11 @@ from rosenna.frontend import load_graph
 from rosenna.plan import build_plan
 from rosenna.weights import write_weights
 from rosenna.emit_fortran import emit_fortran
+# _live_reference now lives in rosenna/verify.py (rosenna/gate.py needs it too,
+# and cannot import test code); re-exported here under its original name so
+# every existing `from tests.test_emit_fortran import _live_reference` keeps
+# working unchanged.
+from rosenna.verify import _live_reference
 
 DENSE = ["gemm_small", "gemm_big", "gemm_nobias", "droplet", "batchnet"]
 
@@ -47,35 +52,6 @@ end program
     out = subprocess.run(["./run"], cwd=tmp_path, input=stdin, capture_output=True,
                          text=True, check=True).stdout
     return np.array([[float(v) for v in line.split()] for line in out.strip().splitlines()])
-
-
-def _live_reference(session, shape, dtype, seed=0, batch=8, max_attempts=10):
-    """Resample input batches until the onnxruntime reference itself is alive.
-
-    Non-degeneracy is a property of the randomly generated fixture, not of
-    the code under test: several golden models (e.g. gemm_small) have no
-    manual_seed, so their weights differ on every regeneration, and an
-    all-zero reference (a dead model, e.g. every pre-activation negative
-    into a final ReLU) is a property of that draw of weights -- correct
-    generated code reproducing a dead model must *also* be all zero, so no
-    assertion on our own output can tell the two cases apart. The fix
-    belongs here, on the reference, before we ever build or run anything.
-
-    Returns (inputs, expected) for the first batch whose reference has at
-    least two non-zero values across the whole batch, or (None, None) if
-    max_attempts batches all came back dead.
-    """
-    rng = np.random.default_rng(seed)
-    for _ in range(max_attempts):
-        inputs = rng.uniform(-2, 2, (batch, int(np.prod(shape)))).astype(dtype)
-        expected = np.array([
-            session.run(None, {session.get_inputs()[0].name:
-                                row.reshape(shape).astype(np.float32)})[0].ravel()
-            for row in inputs
-        ])
-        if np.count_nonzero(expected) >= 2:
-            return inputs, expected
-    return None, None
 
 
 @pytest.mark.parametrize("name", DENSE)

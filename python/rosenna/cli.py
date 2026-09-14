@@ -9,6 +9,7 @@ from google.protobuf.message import DecodeError
 from .emit_c import emit_c, emit_c_recipe
 from .emit_fortran import emit_fortran, emit_fortran_recipe
 from .emit_kernel import emit_kernel
+from .gate import run_gate
 from .rt_header import rt_header
 from .frontend import UnsupportedModel, load_graph
 from .plan import build_plan, validate_model_name
@@ -53,6 +54,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     info = sub.add_parser("info", help="report ops, shapes and whether the model is supported")
     info.add_argument("model")
+
+    gate = sub.add_parser(
+        "gpu-gate",
+        help="build and run the device-library validation harnesses on a GPU machine "
+             "(gemm_big, embedded and file-loaded, both languages, three harnesses); "
+             "writes gate-report.md")
+    gate.add_argument("--cc", required=True, help="host C compiler")
+    gate.add_argument("--fc", required=True, help="host Fortran compiler")
+    gate.add_argument("--flags", default="", help="host offload flags, e.g. -fopenmp")
+    gate.add_argument("--backend", choices=["cuda", "hip", "omp"], required=True,
+                      help="which infer_batch implementation to build and exercise")
+    gate.add_argument("--devcc", default=None, help="nvcc or hipcc; required for --backend cuda|hip")
+    gate.add_argument("--devflags", default="", help="device compiler flags")
+    gate.add_argument("--out", default=".", help="directory for generated sources and gate-report.md")
+    gate.add_argument("--host-fallback", action="store_true",
+                      help="drop the OMP_TARGET_OFFLOAD=MANDATORY requirement so the omp "
+                           "backend can be exercised on a machine with no accelerator")
     return p
 
 
@@ -134,6 +152,12 @@ def _cmd_verify(args) -> int:
     return 0 if all_ok else 1
 
 
+def _cmd_gate(args) -> int:
+    return run_gate(cc=args.cc, fc=args.fc, flags=args.flags, backend=args.backend,
+                    devcc=args.devcc, devflags=args.devflags, out=args.out,
+                    host_fallback=args.host_fallback)
+
+
 def _cmd_info(args) -> int:
     graph = load_graph(args.model)
     for line in _describe_ops(graph):
@@ -147,7 +171,31 @@ def _cmd_info(args) -> int:
     return 0
 
 
+_DASH_VALUED_OPTIONS = ("--flags", "--devflags")
+
+
+def _join_dash_valued_options(argv: list[str]) -> list[str]:
+    """Let --flags/--devflags take a value that itself starts with '-' (e.g. -fopenmp).
+
+    argparse treats any token starting with a prefix character as a
+    candidate option string, even one no parser here defines, so `--flags
+    -fopenmp` (two argv entries) fails with "expected one argument" --
+    exactly the invocation shape `rosenna gpu-gate` needs for real compiler
+    flags. Folding it into one `--flags=-fopenmp` entry first sidesteps
+    argparse's option-likely-string heuristic entirely; the `=` form always
+    works because argparse never re-examines what follows `=`.
+    """
+    out = list(argv)
+    i = 0
+    while i < len(out) - 1:
+        if out[i] in _DASH_VALUED_OPTIONS and out[i + 1].startswith("-"):
+            out[i:i + 2] = [f"{out[i]}={out[i + 1]}"]
+        i += 1
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = _join_dash_valued_options(sys.argv[1:] if argv is None else argv)
     args = build_parser().parse_args(argv)
     try:
         if args.command == "generate":
@@ -156,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify(args)
         if args.command == "info":
             return _cmd_info(args)
+        if args.command == "gpu-gate":
+            return _cmd_gate(args)
         raise AssertionError(f"unhandled command {args.command!r}")
     except UnsupportedModel as e:
         print(f"rosenna: {e}", file=sys.stderr)
