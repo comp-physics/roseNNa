@@ -1,4 +1,10 @@
-"""Render a plan as a self-contained Fortran module."""
+"""Render a plan as a self-contained Fortran module.
+
+Written to <name>_model.F90, with a capital F: infer_batch's device-pointer
+clause is spelled one way for nvfortran and another for everyone else (see
+_emit_infer_batch), and a capital-F suffix is the one way to ask for the
+preprocessor that every Fortran compiler honours without a flag.
+"""
 from .abi import name_capacity, rank_capacity, status_code_comment
 from .plan import Plan
 
@@ -372,11 +378,30 @@ def _emit_infer(plan: Plan) -> list:
         lines.append(f"        real(wp) :: {sym}({plan.buffers[sym]})")
     # Declare only the loop variables some op actually uses: a weight-free
     # model (x -> Relu -> y) has no inner accumulation loop, and an unused
-    # 'j' is a warning in any tree built with -Werror.
-    loop_vars = [v for v, used in (("i", bool(plan.ops)),
-                                   ("j", any(op.kind == "gemm" for op in plan.ops))) if used]
+    # 'j' is a warning in any tree built with -Werror. The spatial nest brings
+    # its own set, and its accumulator has to be a named local because Fortran
+    # has no statement-scoped declarations the way the C nest does.
+    kinds = {op.kind for op in plan.ops}
+    spatial = kinds & {"conv", "maxpool", "avgpool"}
+    loop_vars = [v for v, used in (
+        ("i", any(k in ("gemm", "copy", "lstm") or k in _ACT for k in kinds)),
+        ("j", "lstm" in kinds and "gemm" not in kinds),
+        ("j", "gemm" in kinds),
+        ("r", any(op.kind == "gemm" and op.rows > 1 for op in plan.ops)),
+        ("n, oc, oh, ow, ic, kh, kw, ih, iw", bool(spatial)),
+        ("seen", "maxpool" in kinds),
+        ("cnt", "avgpool" in kinds),
+        ("lt, lb, lk", "lstm" in kinds),
+        (", ".join(f"c{k}" for k in range(_max_add_rank(plan))), "add" in kinds)) if used]
     if loop_vars:
         lines.append("        integer :: " + ", ".join(loop_vars))
+    if spatial or "lstm" in kinds:
+        reals = ["acc"]
+        if "maxpool" in kinds:
+            reals.append("v")
+        if "lstm" in kinds:
+            reals += ["lgi", "lgo", "lgf", "lgc", "lcn"]
+        lines.append("        real(wp) :: " + ", ".join(reals))
 
     # Fusing an activation into its preceding gemm's loop would require the
     # activation's output buffer to equal the gemm's output buffer. Task 4's
@@ -387,27 +412,60 @@ def _emit_infer(plan: Plan) -> list:
     # coincidence, so there is no such branch here: every op gets its own
     # loop, straight from plan.assignment and plan.buffers.
     ops = plan.ops
-    cur_len = n_in
     for op in ops:
         if op.kind == "gemm":
             dst = plan.assignment[op.out]
             src = plan.assignment[op.inp]
             idx_expr = _weight_index(weight_by_symbol, op)
 
+            # The bias is added AFTER the dot product, not used to seed the
+            # accumulator. Seeding it from a declare-target array is what makes
+            # nvc/nvfortran refuse to generate a `distribute parallel for` body
+            # (it emits a kernel that traps); adding it afterwards compiles, and
+            # unlocks a ~19x faster per-point offload loop. See
+            # examples/nvhpc_teams_mapping/. Both emitters do this identically,
+            # so the C and Fortran backends stay bit-comparable.
+            # See emit_c: `r` indexes independent rows sharing one weight, and
+            # is only emitted when a model actually has more than one.
+            ri, ro = ((f"(r - 1) * {op.n_in} + ", f"(r - 1) * {op.n_out} + ")
+                      if op.rows > 1 else ("", ""))
+            if op.rows > 1:
+                lines.append(f"        do r = 1, {op.rows}")
             lines.append(f"        do i = 1, {op.n_out}")
-            if op.bias:
-                lines.append(f"            {dst}(i) = {op.bias}(i)")
-            else:
-                lines.append(f"            {dst}(i) = 0.0_wp")
+            lines.append(f"            {dst}({ro}i) = 0.0_wp")
             lines.append(f"            do j = 1, {op.n_in}")
-            lines.append(f"                {dst}(i) = {dst}(i) + {src}(j) * {op.weight}({idx_expr})")
+            lines.append(f"                {dst}({ro}i) = {dst}({ro}i) + "
+                         f"{src}({ri}j) * {op.weight}({idx_expr})")
             lines.append("            end do")
+            if op.bias:
+                lines.append(f"            {dst}({ro}i) = {dst}({ro}i) + {op.bias}(i)")
             lines.append("        end do")
-            cur_len = op.n_out
+            if op.rows > 1:
+                lines.append("        end do")
+        elif op.kind == "alias":
+            continue
+        elif op.kind == "transpose":
+            lines += _emit_transpose_f(op, plan.assignment[op.out], plan.assignment[op.inp])
+        elif op.kind == "lstm":
+            lines += _emit_lstm_f(
+                op, plan.assignment[op.out], plan.assignment[op.inp],
+                plan.assignment[op.extra_in[0]] if op.extra_in else None,
+                plan.assignment[op.extra_in[1]] if len(op.extra_in) > 1 else None,
+                [plan.assignment[o] for o in op.outs])
+        elif op.kind == "add":
+            lines += _emit_add_f(op, plan.assignment[op.out], plan.assignment[op.inp])
+        elif op.kind == "copy":
+            dst, src = plan.assignment[op.out], plan.assignment[op.inp]
+            off = f"{op.src_offset} + " if op.src_offset else ""
+            lines.append(f"        do i = 1, {op.n_out}")
+            lines.append(f"            {dst}(i) = {src}({off}i)")
+            lines.append("        end do")
+        elif op.kind in ("conv", "maxpool", "avgpool"):
+            lines += _emit_spatial_f(op, plan.assignment[op.out], plan.assignment[op.inp])
         elif op.kind in _ACT:
             dst = plan.assignment[op.out]
             src = plan.assignment[op.inp]
-            lines.append(f"        do i = 1, {cur_len}")
+            lines.append(f"        do i = 1, {op.n_out}")
             lines.append(f"            {dst}(i) = {_ACT[op.kind].format(v=f'{src}(i)')}")
             lines.append("        end do")
         else:
@@ -416,6 +474,171 @@ def _emit_infer(plan: Plan) -> list:
     lines.append("    end subroutine")
     lines.append("")
     return lines
+
+
+def _flat_index_f(names, shape):
+    """Row-major flat index, 1-based: the C expression plus one."""
+    expr = names[0]
+    for k in range(1, len(shape)):
+        expr = f"({expr} * {shape[k]} + {names[k]})"
+    return f"{expr} + 1"
+
+
+def _max_add_rank(plan) -> int:
+    """How many counters the widest Add nest in this model needs."""
+    return max((len(op.bcast.out_shape) for op in plan.ops if op.kind == "add"), default=0)
+
+
+def _emit_transpose_f(op, dst, src):
+    """The Fortran twin of _emit_transpose_c."""
+    names = [f"c{k}" for k in range(len(op.out_shape))]
+    L = [f"        do {nm} = 0, {ext - 1}" for nm, ext in zip(names, op.out_shape)]
+    terms = [nm if st == 1 else f"{nm} * {st}" for nm, st in zip(names, op.perm_strides) if st]
+    rhs = (" + ".join(terms) + " + 1") if terms else "1"
+    L.append(f"            {dst}({_flat_index_f(names, op.out_shape)}) = {src}({rhs})")
+    L += ["        end do"] * len(names)
+    return L
+
+
+def _emit_lstm_f(op, dst, src, h0, c0, outs):
+    """The Fortran twin of _emit_lstm_c: same recurrence, same ONNX i,o,f,c order."""
+    sp = op.lstm
+    H, I, B, T = sp.hidden, sp.input_size, sp.batch, sp.seq
+    h, c, g = sp.h_sym, sp.c_sym, sp.g_sym
+    L = [f"        do i = 1, {B * H}",
+         f"            {h}(i) = " + (f"{h0}(i)" if h0 else "0.0_wp"),
+         "        end do",
+         f"        do i = 1, {B * H}",
+         f"            {c}(i) = " + (f"{c0}(i)" if c0 else "0.0_wp"),
+         "        end do",
+         f"        do lt = 0, {T - 1}",
+         f"        do lb = 0, {B - 1}",
+         f"            do lk = 0, {4 * H - 1}",
+         "                acc = 0.0_wp",
+         f"                do j = 0, {I - 1}",
+         f"                    acc = acc + {src}((lt * {B} + lb) * {I} + j + 1) * "
+         f"{op.weight}(lk * {I} + j + 1)",
+         "                end do",
+         f"                do j = 0, {H - 1}",
+         f"                    acc = acc + {h}(lb * {H} + j + 1) * {op.weight2}(lk * {H} + j + 1)",
+         "                end do"]
+    if op.bias:
+        L.append(f"                acc = acc + {op.bias}(lk + 1) + {op.bias}({4 * H} + lk + 1)")
+    L += [f"                {g}(lk + 1) = acc",
+          "            end do",
+          f"            do j = 0, {H - 1}",
+          f"                lgi = {_ACT['sigmoid'].format(v=f'{g}(j + 1)')}",
+          f"                lgo = {_ACT['sigmoid'].format(v=f'{g}({H} + j + 1)')}",
+          f"                lgf = {_ACT['sigmoid'].format(v=f'{g}({2 * H} + j + 1)')}",
+          f"                lgc = {_ACT['tanh'].format(v=f'{g}({3 * H} + j + 1)')}",
+          f"                lcn = lgf * {c}(lb * {H} + j + 1) + lgi * lgc",
+          f"                {c}(lb * {H} + j + 1) = lcn",
+          f"                {h}(lb * {H} + j + 1) = lgo * {_ACT['tanh'].format(v='lcn')}",
+          f"                {dst}((lt * {B} + lb) * {H} + j + 1) = {h}(lb * {H} + j + 1)",
+          "            end do",
+          "        end do",
+          "        end do"]
+    for k, sym in enumerate(outs):
+        L += [f"        do i = 1, {B * H}",
+              f"            {sym}(i) = " + (h if k == 0 else c) + "(i)",
+              "        end do"]
+    return L
+
+
+def _emit_add_f(op, dst, src):
+    """The Fortran twin of _emit_add_c. Counters stay 0-based; only the
+    subscript gains the +1, so the two emitters compute the same index."""
+    bc = op.bcast
+    names = [f"c{k}" for k in range(len(bc.out_shape))]
+    L = []
+    for nm, ext in zip(names, bc.out_shape):
+        L.append(f"        do {nm} = 0, {ext - 1}")
+    flat = _flat_index_f(names, bc.out_shape)
+    terms = [nm if st == 1 else f"{nm} * {st}" for nm, st in zip(names, bc.strides) if st]
+    widx = (" + ".join(terms) + " + 1") if terms else "1"
+    L.append(f"            {dst}({flat}) = {src}({flat}) + {op.weight}({widx})")
+    L += ["        end do"] * len(names)
+    return L
+
+
+def _emit_spatial_f(op, dst, src):
+    """The Fortran twin of _emit_spatial_c: same loop nest, same arithmetic.
+
+    Buffers are rank-1 here too, so the NCHW index is spelled out. The flat
+    index is the C one plus 1 (Fortran is 1-based); the loop counters stay
+    0-based so the two emitters read as the same code and so the stride/pad
+    arithmetic is identical character for character.
+
+    The weight is the exception: emit_fortran declares it with the ONNX shape
+    REVERSED (see _weight_dims), and Fortran fills a column-major array from
+    the same C-order value list, so w(kw, kh, ic, oc) -- 1-based -- addresses
+    the very element C reaches as w[((oc*IC+ic)*KH+kh)*KW+kw].
+    """
+    sp = op.spatial
+    L = []
+    idx_in = f"((n * {sp.c_in} + ic) * {sp.h_in} + ih) * {sp.w_in} + iw + 1"
+    idx_out = f"((n * {sp.c_out} + oc) * {sp.h_out} + oh) * {sp.w_out} + ow + 1"
+    L.append(f"        do n = 0, {sp.n - 1}")
+    L.append(f"        do oc = 0, {sp.c_out - 1}")
+    L.append(f"        do oh = 0, {sp.h_out - 1}")
+    L.append(f"        do ow = 0, {sp.w_out - 1}")
+    if op.kind == "conv":
+        L.append("            acc = 0.0_wp")
+    elif op.kind == "maxpool":
+        L.append("            acc = 0.0_wp")
+        L.append("            seen = 0")
+        L.append("            ic = oc")
+    else:
+        L.append("            acc = 0.0_wp")
+        L.append("            cnt = 0")
+        L.append("            ic = oc")
+    if op.kind == "conv":
+        L.append(f"            do ic = 0, {sp.c_in - 1}")
+    L.append(f"            do kh = 0, {sp.kh - 1}")
+    L.append(f"            do kw = 0, {sp.kw - 1}")
+    L.append(f"                ih = oh * {sp.sh} - {sp.ph} + kh * {sp.dh}")
+    L.append(f"                iw = ow * {sp.sw} - {sp.pw} + kw * {sp.dw}")
+    L.append(f"                if (ih >= 0 .and. ih < {sp.h_in} .and. "
+             f"iw >= 0 .and. iw < {sp.w_in}) then")
+    if op.kind == "conv":
+        L.append(f"                    acc = acc + {src}({idx_in}) * "
+                 f"{op.weight}(kw + 1, kh + 1, ic + 1, oc + 1)")
+    elif op.kind == "maxpool":
+        L.append(f"                    v = {src}({idx_in})")
+        # .not. (v <= acc), not (v > acc): a NaN loses every comparison, so
+        # the naive form would drop it. Matches emit_c's !(v <= best).
+        L.append("                    if (seen == 0 .or. .not. (v <= acc)) then")
+        L.append("                        acc = v")
+        L.append("                        seen = 1")
+        L.append("                    end if")
+    else:
+        L.append(f"                    acc = acc + {src}({idx_in})")
+        L.append("                    cnt = cnt + 1")
+    L.append("                end if")
+    L.append("            end do")
+    L.append("            end do")
+    if op.kind == "conv":
+        L.append("            end do")
+        if op.bias:
+            L.append(f"            acc = acc + {op.bias}(oc + 1)")
+        L.append(f"            {dst}({idx_out}) = acc")
+    elif op.kind == "maxpool":
+        L.append(f"            {dst}({idx_out}) = acc")
+    else:
+        full = sp.kh * sp.kw
+        if (sp.ph == 0 and sp.pw == 0) or sp.count_include_pad:
+            L.append(f"            {dst}({idx_out}) = acc / real({full}, wp)")
+        else:
+            L.append("            if (cnt > 0) then")
+            L.append(f"                {dst}({idx_out}) = acc / real(cnt, wp)")
+            L.append("            else")
+            L.append(f"                {dst}({idx_out}) = 0.0_wp")
+            L.append("            end if")
+    L.append("        end do")
+    L.append("        end do")
+    L.append("        end do")
+    L.append("        end do")
+    return L
 
 
 def _emit_infer_batch(plan: Plan) -> list:
@@ -428,6 +651,16 @@ def _emit_infer_batch(plan: Plan) -> list:
     (rather than the assumed-shape form the spec flags as a compiler risk)
     is accepted, without warning, under gfortran 15 -fopenmp -std=f2008; see
     task-4-report.md for which gfortran this was verified against.
+
+    nvfortran does not implement `has_device_addr` at all -- through 25.11 it
+    is a syntax error, not a diagnostic about an unsupported clause -- so the
+    module is emitted as .F90 and this one directive is chosen by the
+    preprocessor. `is_device_ptr` is what nvfortran accepts for a Fortran
+    array holding a device address (its pre-5.1 spelling); it was verified to
+    give correct values under nvfortran 25.11 -mp=gpu -gpu=cc80 on an A100,
+    via `rosenna gpu-gate`. gfortran keeps the standard 5.1 clause, since
+    OpenMP 5.1 restricts Fortran `is_device_ptr` to TYPE(C_PTR) and a future
+    gfortran is entitled to reject an array there.
     """
     m = plan.model
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
@@ -440,7 +673,11 @@ def _emit_infer_batch(plan: Plan) -> list:
         "        integer :: p",
         "        ! Ruling R5: x and y are already device-resident. No data clause and",
         "        ! nothing else here transfers, allocates or synchronizes.",
+        "#ifdef __NVCOMPILER",
+        "        !$omp target teams loop is_device_ptr(x, y)",
+        "#else",
         "        !$omp target teams loop has_device_addr(x, y)",
+        "#endif",
         "        !$acc parallel loop deviceptr(x, y)",
         "        do p = 1, n",
         f"            call {m}_infer(x(:, p), y(:, p))",
@@ -469,14 +706,14 @@ def emit_fortran_recipe(plan: Plan) -> str:
     native CUDA/HIP kernel links both archives: `-l<name>_f -l<name>`.
     """
     n = plan.model
-    return f"""# Generated by rosenna. Builds lib{n}_f.a from {n}_model.f90 (and {n}_model.mod).
+    return f"""# Generated by rosenna. Builds lib{n}_f.a from {n}_model.F90 (and {n}_model.mod).
 FC ?= gfortran
 FFLAGS ?= -O2 -Wall -Wextra -std=f2008
 ROSENNA_OFFLOAD_FLAGS ?=
 
 lib{n}_f.a: {n}_model.o
 \tar rcs $@ $^
-{n}_model.o: {n}_model.f90
+{n}_model.o: {n}_model.F90
 \t$(FC) $(FFLAGS) $(ROSENNA_OFFLOAD_FLAGS) -c $< -o $@
 clean:
 \trm -f {n}_model.o {n}_model.mod lib{n}_f.a

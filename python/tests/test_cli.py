@@ -1,8 +1,31 @@
 import subprocess
+
+import onnx
+from onnx import helper, TensorProto
+
 import rosenna.verify as verify_mod
 from rosenna.cli import main
 from tests.test_library_form import _cc
 from tests.test_device_fortran import _omp_fc
+
+
+def _unsupported_model(tmp_path, name="softmaxed"):
+    """A minimal model using an op the generator does not lower.
+
+    Not a golden file: the golden set is what the generator is growing to
+    cover, so pinning a rejection test to one of them turns every genuine
+    coverage win into a spurious failure (mnist did exactly that once Conv,
+    MaxPool, Add and the shape ops landed). Softmax is unsupported on purpose.
+    """
+    x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 3])
+    y = helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 3])
+    node = helper.make_node("Softmax", ["x"], ["y"], axis=1, name="sm0")
+    m = helper.make_model(helper.make_graph([node], "t", [x], [y]),
+                          opset_imports=[helper.make_opsetid("", 13)])
+    m.ir_version = 8
+    path = tmp_path / f"{name}.onnx"
+    onnx.save(m, str(path))
+    return path
 
 
 def test_generate_writes_all_artifacts(tmp_path, capsys, golden_model):
@@ -13,7 +36,7 @@ def test_generate_writes_all_artifacts(tmp_path, capsys, golden_model):
     rc = main(["generate", str(onnx_path),
                "--lang", "both", "--precision", "double", "--out", str(tmp_path), "--no-embed"])
     assert rc == 0
-    for f in ["gemm_small_model.f90", "gemm_small.c", "gemm_small.h", "gemm_small.rwt"]:
+    for f in ["gemm_small_model.F90", "gemm_small.c", "gemm_small.h", "gemm_small.rwt"]:
         assert (tmp_path / f).exists(), f
     out = capsys.readouterr().out
     assert "gemm_small.rwt" in out
@@ -45,7 +68,7 @@ def test_generate_writes_the_fortran_recipe(tmp_path, golden_model):
     onnx_path = golden_model("gemm_small")
     rc = main(["generate", str(onnx_path), "--lang", "fortran", "--out", str(tmp_path)])
     assert rc == 0
-    assert (tmp_path / "gemm_small_model.f90").exists()
+    assert (tmp_path / "gemm_small_model.F90").exists()
     mk = tmp_path / "gemm_small_fortran.mk"
     assert mk.exists()
     # Ruling R13: the Fortran archive is lib<name>_f.a, not lib<name>.a --
@@ -152,22 +175,21 @@ def test_verify_reports_compiler_diagnostic_on_a_compile_failure(capsys, live_ge
     assert "Error" in err  # gfortran's own diagnostic text
 
 
-def test_info_reports_unsupported(capsys, golden_model):
-    onnx_path = golden_model("mnist")
+def test_info_reports_unsupported(tmp_path, capsys):
+    onnx_path = _unsupported_model(tmp_path)
     rc = main(["info", str(onnx_path)])
     out = capsys.readouterr().out
     assert rc == 1
-    # The actual rejection: mnist's node list is not in execution order, and the first
-    # unsupported op validate() hits is a Reshape, not a Conv -- assert on the real
-    # rejection text, not merely on an op name that _describe_ops would print either way.
-    assert "Reshape is not supported" in out
+    # Assert on the real rejection text, not merely on an op name _describe_ops
+    # would print either way.
+    assert "Softmax is not supported" in out
     # If the rejection branch silently disappeared, build_plan would have to have
     # succeeded, and the success branch's bare "supported" line would appear instead.
     assert "supported" not in out.splitlines()
 
 
-def test_generate_rejects_unsupported_model(tmp_path, capsys, golden_model):
-    onnx_path = golden_model("mnist")
+def test_generate_rejects_unsupported_model(tmp_path, capsys):
+    onnx_path = _unsupported_model(tmp_path)
     rc = main(["generate", str(onnx_path), "--out", str(tmp_path)])
     assert rc == 1
     assert "rosenna:" in capsys.readouterr().err

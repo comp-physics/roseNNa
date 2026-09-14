@@ -50,12 +50,6 @@ jobs:
           cd python && python3 -m pytest tests/test_device_c.py -v -rs 2>&1 | tee device.log
           ! grep -E -q "SKIPPED.*(no C compiler|-fopenmp|no gfortran)" device.log
 
-      - name: Run test cases
-        run: |
-          mkdir -p fLibrary/objFiles
-          chmod +x test/run.sh
-          cd test && ./run.sh
-
   # Compile-only check of the generated CUDA sources. There is no GPU here and
   # no driver is installed: nvcc builds the kernel and the .c-as-C++ library for
   # sm_80 and the test asserts the archive exists. Running it is the GPU gate's

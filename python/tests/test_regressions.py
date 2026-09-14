@@ -61,7 +61,7 @@ def _init_status(tmp_path, lang, onnx_path, name, rwt_bytes):
     plan = build_plan(load_graph(onnx_path), dtype="f64", embed=False)
     (work / f"{name}.rwt").write_bytes(rwt_bytes)
     if lang == "fortran":
-        (work / f"{name}_model.f90").write_text(emit_fortran(plan))
+        (work / f"{name}_model.F90").write_text(emit_fortran(plan))
         (work / "main.f90").write_text(f"""
 program main
     use {name}_model
@@ -71,7 +71,7 @@ program main
     print *, status
 end program
 """)
-        subprocess.run(["gfortran", "-O2", "-o", "run", f"{name}_model.f90", "main.f90"],
+        subprocess.run(["gfortran", "-O2", "-o", "run", f"{name}_model.F90", "main.f90"],
                        cwd=work, check=True, capture_output=True, text=True)
     else:
         source, header = emit_c(plan)
@@ -158,6 +158,30 @@ def test_c_emitter_handles_a_gemm_output_with_two_consumers(tmp_path):
     inputs, expected = _reference(path, [1, 3])
     assert inputs is not None
     f_out, c_out = _both_backends(tmp_path, path, "twouse", inputs)
+    np.testing.assert_allclose(f_out, expected, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(c_out, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_activation_after_a_wider_op_reads_its_own_length(tmp_path):
+    # The activation loop used to be bounded by a running "length of the
+    # previous op's output". Here h is 5 wide, the op emitted before the Relu
+    # is 40 wide, and the Relu reads h: with the old bound it ran 40
+    # iterations over a double[5], reading and writing 35 elements past a
+    # stack array with no diagnostic. The bound now comes from the plan.
+    rng = np.random.default_rng(17)
+    w0 = numpy_helper.from_array(rng.uniform(-1, 1, (2, 5)).astype(np.float32), "w0")
+    w1 = numpy_helper.from_array(rng.uniform(-1, 1, (5, 40)).astype(np.float32), "w1")
+    w2 = numpy_helper.from_array(rng.uniform(-1, 1, (5, 2)).astype(np.float32), "w2")
+    nodes = [
+        helper.make_node("MatMul", ["x", "w0"], ["h"], name="mm0"),
+        helper.make_node("MatMul", ["h", "w1"], ["wide"], name="mm1"),
+        helper.make_node("Relu", ["h"], ["r"], name="late_relu"),
+        helper.make_node("MatMul", ["r", "w2"], ["y"], name="mm2"),
+    ]
+    path = _save(tmp_path, "latewide", nodes, [w0, w1, w2], (1, 2), (1, 2))
+    inputs, expected = _reference(path, [1, 2])
+    assert inputs is not None
+    f_out, c_out = _both_backends(tmp_path, path, "latewide", inputs)
     np.testing.assert_allclose(f_out, expected, rtol=1e-5, atol=1e-6)
     np.testing.assert_allclose(c_out, expected, rtol=1e-5, atol=1e-6)
 
@@ -276,14 +300,14 @@ def _compile_warnings(tmp_path, onnx_path, name, dtype="f64"):
     plan = build_plan(load_graph(onnx_path), dtype=dtype)
     work = tmp_path / f"{name}_{dtype}"
     work.mkdir(exist_ok=True)
-    (work / f"{name}_model.f90").write_text(emit_fortran(plan))
+    (work / f"{name}_model.F90").write_text(emit_fortran(plan))
     source, header = emit_c(plan)
     (work / f"{name}.c").write_text(source)
     (work / f"{name}.h").write_text(header)
     # -std=f2008 makes every gfortran enforce the 132-column limit (ruling R20)
     # and anything else non-standard, rather than only the CI compiler.
     f = subprocess.run(["gfortran", "-std=f2008", "-O2", "-Wall", "-Wextra", "-c",
-                        f"{name}_model.f90"],
+                        f"{name}_model.F90"],
                        cwd=work, capture_output=True, text=True, check=True)
     c = subprocess.run(["gcc", "-O2", "-Wall", "-Wextra", "-std=c11", "-c", f"{name}.c"],
                        cwd=work, capture_output=True, text=True, check=True)

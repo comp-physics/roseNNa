@@ -1,209 +1,119 @@
-# Open Source Development
-This project is ongoing and does not contain functionality of every layer available in ONNX. In order to embed new layers into roseNNa, certain steps must be followed:
+# Adding an operator
 
-## Parsing in modelParserONNX.py
-This file reads in the ONNX interpretation of the model. At a higher level, it iterattes over all the layers in the ONNX model (called nodes in the graph), parses its contents by (1) sending some of its options to be parsed in f90 via fypp and (2) finding the weights that correspond to this layer and writing their dimensions to 'onnxModel.txt' and the weights to `onnxWeights.bin`. These two files will be read in by Fortran so it can store the weights and layers. Here is a pseudocode example from the "GEMM" layer in ONNX:
+roseNNa does not implement every ONNX operator. Adding one means teaching four
+places about it, in this order. The order matters: each step is refused loudly
+by the one before it until you get there, so you are never debugging generated
+code that should not have been generated.
+
+Work through it with `rosenna verify` after every step. A new op is done when
+the model it unblocks matches onnxruntime on **both** backends.
+
+## 0. Decide whether it is really an operator
+
+Before writing a loop nest, check whether the op belongs in one of the two
+categories that cost nothing:
+
+- **Constant-only.** If every input is an initializer, add it to `FOLDABLE` in
+  `fold.py` and give `_evaluate` a numpy one-liner. It is then computed at
+  generation time and never reaches the emitters. Most `Reshape`s of weights,
+  and every `Constant`, land here.
+- **Relabelling.** If it only renames axes — it moves no bytes in a flat
+  row-major buffer — add it to `RELABEL`. `plan.py` turns it into a buffer
+  alias: no code, no copy, no extra buffer. `Reshape`, `Squeeze`, `Unsqueeze`,
+  `Flatten` and `Identity` are all in this class, and so is any `Transpose`
+  whose permutation only moves size-1 axes (`_flat_preserving` decides).
+
+Only what survives both of those needs real generated code.
+
+## 1. `validate.py` — refuse what you will not implement
+
+Add the op to `SUPPORTED`, then write a `_validate_<op>` that rejects every
+attribute your loop nest does **not** honour, naming the node.
+
+This is the most important step and the easiest to under-do. Every rule here
+exists because the alternative is not a crash but a model that runs and returns
+plausible, wrong numbers. If your Conv ignores `dilations`, refuse a non-unit
+`dilations` — do not quietly compute something else.
 
 ```python
-#an additional elif branch must be added so the parser knows to parse this layer
-elif layer == "Gemm":
-    #the layer name tells reader.f90 which read routine to call
-    f.write(layer)
-    f.write("\n")
-    names = {n.name:n.i if n.type==2 else n.ints for n in node.attribute}
-    #(the full branch also rejects attributes roseNNa cannot honour: transA, alpha, beta, and a bias that is not rank 1)
-
-    #modelArch stores the layer and options for layer (fypp input later on)
-    #ioMap is referenced to get the output name from the last layer (which is input to this layer)
-    modelArch.append(("Gemm", [ioMap[node.input[0]], names.get('transB', 0)], None))
-
-    #parsing the weight and bias inputs to the layer
-    #(when the bias is absent, the full branch writes a zero bias instead)
-    for inp in node.input[1:3]:
-
-        #writing the dimensions to 'onnxModel.txt'
-        for dim in initializer[inp][0]:
-            f.write(str(dim)+ " ")
-        f.write("\n")
-
-        #writing the weights to 'onnxWeights.bin' as little-endian float64 in column-major (Fortran) order
-        #findWeightsInitializer looks the tensor up by name among the initializers and Constant nodes
-        f2.write(np.asarray(findWeightsInitializer(inp), dtype='<f8').flatten(order='F').tobytes())
-
-    #at the end, we have to make sure that the names for the inputs are preseved. The output name (e.g. "out1") will be the input to the next layer, so we will be using "out1" as the input
-    #this must be stored in some kind of map
-    ioMap[node.output[0]] = ioMap[node.input[0]]
-```
-`onnxWeights.bin` is a raw stream with no header or record markers: every tensor is appended as little-endian float64 values in column-major order, in the same order its dimensions appear in `onnxModel.txt`, so Fortran reads each tensor with a single unformatted `read` into an array of those dimensions.
-## Adding Layer
-Most layers come with a set of parameters that are commonly manipulated (number of layers, activation functions, hidden state, etc.). This information can be integrated by creating a derived type of the layer in [derived_types.f90](https://github.com/comp-physics/roseNNa/blob/master/fLibrary/derived_types.f90). Here is an example:
-
-``` fortran
-TYPE lstmLayer
-    REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: whh
-    REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: wih
-    REAL (c_double), ALLOCATABLE, DIMENSION(:) :: bhh
-    REAL (c_double), ALLOCATABLE, DIMENSION(:) :: bih
-    REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: hid
-    REAL (c_double), ALLOCATABLE, DIMENSION(:,:,:) :: cell
-ENDTYPE lstmLayer
-```
-The LSTM layer requires 4 weight and bias arrays that are used while running through the layer, plus `hid` and `cell`, the zero initial states read when the ONNX node has no `initial_h`/`initial_c` inputs. They are stored within the derived type. The layer dimensions cannot be changed later on.
-
-## Adding activation function
-For any activation functions that need to be added will go in [activation_funcs.f90](https://github.com/comp-physics/roseNNa/blob/master/fLibrary/activation_funcs.f90). To do so, just a function needs to be created. Here is an example:
-
-``` fortran
-FUNCTION tanhh(x) result(output)
-    REAL (c_double), intent(in) :: x(:)
-    REAL (c_double) :: output(size(x))
-    output = tanh(x)
-END FUNCTION tanhh
+def _validate_mything(graph: Graph, node) -> None:
+    where = f"node '{node.name}'"
+    if int(node.attrs.get("some_mode", 0)) != 0:
+        raise UnsupportedModel(f"{where}: some_mode=1 is not supported")
 ```
 
-## Reading layer in reader.f90
-In order to read in the weights and layers from the files `onnxModel.txt` and `onnxWeights.bin`, the file [reader.f90](https://github.com/comp-physics/roseNNa/blob/master/fLibrary/reader.f90) has to include the new layer/activation function. First, we will create an array of derived types for the new layer. This will allow us to store multiple of the same layer if the model contains it (we make it allocatable so it can be appended to with no dimension restrictions). Then, we create a new subroutine for the layer, which defines how we will read in the weights/dimensions (this will depend based on how you wrote the dimensions to the files in the first place). Here is an example:
+## 2. `plan.py` — lower it to literal extents
 
-``` fortran
-!subroutine definition for GEMM/MLP layer (file1=dimensions, file2=weights)
-!binary is .true. unless the weights path ends in .txt; the binary weights unit is opened with access='stream', form='unformatted'
-subroutine read_linear(file1, file2, binary)
-    INTEGER, INTENT(IN) :: file1
-    INTEGER, INTENT(IN) :: file2
-    LOGICAL, INTENT(IN) :: binary
+Two parts: a frozen spec dataclass carrying whatever the loop nest needs, and a
+branch in `build_plan` that fills it.
 
-    !create temporary derived type for this one layer
-    TYPE(linLayer), ALLOCATABLE,DIMENSION(:) :: lin
-    REAL (c_double), ALLOCATABLE, DIMENSION(:,:) :: weights
-    REAL (c_double), ALLOCATABLE, DIMENSION(:) :: biases
-    INTEGER :: w_dim1
-    INTEGER :: w_dim2
+Resolve everything shape-dependent **here**, not in the emitters. `auto_pad` is
+the worked example: it depends on the input extent, the input extent is
+literal, so `_begin_pads` turns it into two integers and the emitted code never
+learns that `auto_pad` exists. The emitters should only ever interpolate
+numbers.
 
-    !read in dimensions from file1 and allocate weights to store the incoming weights
-    ALLOCATE(lin(1))
-    read(file1, *) w_dim1, w_dim2
-    ALLOCATE(weights(w_dim1,w_dim2))
-
-    !read in the weights: one unformatted read from the binary stream, or a list-directed read from a legacy text file
-    if (binary) then
-        read(file2) weights
-    else
-        read(file2, *) weights
-    end if
-
-    !repeat for biases
-    read(file1, *) w_dim1
-    ALLOCATE(biases(w_dim1))
-    if (binary) then
-        read(file2) biases
-    else
-        read(file2, *) biases
-    end if
-
-    !then assign the temporary layer its weights
-    lin(1)%weights = weights
-    lin(1)%biases = biases
-
-    DEALLOCATE(weights)
-    DEALLOCATE(biases)
-
-    !append the temporary layer to the list of layers
-    linLayers = [linLayers, lin]
-    DEALLOCATE(lin)
-end subroutine
+```python
+@dataclass(frozen=True)
+class MyThing:
+    n: int
+    extent: int
 ```
 
-## Fypp to call the layer/activation function
-After encoding the layer/activation function and reading it, fypp will construct the model. Fypp takes in the model architecture, inputs, outputs, and shapes, all of which have been written to an external fypp file. In [modelCreator.fpp](https://github.com/comp-physics/roseNNa/blob/master/fLibrary/modelCreator.fpp), there is a condition for each of the layers that need to be added. Here is an example for the multilayer perceptron layer (GEMM):
+Add the field to `Op` (default `None`), and append your op in `build_plan`.
+`n_in`/`n_out` are the flat element counts — `_length(graph.values[name])`.
 
-``` fortran
-#: if tup[0] == 'Gemm'
-    !========Gemm Layer============
-    CALL linear_layer(${tup[1][0]}$, linLayers(${layer_dict[tup[0]]}$),${1-tup[1][1]}$)
-```
-In this example, we call the `linear_layer` implemented in `layers.f90` and pass in arguments that come from the external fypp files. There is a for loop running through each layer in the model architecture (a list of tuples), and `tup` contains certain arguments that enables the tool to call the correct names and arguments. `linLayers` is defined in the reader file and stores information about the **i**th layer. One thing to make sure is to store the correct information in model architecture so it can be referenced during this stage.
+If your op has extra operands or results beyond the single in/out every other
+op uses, put them in `extra_in` / `outs`; `_assign_buffers` already tracks
+liveness across both. If it needs scratch that lives across its own internal
+loop, allocate it there too, the way `lstm` does for its carried state.
 
-## Running Tests
-To run current tests located in [goldenFiles](https://github.com/comp-physics/roseNNa/tree/master/goldenFiles), change permissions for [run.sh](https://github.com/comp-physics/roseNNa/blob/master/test/run.sh). Each time the tests are run, new weights are initialized for the given test's model. To look at the model architectures of each test, go to the same **goldenFiles** folder, view each test's folder, and go to the .py file.
+## 3. The emitters — one loop nest each
 
-To add a new test, go to the [goldenFiles](https://github.com/comp-physics/roseNNa/tree/master/goldenFiles) directory and create a new folder which will store information about the new test being created: python model (either an imported onnx file, h5 file, etc.) or an actual definition of a model (in PyTorch, Tensorflow, etc.). 
+`emit_c.py` and `emit_fortran.py` render the same plan, and the golden suite
+asserts they agree. Write them together and keep them line-for-line parallel;
+it is the only practical way to keep them in step.
 
-After doing the above, there are a couple of files we need to create/write to:
+Buffers are flat and row-major in both languages. In Fortran the counters stay
+0-based and only the subscript gains the `+ 1`, so the two emitters compute
+visibly the same index:
 
-``` python
-with open("inputs.fpp",'w') as f1:
-    inputs = inp.flatten().tolist() #store inputs to a file
-    inpShapeDict = {'inputs': list(inp.shape)} #store the input shapes
-    inpDict = {'inputs':inputs}  #store the inputs themselves
-
-    #write all of this to the inputs.fpp file
-    f1.write(f"""#:set inpShape = {inpShapeDict}""")
-    f1.write("\n")
-    f1.write(f"""#:set arrs = {inpDict}""")
-    f1.write("\n")
-    f1.write("a")
-
-def stringer(mat):
-    s = ""
-    for elem in mat:
-        s += str(elem) + " "
-    return s.strip()
-logits = model(inp)
-
-filePath = "../goldenFiles/gemm_big/"
-#write the outputs of the model to a file so it can be compared to F90's outputs
-with open(filePath+"gemm_big.txt", "w") as f2:
-    f2.write(stringer(list(logits.shape)))
-    f2.write("\n")
-    f2.write(stringer(logits.flatten().tolist()))
-print(logits.flatten().tolist())
-
-#export the model, inferred shapes, weights, or anything to onnx
-torch.onnx.export(model,
-                  inp,
-                  filePath+"gemm_big.onnx",
-                  export_params=True, dynamo=False,
-                  opset_version=10,
-                  do_constant_folding=True,
-                  input_names = ['input'],
-                  output_names = ['output']
-                  )
-```
-To run this test case, we just need to call
-``` shell
-make testing case=NAME_OF_FILE
+```python
+idx = f"((n * {c} + ic) * {h} + ih) * {w} + iw"        # C
+idx = f"((n * {c} + ic) * {h} + ih) * {w} + iw + 1"    # Fortran
 ```
 
-## Information about variables.fpp File
-``` fortran
-#:set architecture = [('Gemm', ['v_input', 1], None), 
-                      ('Relu', ['v_input'], [2]), 
-                      ('Gemm', ['v_input', 1], None), 
-                      ('Relu', ['v_input'], [2])]
+Three rules the existing ops follow:
 
-#:set inputs = []
+- **Add a bias after the accumulation, never as the seed.** `acc = 0`, sum,
+  then `acc += b[i]`. Seeding from a declare-target array makes nvc refuse to
+  compile a `distribute parallel for` body at all. See
+  [`python/examples/nvhpc_teams_mapping/`](../python/examples/nvhpc_teams_mapping/).
+- **Propagate NaN.** `max(v, 0)` returns 0 for a NaN, and `v > best` drops one.
+  Write `merge(0, v, v < 0)` and `!(v <= best)`. This library is linked into
+  solvers where a NaN out of a diverged run is the signal.
+- **Declare Fortran locals.** Fortran has no statement-scoped declarations, so
+  any new counter or accumulator has to be added to the `loop_vars` list in
+  `emit_fortran.py`, and only when an op actually uses it — an unused variable
+  is a warning in any tree built with `-Werror`.
 
-#:set trueInputs = [['v_input', [1, 2]]]
+Weight layout differs between the backends: `emit_c` indexes a weight flat,
+while `emit_fortran` declares it with the ONNX shape **reversed** and fills it
+from the same C-order value list, so `w(kw, kh, ic, oc)` in Fortran addresses
+exactly what `w[((oc*IC+ic)*KH+kh)*KW+kw]` reaches in C. A weight whose index
+arithmetic is genuinely flat (a broadcast `Add` constant, an LSTM's `W`) is
+registered with a flat shape instead.
 
-#:set outShape = [['v_output', [1, 3]]]
+## 4. Tests
 
-#:set outputs = {'v_output': 'v_input'}
-```
+- Add a golden model under `goldenFiles/<name>/<name>.py` if the op needs one,
+  and add its name to `GOLDEN` in `python/tests/test_golden_suite.py` — the
+  suite asserts that list is exactly the set on disk, so it cannot drift.
+- Add a rejection test for each attribute `validate.py` refuses.
+- Build a regression test from an inline `onnx.helper` graph for anything the
+  golden models do not exercise. `python/tests/test_regressions.py` has the
+  pattern; `_both_backends` compiles and runs both and compares to onnxruntime.
 
-This is an example of the **variables.fpp** file (for `gemm_small`). Tensor names from the ONNX graph are prefixed with `v_` so they cannot collide with Fortran identifiers. It contains 
-1. architecture
-    * list of tuples of each layer and its attributes
-2. inputs
-    * intermediary inputs that need to be created 
-    * for example, lstm outputs 3 different things and they need to be assigned to different variables
-3. trueInputs 
-    * names of the actual input to the model and the shapes
-4. outShape
-    * names of the actual outputs of the model and the sshapes
-5. outputs
-    * the name corresponding to the output and what it maps to at the end of the model
-    * in other cases, it may be {"v_output": "output2"}, which means the last layer's output name is output2, and we assign the actual output named "output" to "output2"
-
-
-## Important Updates needed:
-1. LSTM different activation functions
+Run `cd python && python3 -m pytest tests`. If you have an NVIDIA GPU, run
+`rosenna gpu-gate` too — the per-point path is compiled by a different compiler
+than the tests use, and it has caught real codegen problems.

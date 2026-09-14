@@ -14,202 +14,96 @@
 </p>
 
 RoseNNa is a fast, portable, and minimally-intrusive library for neural network inference.
-It can run inference on neural networks in [ONNX](https://onnx.ai/) format, which is universal and can be used with PyTorch, TensorFlow, Keras, and more.
+It reads a neural network in [ONNX](https://onnx.ai/) format -- the format PyTorch, TensorFlow and Keras all export -- and **generates** a small, self-contained Fortran module and C library that computes it.
 __RoseNNa's intended use case is embedding neural networks in Fortran- and C-based HPC codebases.__
-One compiles RoseNNa and links it to an existing PDE (e.g., CFD) solver written in C or Fortran.
-You can then evaluate your neural network from the PDE solver at Fortran/C speeds.
+You link the generated code into an existing PDE (e.g. CFD) solver and call it per point, on the CPU or inside your own GPU offload loop.
 
-RoseNNa currently supports RNNs, CNNs, and MLPs.
-The library is optimized Fortran and outperforms PyTorch (by a factor between 2 and 5x) for the relatively small neural networks used in physics applications, like computational fluid dynamics.
-RoseNNa is described in detail in <a href="https://arxiv.org/abs/2307.16322">A. Bati, S. H. Bryngelson (2024) Comp. Phys. Comm., 296, 109052.</a>.
+RoseNNa supports MLPs, CNNs and RNNs.
+Because the generated code has literal loop bounds, no runtime shape logic, no allocation and no mutable global state, it inlines into a solver's own compute kernel -- including a device kernel.
+RoseNNa is described in <a href="https://arxiv.org/abs/2307.16322">A. Bati, S. H. Bryngelson (2024) Comp. Phys. Comm., 296, 109052.</a>, which describes the earlier runtime-parsing library; the generator replaced it (see [History](#history)).
 
 ## Hello RoseNNa
 
+```sh
+pip install -e python
+rosenna generate model.onnx --lang both --out build/
+```
+
+That writes `model_model.F90` and `model.c`/`model.h` (plus build recipes) into `build/`. Then, in Fortran:
+
 ``` fortran
 program hello_roseNNa
-
-  use rosenna
+  use model_model
   implicit none
+  real(real64) :: input(784), output(10)
+  integer :: status
 
-  real, dimension(1,1,28,28) :: input ! model inputs
-  real, dimension(1,5) :: output      ! model outputs
-
-  call initialize() ! reads weights
-  call use_model(input, output) ! run inference
-
+  call model_init("model.rwt", status)   ! only for a file-loaded model
+  call model_infer(input, output)        ! run inference
 end program
 ```
 
-This example program links to the roseNNa library, parses the model inputs, and runs inference on the loaded library. 
-Only a few lines are required to use the library: `use rosenna`, `call initialize()`, and `call use_model(args)`.
+or in C:
 
-With no arguments, `initialize` reads `onnxModel.txt` and `onnxWeights.bin` from the working directory.
-If `onnxWeights.bin` does not exist, it reads a legacy `onnxWeights.txt` instead and prints a notice to standard error; it never does this when a weights path is passed explicitly.
-To read the files from elsewhere, pass the paths.
-`initialize` is a `bind(c)` procedure, so a Fortran caller must terminate each path with `c_null_char`:
-``` fortran
-use iso_c_binding
-call initialize("path/onnxModel.txt"//c_null_char, "path/onnxWeights.bin"//c_null_char)
+```c
+#include "model.h"
+
+int main(void) {
+    double input[784], output[10];
+    if (model_init("model.rwt") != 0) return 1;   /* file-loaded models only */
+    model_infer(input, output);
+}
 ```
 
-## Dependencies
-
-We have minimal dependencies. 
-For example, on MacOS you can get away with just
-```
-brew install wget make cmake coreutils gcc
-pip install torch onnx numpy fypp onnxruntime pandas
-```
-## Basic Example
-Here is a quick example of how **roseNNa** works. With just a few steps, you can see how to convert a basic feed-forward neural network originally built with PyTorch into usable, accurate code in Fortran.
-
-First, `cd` into the `fLibrary/` directory.
-
-Then, create PyTorch model and convert to ONNX:
-``` bash
-python ../goldenFiles/gemm_small/gemm_small.py
-```
-
-Read and interpret the corresponding output files from the last step via
-``` bash
-python modelParserONNX.py -f ../goldenFiles/gemm_small/gemm_small.onnx
-```
-and compile the library
-``` bash
-make library
-```
-
-Compile the "source files" (`capiTester.f90`) and link to the library file created:
-``` bash
-gfortran -c ../examples/capiTester.f90 -IobjFiles/
-gfortran -o flibrary capiTester.o libcorelib.a
-./flibrary
-```
-and finally check if the output from PyTorch model matches roseNNa's output
-``` bash
-python ../test/testChecker.py gemm_small
-```
-
-## Compiling roseNNa 
-
-1. **Save the neural network model that needs to be converted**
-
-    Make sure to refer to the specific library's documentation about how to save the model.
-
-2. **Convert the saved model to an ONNX format**
-
-    Details on converting a saved model to ONNX format can be found on their [website](https://onnx.ai/supported-tools.html#buildModel). 
-
-
-    **Converting an LSTM?**
-
-    ONNX's constant folding renames an LSTM's weight initializers and stores the
-    four gates in ONNX's `iofc` order, while roseNNa's `lstm_cell` consumes
-    PyTorch's `ifgo` order. The parser now remaps the gates internally and looks
-    every weight up by name, so a single `do_constant_folding=True` export is all
-    that is needed. Earlier versions required a second, unoptimized
-    (`do_constant_folding=False`) export passed via `-w`; that flag is now
-    accepted but ignored.
-
-```python
-torch.onnx.export(model,               # model being run
-                  (inp, hidden),                         # model input (or a tuple for multiple inputs)
-                  filePath+"lstm_gemm.onnx",   # where to save the model (can be a file or file-like object)
-                  export_params=True,        # store the trained parameter weights inside the model file
-                  opset_version=12,          # the ONNX version to export the model to
-                  do_constant_folding=True,  # whether to execute constant folding for optimization
-                  input_names = ['input', 'hidden_state','cell_state'],   # the model's input names
-                  output_names = ['output'], # the model's output names
-                  )
-```
-
-3. **Preprocess the model**
-
-`fLibrary/` holds the library files that recreate and run inference on the model. Run `python modelParserONNX.py -f path/to/model.onnx` to reconstruct the model.
-
-4. **Compiling the library**
-
-Then, in the same `/fLibrary` directory, run `make library`. This compiles the library into `libcorelib.a`, which is required to link other `*.o` files with the library. This library file is now ready to be integrated into any Fortran/C workflow.
+A model under a million parameters embeds its weights into the generated source by default, and then has no `init` to call at all.
+`model_infer` is `pure` in Fortran, takes `restrict` pointers in C, does no I/O and allocates nothing, so it is safe to call from inside an OpenMP-target, OpenACC, CUDA or HIP loop.
 
 ## Supported ONNX operators and limits
 
-roseNNa supports the following ONNX operators: `Gemm`, `MatMul`, `Conv`, `MaxPool`, `AveragePool`, `LSTM`, `Add`,
-`Reshape`, `Transpose`, `Squeeze`, `Relu`, `Sigmoid`, `Tanh`.
+roseNNa generates code for: `Gemm`, `MatMul`, `Conv`, `MaxPool`, `AveragePool`, `LSTM`, `Add`,
+`Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`, `Identity`, `Relu`, `Sigmoid`, `Tanh`.
 
-The parser rejects a model with `NotImplementedError` rather than silently producing a wrong answer when it
-encounters an attribute it cannot honour. The limits it enforces:
+Everything statically knowable is resolved at generation time: shapes, buffer sizes, padding (including `auto_pad`), and every node whose inputs are all constants -- so a `Reshape` of a weight, or an int64 shape tensor, never reaches the emitted code.
 
-- `kernel_shape` is required for `MaxPool` and `AveragePool` (inferred from the weights for `Conv`)
-- `dilations` must be 1
-- `ceil_mode` must be 0
-- kernels must be square
-- pads must be symmetric per axis
+A model using something the generator cannot lower is **refused by name at generation time**, never silently mis-computed. `rosenna info model.onnx` reports what it found. The limits:
+
+- 2-D spatial ops only (rank-4 NCHW); `ceil_mode` must be 0
 - `Conv` `group` must be 1 (no grouped or depthwise convolution)
-- `AveragePool` with nonzero pads requires `count_include_pad=1`
-- `AveragePool` `auto_pad` must be `NOTSET` or `VALID`
-- a `Pad` node must have all-zero pads
-- `Gemm` `alpha` and `beta` must be 1, and `transA` must be 0
+- `Gemm` `alpha` and `beta` must be 1, `transA` must be 0, and weights must be constant
+- `LSTM` must be forward-direction with the default activations, no `clip`, `input_forget`, `sequence_lens` or peepholes
+- one output; several inputs are fine and arrive concatenated (see below)
+- every weight must be a constant initializer, not computed at runtime
 
-## Fortran use
+## Verify it
 
-One can compile a Fortran example (like the `Hello RoseNNa` example above) by specifying the location of the module files and linking the library to other program files.
-In practice, this looks like
-``` shell
-gfortran -c *.f90 -Ipath/to/objFiles
-gfortran -o flibrary *.o path/to/libcorelib.a
-./flibrary
+```sh
+rosenna verify model.onnx --cases 32
 ```
 
-**Memory layout.** `use_model` expects inputs in Fortran (column-major) order. A C caller with a row-major array must transpose it first; a Fortran caller building an array from a row-major literal should use `RESHAPE(..., order=[2,1])`, as `examples/capiTester.f90` does.
+compiles both backends and compares them against onnxruntime on random inputs. Every model in `goldenFiles/` is checked this way, on both backends, by `python/tests/test_golden_suite.py`.
 
-## C use
+## Several inputs
 
-One can readily call roseNNa from C. 
-Compile roseNNa, then use the following C program as an example:
-```c
-#include <stdio.h>
+A model with more than one graph input -- an LSTM's initial hidden and cell state, say -- takes them **concatenated in declaration order** in the single `x` buffer. That keeps one entry point, one input buffer, and so one device contract, for every model.
 
-void use_model(double * i0, double * o0);
-void initialize(const char * model_file, const char * weights_file);
+## GPU use
 
-int main(void) {
-
-    /* roseNNa expects column-major (Fortran) ordering. */
-    double a[2] = {1, 1};
-    double b[3];
-
-    initialize("onnxModel.txt", "onnxWeights.bin");
-    use_model(a, b);
-
-    for (int i = 0; i < 3; i++) {
-        printf("%f ", b[i]);
-    }
-    printf("\n");
-    return 0;
-}
-```
-and compile it as
-```shell
-gcc -c *.c
-gfortran -o capi *.o path/to/libcorelib.a
-./capi
-```
-
-A weights path ending in `.txt` (in any letter case, trailing blanks ignored) is read as the legacy text format;
-any other path is read as little-endian float64 binary, which must match the model exactly, or `initialize`
-stops with an error. The `onnxWeights.txt` fallback described under Hello RoseNNa is read as text.
+The generated code is callable from a device loop, and `rosenna gpu-gate` validates that end to end on real hardware. See [python/README.md](python/README.md) for the full story: the batched entry point, the CUDA/HIP kernel, the build recipes, and the measured per-point cost.
 
 ## Further documentation
 
-Please see [this document](https://github.com/comp-physics/roseNNa/blob/master/doc/opensource.md) on how to extend roseNNa to new network models and [this document](https://github.com/comp-physics/roseNNa/blob/master/doc/methodology.md) on the details of the roseNNa pipeline.
+- [python/README.md](python/README.md) -- install, generate, build, and call from C or Fortran
+- [doc/methodology.md](doc/methodology.md) -- the roseNNa pipeline
+- [doc/opensource.md](doc/opensource.md) -- extending roseNNa to new operators
 
-## Python code generator
+## History
 
-`python/` holds a second, newer way to use roseNNa: a generator that reads an ONNX model and emits a small, self-contained Fortran module and/or C library, callable per point from inside your own OpenMP-target, OpenACC, CUDA or HIP loop, with its weights device-resident.
-
-Two paths currently coexist in this repository. The `fLibrary/` runtime library described in the rest of this README supports every op roseNNa implements (RNNs, CNNs, MLPs). The generator in `python/` supports dense (Gemm/MatMul + Relu/Tanh/Sigmoid) models only, but its output is GPU-callable. The generator is meant to replace the library once it covers everything the library does; until then, use `fLibrary/` for anything the generator does not yet support.
-
-See [python/README.md](python/README.md) for how to install, generate, build and call generated code from C or Fortran.
+roseNNa began as `fLibrary/`: a Fortran library that parsed a model description at
+startup and walked it at runtime. The generator in `python/` replaced it once it
+covered every operator the library did and every model in `goldenFiles/`, which it
+now verifies against onnxruntime on both backends rather than against recorded
+output. The library, its `modelParserONNX.py`, and the shell suite that drove it
+were removed at that point; they remain in the git history.
 
 ## Citation
 

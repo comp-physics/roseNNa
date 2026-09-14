@@ -21,7 +21,7 @@ def _build_and_run(tmp_path, onnx_path, name, inputs, dtype="f64"):
     # False matrix lives in tests/test_device_fortran.py and tests/test_embed.py.
     graph = load_graph(onnx_path)
     plan = build_plan(graph, dtype=dtype, embed=False)
-    (tmp_path / f"{name}_model.f90").write_text(emit_fortran(plan))
+    (tmp_path / f"{name}_model.F90").write_text(emit_fortran(plan))
     write_weights(plan, graph, tmp_path / f"{name}.rwt")
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
     real_kind = "real64" if dtype == "f64" else "real32"
@@ -46,7 +46,7 @@ program main
 end program
 """)
     subprocess.run(["gfortran", "-O2", "-Wall", "-Wextra", "-o", "run",
-                    f"{name}_model.f90", "main.f90"], cwd=tmp_path, check=True,
+                    f"{name}_model.F90", "main.f90"], cwd=tmp_path, check=True,
                    capture_output=True, text=True)
     stdin = f"{len(inputs)}\n" + "\n".join(" ".join(repr(float(v)) for v in row) for row in inputs)
     out = subprocess.run(["./run"], cwd=tmp_path, input=stdin, capture_output=True,
@@ -116,7 +116,7 @@ def test_init_rejects_a_foreign_weights_file(tmp_path, golden_model):
     plan = build_plan(graph, dtype="f64", embed=False)
     other_graph = load_graph(golden_model("gemm_big"))
     other_plan = build_plan(other_graph, dtype="f64", embed=False)
-    (tmp_path / "gemm_small_model.f90").write_text(emit_fortran(plan))
+    (tmp_path / "gemm_small_model.F90").write_text(emit_fortran(plan))
     write_weights(other_plan, other_graph, tmp_path / "gemm_small.rwt")
     (tmp_path / "main.f90").write_text("""
 program main
@@ -127,7 +127,7 @@ program main
     print *, status
 end program
 """)
-    subprocess.run(["gfortran", "-O2", "-o", "run", "gemm_small_model.f90", "main.f90"],
+    subprocess.run(["gfortran", "-O2", "-o", "run", "gemm_small_model.F90", "main.f90"],
                    cwd=tmp_path, check=True, capture_output=True, text=True)
     out = subprocess.run(["./run"], cwd=tmp_path, capture_output=True, text=True, check=True)
     assert out.stdout.split() == ["6"]      # plan hash mismatch
@@ -150,6 +150,6 @@ def test_case_labels_escape_quotes(tmp_path):
     # embedded plan's module does not emit.
     src = emit_fortran(build_plan(load_graph(path), dtype="f64", embed=False))
     assert "case ('layer.0''weight')" in src
-    (tmp_path / "quoted_model.f90").write_text(src)
-    subprocess.run(["gfortran", "-O2", "-Wall", "-Wextra", "-c", "quoted_model.f90"],
+    (tmp_path / "quoted_model.F90").write_text(src)
+    subprocess.run(["gfortran", "-O2", "-Wall", "-Wextra", "-c", "quoted_model.F90"],
                    cwd=tmp_path, check=True, capture_output=True, text=True)

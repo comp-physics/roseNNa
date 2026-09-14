@@ -7,9 +7,10 @@ body every host test already checks; a fused tiled GEMM over the batch is a
 follow-up once the GPU gate has timed this one. Controller ruling R5: x and
 y are device-resident and infer_batch only launches; the one transfer this
 file makes (<name>_device_bind, file-loaded plans only) belongs to the plan
-step and is called from init. Compiles and runs on the host (through the
-omp backend) only; the device path is unvalidated until nvcc has built it
-on CI and the GPU gate has run it.
+step and is called from init. Validated on an A100 by `rosenna gpu-gate
+--backend cuda` (nvcc 13.0, HPC SDK 25.11): matches onnxruntime embedded
+and file-loaded, with zero cudaMemcpy inside the timed call. The hip
+backend is still unvalidated -- no ROCm machine has built it.
 """
 from .emit_c import KERNEL_TILE, _CTYPE, _c_weight_symbol, _device_bind
 from .plan import Plan

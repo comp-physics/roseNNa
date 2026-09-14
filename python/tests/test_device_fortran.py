@@ -61,14 +61,14 @@ def _build_and_run(tmp_path, name, embed, inputs, golden_model):
     graph = load_graph(golden_model(name))
     plan = build_plan(graph, dtype="f64", embed=embed)
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
-    (tmp_path / f"{name}_model.f90").write_text(emit_fortran(plan))
+    (tmp_path / f"{name}_model.F90").write_text(emit_fortran(plan))
     init_lines = "" if embed else f'call {name}_init("{name}.rwt", status); if (status /= 0) stop 2'
     if not embed:
         write_weights(plan, graph, tmp_path / f"{name}.rwt")
     (tmp_path / "host.f90").write_text(HOST.format(name=name, n_in=n_in, n_out=n_out, init_lines=init_lines))
     fc = _omp_fc()
     flags = ["-O2", "-Wall", "-Wextra", "-std=f2008", "-fopenmp"]
-    r = subprocess.run([fc, *flags, "-c", f"{name}_model.f90"], cwd=tmp_path, capture_output=True, text=True)
+    r = subprocess.run([fc, *flags, "-c", f"{name}_model.F90"], cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     _assert_warning_free("gfortran", r.stderr)
     subprocess.run(["ar", "rcs", f"lib{name}.a", f"{name}_model.o"], cwd=tmp_path, check=True)
@@ -112,14 +112,14 @@ def test_fortran_target_regions_are_real(tmp_path, golden_model):
     graph = load_graph(golden_model(name)); plan = build_plan(graph, dtype="f64", embed=True)
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
     inputs = np.full((1, n_in), 0.5)
-    (tmp_path / f"{name}_model.f90").write_text(emit_fortran(plan))
+    (tmp_path / f"{name}_model.F90").write_text(emit_fortran(plan))
     (tmp_path / "host.f90").write_text(HOST.format(name=name, n_in=n_in, n_out=n_out, init_lines=""))
     fc = _omp_fc()
     flags = ["-O2", "-std=f2008", "-fopenmp"]
 
     # Compile the module first (for its .mod) and the host as a standalone object, so the
     # symbol check below inspects exactly what the host's own target region compiled to.
-    r = subprocess.run([fc, *flags, "-c", f"{name}_model.f90"], cwd=tmp_path, capture_output=True, text=True)
+    r = subprocess.run([fc, *flags, "-c", f"{name}_model.F90"], cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     r = subprocess.run([fc, *flags, "-c", "host.f90", "-o", "host.o"], cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
@@ -199,7 +199,7 @@ def test_generated_fortran_is_warning_free_under_openacc(tmp_path, golden_model)
     for name in ["gemm_small", "gemm_big", "gemm_nobias", "droplet", "batchnet"]:
         for embed in (True, False):
             plan = build_plan(load_graph(golden_model(name)), dtype="f64", embed=embed)
-            src_path = tmp_path / f"{name}_{embed}_model.f90"
+            src_path = tmp_path / f"{name}_{embed}_model.F90"
             src_path.write_text(emit_fortran(plan))
             r = subprocess.run(
                 [fc, "-O2", "-Wall", "-Wextra", "-std=f2008", "-fopenacc", "-c",
@@ -220,7 +220,7 @@ def test_bind_c_interface_targets_the_c_infer_batch_symbol(golden_model):
 def test_fortran_recipe_builds_the_library(tmp_path, golden_model):
     name = "gemm_small"
     plan = build_plan(load_graph(golden_model(name)), dtype="f64")
-    (tmp_path / f"{name}_model.f90").write_text(emit_fortran(plan))
+    (tmp_path / f"{name}_model.F90").write_text(emit_fortran(plan))
     (tmp_path / "Makefile").write_text(emit_fortran_recipe(plan))
     fc = _omp_fc()
     subprocess.run(["make", f"FC={fc}"], cwd=tmp_path, check=True, capture_output=True, text=True)

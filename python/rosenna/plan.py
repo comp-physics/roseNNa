@@ -67,6 +67,71 @@ class WeightSpec:
 
 
 @dataclass(frozen=True)
+class Spatial:
+    """Everything a 2-D Conv/pool loop nest needs, resolved at generation time.
+
+    The emitters never see an ONNX attribute: auto_pad is already turned into
+    begin-pads here (it depends on the input shape, which is literal), and
+    every extent is a plain int the emitted loop bounds interpolate directly.
+    End-pads are not carried because nothing reads them -- the output extent
+    they would determine is taken from ONNX shape inference instead, so a
+    window that would run off the end simply never exists.
+    """
+    n: int
+    c_in: int
+    h_in: int
+    w_in: int
+    c_out: int
+    h_out: int
+    w_out: int
+    kh: int
+    kw: int
+    sh: int
+    sw: int
+    ph: int
+    pw: int
+    dh: int
+    dw: int
+    # AveragePool only: divide by the full kernel (True) or by the count of
+    # cells that actually fell inside the input (False, the ONNX default).
+    count_include_pad: bool = False
+
+
+@dataclass(frozen=True)
+class Broadcast:
+    """How a constant operand maps onto the output of an elementwise op.
+
+    `strides` is one entry per output axis: the step to take in the constant's
+    flat layout when that axis advances, and 0 where the constant is broadcast
+    along it. Resolved here so the emitters write plain affine arithmetic and
+    never reason about ranks or alignment.
+    """
+    out_shape: tuple
+    strides: tuple
+
+
+@dataclass(frozen=True)
+class Lstm:
+    """A forward LSTM with the ONNX default activations, resolved to extents.
+
+    ONNX orders the gates i, o, f, c in W, R and B -- not the i, f, c, o that
+    most papers and most other runtimes use -- and the emitters read the gate
+    blocks at those offsets directly, so the order is recorded here once rather
+    than rediscovered in two emitters.
+    """
+    seq: int
+    batch: int
+    input_size: int
+    hidden: int
+    has_bias: bool
+    has_initial: bool
+    # Buffer symbols for the carried state and the per-step gate vector.
+    h_sym: str = ""
+    c_sym: str = ""
+    g_sym: str = ""
+
+
+@dataclass(frozen=True)
 class Op:
     kind: str
     out: str
@@ -80,6 +145,27 @@ class Op:
     # comparing the weight's shape against n_out is ambiguous whenever
     # n_in == n_out, and a square weight then gets read transposed.
     trans_b: bool = False
+    # Set for kind in ("conv", "maxpool", "avgpool"); None for everything else.
+    spatial: Spatial | None = None
+    # Set for kind == "add".
+    bcast: Broadcast | None = None
+    # kind == "lstm": the recurrence weight R (weight/bias carry W and B).
+    weight2: str | None = None
+    # kind == "lstm": the recurrent shape, and the names of the extra operands
+    # and results an LSTM has beyond the single in/out every other op uses.
+    lstm: "Lstm | None" = None
+    extra_in: tuple = ()
+    outs: tuple = ()
+    # kind == "copy": read the source starting this far into its buffer. Used to
+    # hand each secondary graph input its slice of the concatenated x.
+    src_offset: int = 0
+    # kind == "transpose": per-output-axis stride into the source buffer.
+    perm_strides: tuple = ()
+    out_shape: tuple = ()
+    # kind == "gemm": how many independent rows share the weight. 1 for a dense
+    # per-point model; an LSTM whose sequence output feeds a Gemm applies it
+    # once per timestep, and the leading axis carries that count.
+    rows: int = 1
 
 
 @dataclass(frozen=True)
@@ -113,12 +199,116 @@ def _weight_elems(shape: tuple) -> int:
     return n
 
 
+_POOL_KIND = {"MaxPool": "maxpool", "AveragePool": "avgpool"}
+_RELABEL = {"Reshape", "Squeeze", "Unsqueeze", "Flatten", "Identity"}
+
+
+def _pair(value, default):
+    """An ONNX 2-D attribute as (h, w), defaulting when the attribute is absent."""
+    if value is None:
+        return default, default
+    return int(value[0]), int(value[1])
+
+
+def _begin_pads(node, in_hw, out_hw, k_hw, s_hw, d_hw):
+    """Resolve pads -- explicit, VALID, or auto_pad SAME -- to (begin_h, begin_w).
+
+    Only the begin-pads reach the emitted index arithmetic: `ih = oh*s - ph +
+    kh*d`. SAME_UPPER/SAME_LOWER depend on the input extent, which is literal
+    here, so the whole auto_pad concept is resolved now and never appears in
+    generated code. The total padding SAME needs is derived from the output
+    extent ONNX shape inference already computed, so this agrees with the
+    reference by construction rather than by re-deriving the formula.
+    """
+    auto_pad = node.attrs.get("auto_pad", "NOTSET")
+    if auto_pad in ("NOTSET", ""):
+        pads = node.attrs.get("pads")
+        return (0, 0) if pads is None else (int(pads[0]), int(pads[1]))
+    if auto_pad == "VALID":
+        return 0, 0
+    begin = []
+    for i in (0, 1):
+        span = (k_hw[i] - 1) * d_hw[i] + 1
+        total = max(0, (out_hw[i] - 1) * s_hw[i] + span - in_hw[i])
+        # SAME_UPPER puts the odd pad at the end, SAME_LOWER at the beginning.
+        begin.append(total // 2 if auto_pad == "SAME_UPPER" else (total + 1) // 2)
+    return begin[0], begin[1]
+
+
+def _spatial(graph: Graph, node) -> Spatial:
+    """Lower one Conv/MaxPool/AveragePool node to literal loop extents."""
+    x = graph.values[node.inputs[0]]
+    out = graph.values[node.outputs[0]]
+    n, c_in, h_in, w_in = (int(d) for d in x.shape)
+    _, c_out, h_out, w_out = (int(d) for d in out.shape)
+    if node.op == "Conv":
+        w = graph.initializers[node.inputs[1]]
+        kh, kw = int(w.shape[2]), int(w.shape[3])
+    else:
+        kh, kw = _pair(node.attrs.get("kernel_shape"), 1)
+    sh, sw = _pair(node.attrs.get("strides"), 1)
+    dh, dw = _pair(node.attrs.get("dilations"), 1)
+    ph, pw = _begin_pads(node, (h_in, w_in), (h_out, w_out), (kh, kw), (sh, sw), (dh, dw))
+    return Spatial(n=n, c_in=c_in, h_in=h_in, w_in=w_in,
+                   c_out=c_out, h_out=h_out, w_out=w_out,
+                   kh=kh, kw=kw, sh=sh, sw=sw, ph=ph, pw=pw, dh=dh, dw=dw,
+                   count_include_pad=bool(int(node.attrs.get("count_include_pad", 0))))
+
+
+def _broadcast(out_shape, const_shape) -> Broadcast:
+    """Right-align the constant against the output and give each axis a stride."""
+    out_shape = tuple(int(d) for d in out_shape)
+    const_shape = tuple(int(d) for d in const_shape)
+    pad = len(out_shape) - len(const_shape)
+    aligned = (1,) * pad + const_shape
+    strides, step = [], 1
+    for dim in reversed(aligned):
+        strides.append(0 if dim == 1 else step)
+        step *= dim
+    return Broadcast(out_shape, tuple(reversed(strides)))
+
+
+def _flat_preserving(in_shape, perm) -> bool:
+    """True when a Transpose only moves size-1 axes, so the flat bytes are unchanged.
+
+    Row-major order is decided by the axes that actually have extent, in the
+    order they appear. Moving a length-1 axis past them changes the shape and
+    nothing else -- which is every Transpose a PyTorch LSTM export emits, since
+    those only swap the batch axis of a batch-1 model.
+    """
+    kept = [a for a in perm if in_shape[a] != 1]
+    return kept == sorted(kept)
+
+
+def _transpose_strides(in_shape, perm) -> tuple:
+    """Per-output-axis stride into the source's flat layout."""
+    src_stride, step = [0] * len(in_shape), 1
+    for axis in reversed(range(len(in_shape))):
+        src_stride[axis] = step
+        step *= in_shape[axis]
+    return tuple(src_stride[a] for a in perm)
+
+
+def _lstm_spec(graph: Graph, node) -> Lstm:
+    x = graph.values[node.inputs[0]]
+    seq, batch, input_size = (int(d) for d in x.shape)
+    hidden = int(node.attrs["hidden_size"]) if "hidden_size" in node.attrs else \
+        int(graph.initializers[node.inputs[2]].shape[2])
+    has_bias = len(node.inputs) > 3 and bool(node.inputs[3])
+    has_initial = len(node.inputs) > 5 and bool(node.inputs[5])
+    return Lstm(seq=seq, batch=batch, input_size=input_size, hidden=hidden,
+                has_bias=has_bias, has_initial=has_initial)
+
+
 def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None) -> Plan:
     validate(graph)
-    if len(graph.inputs) != 1 or len(graph.outputs) != 1:
+    if len(graph.inputs) < 1 or len(graph.outputs) != 1:
+        # Several inputs are fine -- they arrive concatenated in x, see below --
+        # but a second output would need a second buffer in the signature, and
+        # with it a different entry point, batched form and device contract.
         raise UnsupportedModel(
-            f"this generator handles one input and one output; "
-            f"got {len(graph.inputs)} and {len(graph.outputs)}")
+            f"this generator handles one output and at least one input; "
+            f"got {len(graph.inputs)} inputs and {len(graph.outputs)} outputs")
     dtype = dtype or graph.values[graph.inputs[0]].dtype
     if dtype not in _ITEMSIZE:
         raise UnsupportedModel(f"dtype {dtype} is not supported")
@@ -126,7 +316,101 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
     ops, weights, offset, widx = [], [], 0, 0
     for node in graph.nodes:
         if node.op in _ACTIVATIONS:
-            ops.append(Op(_ACTIVATIONS[node.op], node.outputs[0], node.inputs[0], None, None, 0, 0))
+            # n_in/n_out carry the activation's OWN length, taken from the
+            # value it produces. The emitters used to bound an activation's
+            # loop by a running "length of the previous op's output", which is
+            # the same number only in an unbranched chain: give a value a
+            # second consumer and the later read gets the wider op's bound,
+            # running off the end of a fixed-size local array in both
+            # directions. plan.py knows the real length here, so it says it.
+            act_len = _length(graph.values[node.outputs[0]])
+            ops.append(Op(_ACTIVATIONS[node.op], node.outputs[0], node.inputs[0],
+                          None, None, act_len, act_len))
+            continue
+        if node.op in _RELABEL or (node.op == "Transpose" and _flat_preserving(
+                graph.values[node.inputs[0]].shape,
+                node.attrs.get("perm", tuple(reversed(range(len(graph.values[node.inputs[0]].shape))))))):
+            # Relabels the axes without moving a byte. It becomes a buffer
+            # alias -- no code, no copy -- unless it produces the graph output,
+            # which has to land in the caller's own y.
+            n = _length(graph.values[node.outputs[0]])
+            kind = "copy" if node.outputs[0] in graph.outputs else "alias"
+            ops.append(Op(kind, node.outputs[0], node.inputs[0], None, None, n, n))
+            continue
+        if node.op == "Transpose":
+            in_t = graph.values[node.inputs[0]]
+            out_t = graph.values[node.outputs[0]]
+            perm = node.attrs.get("perm", tuple(reversed(range(len(in_t.shape)))))
+            ops.append(Op("transpose", node.outputs[0], node.inputs[0], None, None,
+                          _length(in_t), _length(out_t),
+                          perm_strides=_transpose_strides(
+                              tuple(int(d) for d in in_t.shape), tuple(int(p) for p in perm)),
+                          out_shape=tuple(int(d) for d in out_t.shape)))
+            continue
+        if node.op == "LSTM":
+            spec = _lstm_spec(graph, node)
+            syms = {}
+            for role, idx in (("weight", 1), ("weight2", 2), ("bias", 3)):
+                if idx < len(node.inputs) and node.inputs[idx]:
+                    a = graph.initializers[node.inputs[idx]]
+                    sym = f"{'w' if role != 'bias' else 'b'}{widx}{'r' if role == 'weight2' else ''}"
+                    weights.append(WeightSpec(node.inputs[idx], sym, (int(a.size),),
+                                              offset, a.size * _ITEMSIZE[dtype]))
+                    offset += weights[-1].nbytes
+                    syms[role] = sym
+            extra = tuple(i for i in node.inputs[5:7] if i) if len(node.inputs) > 5 else ()
+            outs = tuple(o for o in node.outputs[1:] if o)
+            ops.append(Op("lstm", node.outputs[0], node.inputs[0],
+                          syms.get("weight"), syms.get("bias"),
+                          _length(graph.values[node.inputs[0]]),
+                          _length(graph.values[node.outputs[0]]),
+                          weight2=syms.get("weight2"), lstm=spec,
+                          extra_in=extra, outs=outs))
+            widx += 1
+            continue
+        if node.op == "Add":
+            const_name = next(i for i in node.inputs if i in graph.initializers)
+            src_name = next(i for i in node.inputs if i not in graph.initializers)
+            c = graph.initializers[const_name]
+            csym = f"w{widx}"
+            # Declared flat, not with the ONNX shape: the broadcast strides are
+            # offsets into the constant's row-major flat layout, so a rank-1
+            # declaration is what both emitters subscript. (emit_fortran would
+            # otherwise declare a rank-3 (1,1,8) array and reject the single
+            # subscript the stride arithmetic produces.)
+            weights.append(WeightSpec(const_name, csym, (int(c.size),),
+                                      offset, c.size * _ITEMSIZE[dtype]))
+            offset += weights[-1].nbytes
+            out_t = graph.values[node.outputs[0]]
+            ops.append(Op("add", node.outputs[0], src_name, csym, None,
+                          _length(out_t), _length(out_t),
+                          bcast=_broadcast(out_t.shape, c.shape)))
+            widx += 1
+            continue
+        if node.op in _POOL_KIND:
+            sp = _spatial(graph, node)
+            ops.append(Op(_POOL_KIND[node.op], node.outputs[0], node.inputs[0], None, None,
+                          _length(graph.values[node.inputs[0]]),
+                          _length(graph.values[node.outputs[0]]), spatial=sp))
+            continue
+        if node.op == "Conv":
+            sp = _spatial(graph, node)
+            w = graph.initializers[node.inputs[1]]
+            wsym = f"w{widx}"
+            weights.append(WeightSpec(node.inputs[1], wsym, tuple(int(d) for d in w.shape),
+                                      offset, w.size * _ITEMSIZE[dtype]))
+            offset += weights[-1].nbytes
+            bsym = None
+            if len(node.inputs) > 2 and node.inputs[2]:
+                b = graph.initializers[node.inputs[2]]
+                bsym = f"b{widx}"
+                weights.append(WeightSpec(node.inputs[2], bsym, tuple(int(d) for d in b.shape),
+                                          offset, b.size * _ITEMSIZE[dtype]))
+                offset += weights[-1].nbytes
+            ops.append(Op("conv", node.outputs[0], node.inputs[0], wsym, bsym,
+                          _length(graph.values[node.inputs[0]]),
+                          _length(graph.values[node.outputs[0]]), spatial=sp))
+            widx += 1
             continue
         w = graph.initializers[node.inputs[1]]
         trans_b = int(node.attrs.get("transB", 0)) if node.op == "Gemm" else 0
@@ -142,14 +426,30 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
             weights.append(WeightSpec(node.inputs[2], bsym, tuple(int(d) for d in b.shape), offset,
                                       b.size * _ITEMSIZE[dtype]))
             offset += weights[-1].nbytes
+        in_len = _length(graph.values[node.inputs[0]])
+        if in_len % int(n_in):
+            raise UnsupportedModel(
+                f"node '{node.name}': input holds {in_len} values, not a whole number of "
+                f"rows of {n_in}")
         ops.append(Op("gemm", node.outputs[0], node.inputs[0], wsym, bsym,
-                      int(n_in), int(n_out), bool(trans_b)))
+                      int(n_in), int(n_out), bool(trans_b), rows=in_len // int(n_in)))
         widx += 1
 
+    # One entry point, one input buffer: a model with several graph inputs (an
+    # LSTM's initial hidden and cell state, say) takes them concatenated in
+    # declaration order, and each secondary input is copied out of its slice
+    # below. Keeping infer(x, y) intact is what keeps infer_batch, the native
+    # kernel, the weights ABI and the whole device contract unchanged.
+    in_lens = [_length(graph.values[n]) for n in graph.inputs]
     in_t = graph.values[graph.inputs[0]]
     out_t = graph.values[graph.outputs[0]]
-    flat_in = Tensor(in_t.name, (_length(in_t),), dtype)
+    flat_in = Tensor(in_t.name, (sum(in_lens),), dtype)
     flat_out = Tensor(out_t.name, (_length(out_t),), dtype)
+    slice_ops, off = [], in_lens[0]
+    for name, n in zip(graph.inputs[1:], in_lens[1:]):
+        slice_ops.append(Op("copy", name, graph.inputs[0], None, None, n, n, src_offset=off))
+        off += n
+    ops = slice_ops + ops
     buffers, assignment = _assign_buffers(graph, ops, flat_in, flat_out)
 
     n_params = sum(_weight_elems(w.shape) for w in weights)
@@ -171,26 +471,64 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
 def _assign_buffers(graph: Graph, ops, flat_in: Tensor, flat_out: Tensor):
     """Give the input and output dedicated buffers; rotate intermediates through a pool.
 
-    Assumes: every op has a single main input and no branching or merging,
-    so each produced value has exactly one consumer. If the op set grows a branching
-    op, the free-list logic needs revisiting.
+    An "alias" op contributes no buffer of its own: it hands its output the
+    symbol its input already holds, because a relabelling op moves no bytes.
+    Liveness is therefore tracked on the *root* of an alias chain, so a buffer
+    is only returned to the free list after the last read of anything that
+    shares it -- reading through an alias counts.
+
+    Multiple consumers of one value are fine: last_use records the last op that
+    reads it, not the first.
     """
+    alias = {op.out: op.inp for op in ops if op.kind == "alias"}
+
+    def root(name):
+        seen = set()
+        while name in alias and name not in seen:
+            seen.add(name)
+            name = alias[name]
+        return name
+
     buffers = {"x": flat_in.shape[0], "y": flat_out.shape[0]}
     assignment = {flat_in.name: "x", flat_out.name: "y"}
     last_use = {}
     for i, op in enumerate(ops):
-        last_use[op.inp] = i
+        for src in (op.inp,) + tuple(op.extra_in):
+            last_use[root(src)] = i
     free, pool = [], 0
+
+    def take(length):
+        nonlocal pool
+        if free:
+            return free.pop()
+        sym = f"t{pool}"
+        pool += 1
+        return sym
+
     for i, op in enumerate(ops):
-        if op.out not in assignment:
-            if free:
-                sym = free.pop()
-            else:
+        if op.kind == "alias":
+            assignment[op.out] = assignment[root(op.inp)]
+            continue
+        for out in (op.out,) + tuple(op.outs):
+            if out not in assignment:
+                sym = take(0)
+                assignment[out] = sym
+            length = _length(graph.values[out])
+            buffers[assignment[out]] = max(buffers.get(assignment[out], 0), length)
+        if op.kind == "lstm":
+            # Carried state and the per-step gate vector: internal to the op,
+            # so they get their own buffers rather than sharing the pool (they
+            # stay live across the whole sequence loop).
+            sp = op.lstm
+            for role, size in (("h_sym", sp.batch * sp.hidden),
+                               ("c_sym", sp.batch * sp.hidden),
+                               ("g_sym", 4 * sp.hidden)):
                 sym = f"t{pool}"
                 pool += 1
-            assignment[op.out] = sym
-            length = _length(graph.values[op.out])
-            buffers[sym] = max(buffers.get(sym, 0), length)
-        if op.inp in assignment and assignment[op.inp].startswith("t") and last_use.get(op.inp) == i:
-            free.append(assignment[op.inp])
+                buffers[sym] = size
+                object.__setattr__(sp, role, sym)
+        for src in (op.inp,) + tuple(op.extra_in):
+            r = root(src)
+            if r in assignment and assignment[r].startswith("t") and last_use.get(r) == i:
+                free.append(assignment[r])
     return buffers, assignment

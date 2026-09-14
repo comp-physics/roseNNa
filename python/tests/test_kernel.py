@@ -218,20 +218,22 @@ def _embedded_plan(tmp_path, name, n_in, n_out):
 
 
 def test_constant_memory_limit_selects_the_device_qualifier(tmp_path):
-    # Controller ruling R4: CUDA __constant__ memory is 64 KB per module and
-    # the embed threshold is 1M parameters, so an embedded model past the
-    # constant budget must go to __device__ const instead. The cut is 48 KB of
-    # weight bytes; a header states which it chose.
-    assert CONSTANT_MEMORY_LIMIT == 48 * 1024
-    small = _embedded_plan(tmp_path, "under", 64, 90)       # 5760 f64 = 46080 B < 48 KB
-    big = _embedded_plan(tmp_path, "over", 64, 100)         # 6400 f64 = 51200 B > 48 KB
+    # Controller ruling R4: an embedded model past the constant budget goes to
+    # __device__ const instead. The cut is 2 KB of weight bytes -- set by the
+    # per-SM constant cache, not the 64 KB per-module bank, since past the
+    # cache every weight read misses and the models roseNNa targets measure
+    # 2.5-2.8x slower in __constant__ (see CONSTANT_MEMORY_LIMIT). A header
+    # states which it chose.
+    assert CONSTANT_MEMORY_LIMIT == 2 * 1024
+    small = _embedded_plan(tmp_path, "under", 15, 15)       # 225 f64 = 1800 B < 2 KB
+    big = _embedded_plan(tmp_path, "over", 16, 20)          # 320 f64 = 2560 B > 2 KB
     _, h_small = emit_c(small)
     _, h_big = emit_c(big)
     assert "#define ROSENNA_CONST static __constant__" in h_small
     assert "__device__ const" not in h_small
     assert "#define ROSENNA_CONST static __device__ const" in h_big
     assert "__constant__" not in h_big
-    assert "46080" in h_small and "51200" in h_big       # the comment names the byte count it judged
+    assert "1800" in h_small and "2560" in h_big         # the comment names the byte count it judged
 
 
 def _omp_host(name, n_in, n_out, npts, init):

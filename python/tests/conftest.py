@@ -1,6 +1,7 @@
 """Fixtures for golden file models and for inline models built with onnx.helper."""
 import re
 import subprocess
+import tempfile
 import sys
 from pathlib import Path
 
@@ -69,22 +70,37 @@ def golden_model():
     """Return a helper that generates a golden ONNX model by running its generator script.
 
     The helper takes a model name (e.g. "gemm_small"), returns the path to the ONNX file
-    (../goldenFiles/<name>/<name>.onnx), and generates it if it does not exist.
-    Runs the generator script from test/ as the working directory so filePath resolution
-    and side effects (inputs.fpp) stay in a disposable directory.
+    (goldenFiles/<name>/<name>.onnx), and generates it if it does not exist.
+
+    Each generator script writes its ONNX to a hard-coded `../goldenFiles/<name>/`
+    and drops an `inputs.fpp` beside itself, so it is run from a throwaway
+    directory holding a `goldenFiles` symlink: the model lands in the real tree
+    and the scratch output is discarded with the temp directory. (It used to run
+    in `test/`, which existed to serve the old runtime library's shell suite.)
     """
+    root = Path(__file__).resolve().parents[2]
     generated = {}
+    tmp = tempfile.TemporaryDirectory()
+    cwd = Path(tmp.name) / "run"
+    cwd.mkdir()
+    (Path(tmp.name) / "goldenFiles").symlink_to(root / "goldenFiles", target_is_directory=True)
 
     def _get_model_path(name: str) -> Path:
         if name not in generated:
-            model_path = Path(f"../goldenFiles/{name}/{name}.onnx")
+            model_path = root / "goldenFiles" / name / f"{name}.onnx"
             if not model_path.exists():
                 subprocess.run(
-                    [sys.executable, f"../goldenFiles/{name}/{name}.py"],
-                    cwd="../test",
-                    check=True,
+                    [sys.executable, str(root / "goldenFiles" / name / f"{name}.py")],
+                    cwd=cwd, check=True,
                 )
             generated[name] = model_path
         return generated[name]
 
-    return _get_model_path
+    yield _get_model_path
+    tmp.cleanup()
+
+
+@pytest.fixture
+def repo_root():
+    """The repository root, from this file's location rather than the cwd."""
+    return Path(__file__).resolve().parents[2]

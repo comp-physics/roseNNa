@@ -62,5 +62,5 @@ def test_multi_output_graph_raises_unsupported_model(tmp_path):
     m = helper.make_model(g, opset_imports=[helper.make_opsetid("", 13)])
     p = tmp_path / "multi_output.onnx"
     onnx.save(m, p)
-    with pytest.raises(UnsupportedModel, match="one input and one output"):
+    with pytest.raises(UnsupportedModel, match="one output and at least one input"):
         build_plan(load_graph(p))

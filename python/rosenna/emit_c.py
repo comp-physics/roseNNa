@@ -25,11 +25,34 @@ _DEVICE_PASS_GUARD = (f"#if ({_IS_CUDA} && defined(__CUDA_ARCH__)) || "
 # Controller ruling R4. CUDA __constant__ memory is 64 KB per module, while
 # a model embeds by default below EMBED_THRESHOLD (1M parameters, up to 8 MB
 # of f64), so an embedded model whose weights exceed the constant budget must
-# be placed in ordinary device memory or nvcc rejects the header. The cut is
-# 48 KB of weight bytes, leaving the remaining 16 KB for anything else the
-# translation unit puts in constant memory; the decision is per model, made
-# once at generation time, and the header records which it took.
-CONSTANT_MEMORY_LIMIT = 48 * 1024
+# be placed in ordinary device memory or nvcc rejects the header. The decision
+# is per model, made once at generation time, and the header records which it
+# took.
+#
+# The cut is 2 KB of weight bytes, not the 48 KB the 64-KB-per-module bank
+# would allow, and the reason is the constant *cache*, not the bank. Constant
+# memory is fast only while the working set fits a per-SM cache of a couple of
+# KB; past that every weight read misses. Measured on an A100 (ncu,
+# smsp__warp_issue_stalled_imc_miss_per_warp_active), infer_batch spends 71% of
+# its warp-issue stalls on constant-cache misses for gemm_big (23 KB of
+# weights) and 90% for batchnet (16 KB), against 0.09% for the same models
+# reading the same weights from ordinary device memory:
+#
+#   model        weight bytes   __constant__   __device__ const
+#   gemm_small            120      0.027 ns/pt      0.028 ns/pt
+#   gemm_nobias           160      0.027            0.028
+#   droplet               344      0.041            0.041
+#   batchnet           15,904      6.731            2.384
+#   gemm_big           23,208      3.574            1.423
+#
+# so 2 KB keeps the models that measure the same and moves out the ones that
+# pay 2.5-2.8x. This is calibrated for the shape this library targets: a
+# per-point closure with a handful of inputs, where the weights dominate the
+# cache. A model with a wide input streams enough of x through L1 to change
+# the balance -- synthetic 16-input models measure ~1.3x the other way -- so
+# if one of those ever turns up, this wants to become a generate-time flag
+# rather than a different constant.
+CONSTANT_MEMORY_LIMIT = 2 * 1024
 # The one-thread-per-point kernel's block size (emit_kernel).
 KERNEL_TILE = 128
 # Embedding must be lossless: %.17g round-trips any f64, %.9g any f32
@@ -162,8 +185,8 @@ def emit_c(plan: Plan) -> tuple:
         # Every weight is a ROSENNA_CONST array in the header, so the source
         # has nothing to define or load; it holds only the OpenMP-fallback
         # infer_batch. (Under nvcc/hipcc that macro is __constant__ or
-        # __device__ const; compiles and runs on the host, device path
-        # unvalidated until the GPU gate.)
+        # __device__ const; the nvcc form is validated on an A100 by the GPU
+        # gate, the hipcc form is not.)
         pass
     else:
         lines += _emit_load(plan)
@@ -299,9 +322,11 @@ def _emit_device_macros(plan: Plan) -> list:
 
     ROSENNA_CONST (controller ruling R4): the embedded weights go to
     __constant__ only while their total size stays under
-    CONSTANT_MEMORY_LIMIT, since CUDA constant memory is 64 KB per module;
-    a larger embedded model reads them from __device__ const global memory
-    instead. Both are `static` so that each translation unit that includes
+    CONSTANT_MEMORY_LIMIT; a larger embedded model reads them from
+    __device__ const global memory instead, which is both what the 64 KB
+    per-module bank requires above 64 KB and, well below that, what the
+    per-SM constant cache makes faster -- see CONSTANT_MEMORY_LIMIT for the
+    measurements behind the 2 KB cut. Both are `static` so that each translation unit that includes
     the header -- <name>.c compiled as C++, <name>_kernel.cu, and any host
     .cu -- gets its own copy with internal linkage: a namespace-scope
     __constant__ definition with external linkage in a header is a duplicate
@@ -651,8 +676,8 @@ def _emit_fallback_infer_batch(plan: Plan, ctype: str) -> list:
     backends define the same function in <name>_kernel.cu instead. Under a
     host compiler without -fopenmp/-fopenacc the pragmas are inert and this
     is a plain loop over host pointers, which is also what use_device_ptr
-    yields on a host-only build. Compiles and runs on the host; device path
-    unvalidated.
+    yields on a host-only build. Validated on an A100 through nvc -mp=gpu by
+    the GPU gate; the AMD host compilers are still unexercised.
     """
     m = plan.model
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
@@ -783,6 +808,171 @@ def _emit_init(plan: Plan) -> list:
     return lines
 
 
+def _flat_index(names, shape, base=""):
+    """Row-major flat index from per-axis counters, as a C/Fortran expression."""
+    expr = names[0]
+    for k in range(1, len(shape)):
+        expr = f"({expr} * {shape[k]} + {names[k]})"
+    return expr + base
+
+
+def _emit_transpose_c(op, dst, src):
+    """A real axis permutation: one loop per output axis, gathering from the source.
+
+    Only reached when the permutation moves an axis with extent > 1 -- plan.py
+    turns the rest into buffer aliases, since those move no bytes.
+    """
+    names = [f"c{k}" for k in range(len(op.out_shape))]
+    L = []
+    for k, (nm, ext) in enumerate(zip(names, op.out_shape)):
+        tail = " {" if k == len(names) - 1 else ""
+        L.append(f"    for (int {nm} = 0; {nm} < {ext}; ++{nm}){tail}")
+    terms = [nm if st == 1 else f"{nm} * {st}" for nm, st in zip(names, op.perm_strides) if st]
+    L.append(f"        {dst}[{_flat_index(names, op.out_shape)}] = "
+             f"{src}[{' + '.join(terms) if terms else '0'}];")
+    L.append("    }")
+    return L
+
+
+def _emit_lstm_c(op, ctype, act, dst, src, h0, c0, wsym, rsym, bsym, outs, zero):
+    """One forward LSTM, ONNX default activations, as a plain sequential loop.
+
+    Gate order in W/R/B is ONNX's i, o, f, c -- not the i, f, c, o most
+    references use -- so the four blocks are read at 0H, 1H, 2H, 3H in that
+    order. B holds Wb and Rb back to back, both of which are added.
+    """
+    sp = op.lstm
+    H, I, B, T = sp.hidden, sp.input_size, sp.batch, sp.seq
+    h, c, g = sp.h_sym, sp.c_sym, sp.g_sym
+    L = [f"    for (int i = 0; i < {B * H}; ++i) {h}[i] = {h0 + '[i]' if h0 else zero};",
+         f"    for (int i = 0; i < {B * H}; ++i) {c}[i] = {c0 + '[i]' if c0 else zero};",
+         f"    for (int t = 0; t < {T}; ++t)",
+         f"    for (int b = 0; b < {B}; ++b) {{",
+         f"        for (int k = 0; k < {4 * H}; ++k) {{",
+         f"            {ctype} acc = {zero};",
+         f"            for (int j = 0; j < {I}; ++j) "
+         f"acc += {src}[(t * {B} + b) * {I} + j] * {wsym}[k * {I} + j];",
+         f"            for (int j = 0; j < {H}; ++j) "
+         f"acc += {h}[b * {H} + j] * {rsym}[k * {H} + j];"]
+    if bsym:
+        L.append(f"            acc += {bsym}[k] + {bsym}[{4 * H} + k];")
+    L += [f"            {g}[k] = acc;",
+          "        }",
+          f"        for (int j = 0; j < {H}; ++j) {{",
+          f"            const {ctype} gi = {act['sigmoid'].format(v=f'{g}[j]')};",
+          f"            const {ctype} go = {act['sigmoid'].format(v=f'{g}[{H} + j]')};",
+          f"            const {ctype} gf = {act['sigmoid'].format(v=f'{g}[{2 * H} + j]')};",
+          f"            const {ctype} gc = {act['tanh'].format(v=f'{g}[{3 * H} + j]')};",
+          f"            const {ctype} cn = gf * {c}[b * {H} + j] + gi * gc;",
+          f"            {c}[b * {H} + j] = cn;",
+          f"            {h}[b * {H} + j] = go * {act['tanh'].format(v='cn')};",
+          f"            {dst}[(t * {B} + b) * {H} + j] = {h}[b * {H} + j];",
+          "        }",
+          "    }"]
+    if len(outs) >= 1:
+        L.append(f"    for (int i = 0; i < {B * H}; ++i) {outs[0]}[i] = {h}[i];")
+    if len(outs) >= 2:
+        L.append(f"    for (int i = 0; i < {B * H}; ++i) {outs[1]}[i] = {c}[i];")
+    return L
+
+
+def _emit_add_c(op, dst, src, wsym):
+    """Elementwise add of a broadcast constant: one loop per output axis.
+
+    Iterating the axes rather than the flat extent is what makes the constant's
+    index affine -- `c1 * stride1 + ...` with the broadcast axes contributing
+    nothing -- instead of a decomposition with divisions inside the loop.
+    """
+    bc = op.bcast
+    names = [f"c{k}" for k in range(len(bc.out_shape))]
+    L = []
+    for k, (nm, ext) in enumerate(zip(names, bc.out_shape)):
+        tail = " {" if k == len(names) - 1 else ""
+        L.append(f"    for (int {nm} = 0; {nm} < {ext}; ++{nm}){tail}")
+    flat = _flat_index(names, bc.out_shape)
+    terms = [nm if st == 1 else f"{nm} * {st}" for nm, st in zip(names, bc.strides) if st]
+    widx = " + ".join(terms) if terms else "0"
+    L.append(f"        {dst}[{flat}] = {src}[{flat}] + {wsym}[{widx}];")
+    L.append("    }")
+    return L
+
+
+def _emit_spatial_c(op, ctype, dst, src, weight_sym, bias_sym, zero):
+    """A 2-D Conv / MaxPool / AveragePool as an explicit loop nest over flat buffers.
+
+    Buffers stay rank 1 whatever the value's logical rank: NCHW is flattened
+    row-major and the index arithmetic is written out, which keeps one buffer
+    model for dense and spatial ops alike and keeps every bound a literal.
+
+    The `continue` on an out-of-range (ih, iw) is what implements padding:
+    nothing is materialised, a pad cell simply contributes nothing. That is
+    exactly right for Conv (pad = 0 contributes 0) and for MaxPool (ONNX pads
+    with -inf, i.e. a pad cell never wins); AveragePool needs to know how many
+    cells were real, which is what `cnt` counts.
+    """
+    sp = op.spatial
+    L = []
+    idx_in = f"((n * {sp.c_in} + ic) * {sp.h_in} + ih) * {sp.w_in} + iw"
+    idx_out = f"((n * {sp.c_out} + oc) * {sp.h_out} + oh) * {sp.w_out} + ow"
+    L.append(f"    for (int n = 0; n < {sp.n}; ++n)")
+    L.append(f"    for (int oc = 0; oc < {sp.c_out}; ++oc)")
+    L.append(f"    for (int oh = 0; oh < {sp.h_out}; ++oh)")
+    L.append(f"    for (int ow = 0; ow < {sp.w_out}; ++ow) {{")
+
+    if op.kind == "conv":
+        L.append(f"        {ctype} acc = {zero};")
+        L.append(f"        for (int ic = 0; ic < {sp.c_in}; ++ic)")
+    elif op.kind == "maxpool":
+        # The first in-range cell seeds the running maximum; `seen` makes that
+        # independent of any sentinel value, so a window of all -inf inputs
+        # still yields -inf rather than a made-up number.
+        L.append(f"        {ctype} best = {zero};")
+        L.append("        int seen = 0;")
+        L.append("        const int ic = oc;")
+    else:
+        L.append(f"        {ctype} acc = {zero};")
+        L.append("        int cnt = 0;")
+        L.append("        const int ic = oc;")
+
+    L.append(f"        for (int kh = 0; kh < {sp.kh}; ++kh)")
+    L.append(f"        for (int kw = 0; kw < {sp.kw}; ++kw) {{")
+    L.append(f"            const int ih = oh * {sp.sh} - {sp.ph} + kh * {sp.dh};")
+    L.append(f"            const int iw = ow * {sp.sw} - {sp.pw} + kw * {sp.dw};")
+    L.append(f"            if (ih < 0 || ih >= {sp.h_in} || iw < 0 || iw >= {sp.w_in}) continue;")
+    if op.kind == "conv":
+        widx = f"((oc * {sp.c_in} + ic) * {sp.kh} + kh) * {sp.kw} + kw"
+        L.append(f"            acc += {src}[{idx_in}] * {weight_sym}[{widx}];")
+        L.append("        }")
+    elif op.kind == "maxpool":
+        L.append(f"            const {ctype} v = {src}[{idx_in}];")
+        # !(v <= best), not (v > best): a NaN loses every comparison, so the
+        # naive form drops it. This library is linked into solvers where a NaN
+        # out of a diverged run is the signal, so it has to survive a pool.
+        L.append("            if (!seen || !(v <= best)) { best = v; seen = 1; }")
+        L.append("        }")
+    else:
+        L.append(f"            acc += {src}[{idx_in}];")
+        L.append("            ++cnt;")
+        L.append("        }")
+
+    if op.kind == "conv":
+        if bias_sym:
+            L.append(f"        acc += {bias_sym}[oc];")
+        L.append(f"        {dst}[{idx_out}] = acc;")
+    elif op.kind == "maxpool":
+        L.append(f"        {dst}[{idx_out}] = best;")
+    else:
+        full = sp.kh * sp.kw
+        if sp.ph == 0 and sp.pw == 0 or sp.count_include_pad:
+            # No pad cell can fall in a window (ceil_mode is refused), or the
+            # caller asked for the full-kernel divisor: a literal either way.
+            L.append(f"        {dst}[{idx_out}] = acc / ({ctype}){full};")
+        else:
+            L.append(f"        {dst}[{idx_out}] = cnt ? acc / ({ctype})cnt : {zero};")
+    L.append("    }")
+    return L
+
+
 def _emit_infer(plan: Plan, ctype: str) -> list:
     """Emit the inference loop nest straight from plan.buffers / plan.assignment.
 
@@ -819,24 +1009,60 @@ def _emit_infer(plan: Plan, ctype: str) -> list:
     for sym in scratch:
         lines.append(f"    {ctype} {sym}[{plan.buffers[sym]}];")
 
-    cur_len = n_in
     for op in plan.ops:
         dst, src = plan.assignment[op.out], plan.assignment[op.inp]
         if op.kind == "gemm":
             idx_expr = _weight_index_c(weight_by_symbol, op)
             weight_sym = _weight_ref(plan, m, op.weight)
-            bias_init = f"{_weight_ref(plan, m, op.bias)}[i]" if op.bias else _ZERO[plan.dtype]
+            # The bias is added AFTER the dot product, not used to seed the
+            # accumulator. Seeding it from a declare-target array is what makes
+            # nvc refuse to generate a `distribute parallel for` body (it emits
+            # a kernel that traps); adding it afterwards compiles, and unlocks a
+            # ~19x faster per-point offload loop. See
+            # examples/nvhpc_teams_mapping/. emit_fortran does the same, so the
+            # two backends stay bit-comparable.
+            # `r` indexes independent rows sharing one weight (1 for a dense
+            # per-point model); it is only emitted when there is more than one,
+            # so single-row models generate exactly the code they always did.
+            ri, ro = (f"r * {op.n_in} + ", f"r * {op.n_out} + ") if op.rows > 1 else ("", "")
+            if op.rows > 1:
+                lines.append(f"    for (int r = 0; r < {op.rows}; ++r)")
             lines.append(f"    for (int i = 0; i < {op.n_out}; ++i) {{")
-            lines.append(f"        {ctype} acc = {bias_init};")
+            lines.append(f"        {ctype} acc = {_ZERO[plan.dtype]};")
             lines.append(
                 f"        for (int j = 0; j < {op.n_in}; ++j) "
-                f"acc += {src}[j] * {weight_sym}[{idx_expr}];")
-            lines.append(f"        {dst}[i] = acc;")
+                f"acc += {src}[{ri}j] * {weight_sym}[{idx_expr}];")
+            if op.bias:
+                lines.append(f"        acc += {_weight_ref(plan, m, op.bias)}[i];")
+            lines.append(f"        {dst}[{ro}i] = acc;")
             lines.append("    }")
-            cur_len = op.n_out
+        elif op.kind == "alias":
+            continue
+        elif op.kind == "transpose":
+            lines += _emit_transpose_c(op, dst, src)
+        elif op.kind == "lstm":
+            lines += _emit_lstm_c(
+                op, ctype, act, dst, src,
+                plan.assignment[op.extra_in[0]] if op.extra_in else None,
+                plan.assignment[op.extra_in[1]] if len(op.extra_in) > 1 else None,
+                _weight_ref(plan, m, op.weight), _weight_ref(plan, m, op.weight2),
+                _weight_ref(plan, m, op.bias) if op.bias else None,
+                [plan.assignment[o] for o in op.outs], _ZERO[plan.dtype])
+        elif op.kind == "add":
+            lines += _emit_add_c(op, dst, src, _weight_ref(plan, m, op.weight))
+        elif op.kind == "copy":
+            off = f"{op.src_offset} + " if op.src_offset else ""
+            lines.append(
+                f"    for (int i = 0; i < {op.n_out}; ++i) {dst}[i] = {src}[{off}i];")
+        elif op.kind in ("conv", "maxpool", "avgpool"):
+            lines += _emit_spatial_c(
+                op, ctype, dst, src,
+                _weight_ref(plan, m, op.weight) if op.weight else None,
+                _weight_ref(plan, m, op.bias) if op.bias else None,
+                _ZERO[plan.dtype])
         elif op.kind in act:
             expr = act[op.kind].format(v=f"{src}[i]")
-            lines.append(f"    for (int i = 0; i < {cur_len}; ++i) {dst}[i] = {expr};")
+            lines.append(f"    for (int i = 0; i < {op.n_out}; ++i) {dst}[i] = {expr};")
         else:
             raise AssertionError(f"unhandled op kind {op.kind!r}")
 

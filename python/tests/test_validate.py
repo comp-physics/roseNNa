@@ -70,3 +70,4 @@ def test_accepts_rank2_weight_with_nonunity_leading_dim(tmp_path):
     w = numpy_helper.from_array(np.zeros((3, 2), np.float32), "w")
     n = helper.make_node("Gemm", ["x", "w"], ["y"], name="g1", transB=1)
     validate(_model(tmp_path, [n], [w], in_shape=(1, 3), out_shape=(1, 2)))
+

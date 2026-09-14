@@ -1,6 +1,6 @@
 """rosenna gpu-gate: the script a user runs on a real GPU machine.
 
-None of the CUDA/HIP path has ever been compiled or run on the machine that
+None of the CUDA/HIP path had ever been compiled or run on the machine that
 wrote it (no nvcc, hipcc, or GPU). This script is the evidence that fact
 cannot produce: it generates the gemm_big plan embedded and file-loaded, in
 both languages, builds the omp-backend C archive and the Fortran library
@@ -22,8 +22,11 @@ host, which is the whole point of running under MANDATORY in the first
 place.
 
 Device residency is not claimed anywhere until this script has actually run
-on a GPU machine and its report recorded. Until then: compiles and runs on
-the host; device path unvalidated.
+on a GPU machine and its report recorded. For CUDA that has now happened:
+`--backend cuda` PASSes on an A100 under NVIDIA HPC SDK 25.11 (nvc,
+nvfortran -mp=gpu -gpu=cc80, nvcc 13.0), with zero cudaMemcpy inside the
+timed infer_batch call. HIP is still unvalidated -- no ROCm machine has run
+this.
 """
 import csv
 import io
@@ -164,7 +167,7 @@ def _generate(outdir: Path, onnx_path: Path, embed: bool):
     plan = build_plan(graph, dtype="f64", embed=embed)
     validate_model_name(plan.model)
     name = plan.model
-    (outdir / f"{name}_model.f90").write_text(emit_fortran(plan))
+    (outdir / f"{name}_model.F90").write_text(emit_fortran(plan))
     (outdir / f"{name}_fortran.mk").write_text(emit_fortran_recipe(plan))
     source, header = emit_c(plan)
     (outdir / f"{name}.c").write_text(source)
@@ -268,6 +271,7 @@ def _check_output(report: _Report, stdout: str, expected) -> tuple:
 
 
 _C_HARNESS1 = """/* rosenna gpu-gate: microfd-shaped per-point host, C. */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <omp.h>
@@ -280,29 +284,60 @@ int main(void) {{
     double *y = malloc(sizeof(double) * (size_t)n * {n_out});
     for (int c = 0; c < n * {n_in}; ++c) if (scanf("%lf", &x[c]) != 1) return 1;
 #ifdef _OPENMP
-    #pragma omp target teams loop map(to: x[0:n*{n_in}]) map(from: y[0:n*{n_out}])
+    #pragma omp target teams distribute parallel for map(to: x[0:n*{n_in}]) map(from: y[0:n*{n_out}])
 #endif
     for (int p = 0; p < n; ++p) {name}_infer(x + p * {n_in}, y + p * {n_out});   /* microfd's own target loop calling the header inline */
     for (int p = 0; p < n; ++p) {{
         for (int i = 0; i < {n_out}; ++i) printf("%.17e ", y[p * {n_out} + i]);
         printf("\\n");
     }}
-    /* Timing loop: b cycles through the n (= 8) correctness points, so the
-       iterations sharing a b all write the same eight output slots. That
-       race is benign and intentional: every writer of a slot stores the
-       same value, and y is not read after the loop. */
+    /* Timing: one offload region over ntime points, each reading its own
+       input slot and writing its own output slot, with the points tiled on
+       the host and mapped BEFORE the clock starts (ruling R16, as in the
+       infer_batch driver). Both of those matter for the comparison this
+       gate's report invites: a timing loop that cycles a handful of points
+       measures cached reads and a million-way store collision on a few
+       slots, not the per-point cost of the same distinct-point work
+       infer_batch does, and a map inside the timed window charges this path
+       for a transfer the other one makes outside it. */
     long ntime = {ntime}L;
+    double *xt = malloc(sizeof(double) * (size_t)ntime * {n_in});
+    double *yt = malloc(sizeof(double) * (size_t)ntime * {n_out});
+    for (long t = 0; t < ntime; ++t) {{
+        long b = t % n;
+        for (int i = 0; i < {n_in}; ++i) xt[t * {n_in} + i] = x[b * {n_in} + i];
+    }}
+#ifdef _OPENMP
+    #pragma omp target enter data map(to: xt[0:ntime*{n_in}]) map(alloc: yt[0:ntime*{n_out}])
+#endif
     double t0 = omp_get_wtime();
 #ifdef _OPENMP
-    #pragma omp target teams loop map(to: x[0:n*{n_in}]) map(from: y[0:n*{n_out}])
+    #pragma omp target teams distribute parallel for
 #endif
-    for (long p = 0; p < ntime; ++p) {{
-        int b = (int)(p % n);
-        {name}_infer(x + b * {n_in}, y + b * {n_out});
-    }}
+    for (long p = 0; p < ntime; ++p) {name}_infer(xt + p * {n_in}, yt + p * {n_out});
     double t1 = omp_get_wtime();
+#ifdef _OPENMP
+    #pragma omp target exit data map(from: yt[0:ntime*{n_out}]) map(delete: xt[0:ntime*{n_in}])
+#endif
+    /* The timed loop's own results are checked, not just the correctness
+       loop's: xt/yt that failed to map would leave this timing a loop over
+       garbage, and nothing else here would notice. Every timed point is a
+       tile of one of the n correctness points, so yt[t] must reproduce
+       y[t % n] -- to a tolerance, since the two loops are separate regions
+       the compiler may schedule (and contract) differently. */
+    for (long t = 0; t < ntime; ++t) {{
+        long b = t % n;
+        for (int i = 0; i < {n_out}; ++i) {{
+            double got = yt[t * {n_out} + i], want = y[b * {n_out} + i];
+            if (!(fabs(got - want) <= 1e-9 + 1e-9 * fabs(want))) {{
+                printf("TIMED MISMATCH at point %ld slot %d: %.17e vs %.17e\\n",
+                       t, i, got, want);
+                return 5;
+            }}
+        }}
+    }}
     printf("TIMING %.6f\\n", (t1 - t0) * 1.0e9 / (double)ntime);
-    free(x); free(y);
+    free(x); free(y); free(xt); free(yt);
     return 0;
 }}
 """
@@ -312,7 +347,7 @@ program host
     use {name}_model
     use iso_fortran_env, only: real64
     implicit none
-    real(real64), allocatable :: x(:,:), y(:,:)
+    real(real64), allocatable :: x(:,:), y(:,:), xt(:,:), yt(:,:)
     integer :: n, p, status, b, ntime, t
     integer(8) :: c0, c1, crate
     real(real64) :: ns_per_point
@@ -321,25 +356,49 @@ program host
     read(*,*) n
     allocate(x({n_in}, n), y({n_out}, n))
     read(*,*) x
-    !$omp target teams loop map(to: x) map(from: y)
+    !$omp target teams distribute parallel do map(to: x) map(from: y)
     do p = 1, n
         call {name}_infer(x(:, p), y(:, p))
     end do
     do p = 1, n
         print '({n_out}(es24.16,1x))', y(:, p)
     end do
-    ! Timing loop: b cycles through the n (= 8) correctness points, so the
-    ! iterations sharing a b all write the same eight output columns. That
-    ! race is benign and intentional: every writer of a column stores the
-    ! same value, and y is not read after the loop.
+    ! Timing: one offload region over ntime points, each reading its own
+    ! input column and writing its own output column, with the points tiled
+    ! on the host and mapped BEFORE the clock starts (ruling R16, as in the
+    ! infer_batch driver). Both of those matter for the comparison this
+    ! gate's report invites: a timing loop that cycles a handful of points
+    ! measures cached reads and a million-way store collision on a few
+    ! columns, not the per-point cost of the same distinct-point work
+    ! infer_batch does, and a map inside the timed window charges this path
+    ! for a transfer the other one makes outside it.
     ntime = {ntime}
-    call system_clock(count=c0, count_rate=crate)
-    !$omp target teams loop map(to: x) map(from: y)
+    allocate(xt({n_in}, ntime), yt({n_out}, ntime))
     do t = 1, ntime
         b = mod(t - 1, n) + 1
-        call {name}_infer(x(:, b), y(:, b))
+        xt(:, t) = x(:, b)
+    end do
+    !$omp target enter data map(to: xt) map(alloc: yt)
+    call system_clock(count=c0, count_rate=crate)
+    !$omp target teams distribute parallel do
+    do t = 1, ntime
+        call {name}_infer(xt(:, t), yt(:, t))
     end do
     call system_clock(count=c1)
+    !$omp target exit data map(from: yt) map(delete: xt)
+    ! The timed loop's own results are checked, not just the correctness
+    ! loop's: xt/yt that failed to map would leave this timing a loop over
+    ! garbage, and nothing else here would notice. Every timed point is a
+    ! tile of one of the n correctness points, so yt(:, t) must reproduce
+    ! y(:, mod(t-1,n)+1) -- to a tolerance, since the two loops are separate
+    ! regions the compiler may schedule (and contract) differently.
+    do t = 1, ntime
+        b = mod(t - 1, n) + 1
+        if (any(abs(yt(:, t) - y(:, b)) > 1.0e-9_real64 + 1.0e-9_real64 * abs(y(:, b)))) then
+            print '(A, I0)', 'TIMED MISMATCH at point ', t
+            stop 5
+        end if
+    end do
     ns_per_point = real(c1 - c0, real64) / real(crate, real64) * 1.0e9_real64 / real(ntime, real64)
     print '(A, ES24.16)', 'TIMING ', ns_per_point
 end program
@@ -777,14 +836,25 @@ def _run_nsys_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: 
                      "with or without -lnvToolsExt.")
             return True
 
-    stats_base = cfg_dir / "gate_nsys_profile"
+    # Absolute: every nsys command below runs with cwd=cfg_dir, so a path
+    # spelled relative to the invocation directory (the default --out is a
+    # relative one) would be resolved a second time against cfg_dir. nsys
+    # then fails to create the report -- and still exits 0.
+    stats_base = (cfg_dir / "gate_nsys_profile").resolve()
     # --capture-range-end=stop: profiling stops when the nvtx range closes
     # and the harness runs on to completion (the default for an nvtx
     # capture range shuts the application down instead).
+    # -e NSYS_NVTX_PROFILER_REGISTER_ONLY=0: nsys only honours a capture
+    # range named by a REGISTERED nvtx string unless this is off, and the
+    # harness pushes a plain nvtxRangePushA. Without it the capture range
+    # never opens, nothing is collected, and nsys exits 0 having written no
+    # .nsys-rep at all ("No reports were generated") -- verified on nsys
+    # 2025.5 (HPC SDK 25.11) against an A100.
     profile_proc = _sh(
         report, "nsys profile --capture-range=nvtx --nvtx-capture=rosenna_timed "
                 "--capture-range-end=stop --stats=true",
-        [nsys, "profile", "--capture-range=nvtx", "--nvtx-capture=rosenna_timed",
+        [nsys, "profile", "-e", "NSYS_NVTX_PROFILER_REGISTER_ONLY=0",
+         "--capture-range=nvtx", "--nvtx-capture=rosenna_timed",
          "--capture-range-end=stop", "--stats=true", "--force-overwrite=true",
          "-o", str(stats_base), "./gate_harness3_nvtx"], cwd=cfg_dir,
         input_text=_stdin_for(inputs))
@@ -793,8 +863,22 @@ def _run_nsys_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: 
         return False
 
     report_file = stats_base.with_suffix(".nsys-rep")
-    stats_proc = _sh(report, "nsys stats -q --report cuda_api_sum --format csv",
-                     [nsys, "stats", "-q", "--report", "cuda_api_sum", "--format", "csv",
+    if not report_file.exists():
+        # nsys exits 0 having written nothing both when the capture range
+        # never opened and when it could not create the file; say so here
+        # rather than let `nsys stats` fail on a missing input, which reads
+        # as a tooling error instead of an empty capture.
+        report.p(f"FAIL: nsys profile exited 0 but wrote no {report_file} -- either the "
+                 "nvtx capture range never opened or the report could not be created; "
+                 "the stderr above says which.")
+        return False
+    # --force-export=true: `nsys profile --stats=true` above already wrote a
+    # .sqlite beside the report, and nsys refuses to read one it considers
+    # older than the .nsys-rep (which its own finalization makes it) --
+    # exiting 1 with a usage message rather than any statistics.
+    stats_proc = _sh(report, "nsys stats -q --force-export=true --report cuda_api_sum --format csv",
+                     [nsys, "stats", "-q", "--force-export=true",
+                      "--report", "cuda_api_sum", "--format", "csv",
                       str(report_file)], cwd=cfg_dir)
     if stats_proc.returncode != 0:
         report.p("FAIL: nsys stats did not complete successfully")
@@ -878,7 +962,7 @@ def run_gate(*, cc: str, fc: str, flags: str, backend: str, devcc=None, devflags
             libs = _build_c_libs(report, cfg_dir, plan, cc, flags, backend, resolved_devcc, devflags)
             f_built = _build_fortran_lib(report, cfg_dir, plan, fc, flags)
 
-            report.h("c harness: per-point infer via target teams loop", 3)
+            report.h("c harness: per-point infer via target teams distribute parallel for", 3)
             if libs.host is not None:
                 if not _run_c_harness1(report, cfg_dir, plan, cc, flags, libs.host, inputs, expected, env):
                     ok = False
@@ -886,7 +970,7 @@ def run_gate(*, cc: str, fc: str, flags: str, backend: str, devcc=None, devflags
                 report.p("skipped: c library build (omp backend, host compiler) failed")
                 ok = False
 
-            report.h("fortran harness: per-point infer via target teams loop", 3)
+            report.h("fortran harness: per-point infer via target teams distribute parallel do", 3)
             if f_built:
                 if not _run_fortran_harness2(report, cfg_dir, plan, fc, flags, inputs, expected, env):
                     ok = False

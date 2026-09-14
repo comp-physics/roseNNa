@@ -50,6 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
     ver.add_argument("--lang", choices=["fortran", "c", "both"], default="both")
     ver.add_argument("--precision", choices=["single", "double"], default=None)
     ver.add_argument("--cases", type=int, default=16, help="random inputs to compare")
+    ver.add_argument("--name", default=None,
+                     help="symbol prefix; default: the model file stem (which must be a "
+                          "valid identifier -- pass this when it is not)")
     _add_embed_flags(ver)
 
     info = sub.add_parser("info", help="report ops, shapes and whether the model is supported")
@@ -136,7 +139,7 @@ def _cmd_generate(args) -> int:
 
     written = []
     if "fortran" in langs:
-        f90_path = outdir / f"{name}_model.f90"
+        f90_path = outdir / f"{name}_model.F90"
         fmk_path = outdir / f"{name}_fortran.mk"
         f90_path.write_text(emit_fortran(plan))
         fmk_path.write_text(emit_fortran_recipe(plan))
@@ -178,7 +181,7 @@ def _cmd_generate(args) -> int:
 def _cmd_verify(args) -> int:
     with tempfile.TemporaryDirectory() as workdir:
         results = verify_model(args.model, args.lang, _dtype_from_precision(args.precision),
-                                args.cases, workdir, embed=args.embed)
+                                args.cases, workdir, embed=args.embed, name=args.name)
     all_ok = True
     for r in results:
         status = "ok" if r.ok else "FAIL"

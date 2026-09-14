@@ -14,7 +14,7 @@ def test_generate_writes_model_file(tmp_path, capsys, golden_model):
     rc = main(["generate", str(onnx_path), "--lang", "both", "--precision", "double",
                "--out", str(tmp_path), "--name", "mymodel", "--no-embed"])
     assert rc == 0
-    assert (tmp_path / "mymodel_model.f90").exists()
+    assert (tmp_path / "mymodel_model.F90").exists()
     assert (tmp_path / "mymodel.c").exists()
     assert (tmp_path / "mymodel.h").exists()
     assert (tmp_path / "mymodel.rwt").exists()

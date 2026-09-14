@@ -62,7 +62,7 @@ distinct from `face()`'s one-sided/averaged stencil at a face:
 ```diff
  static void prim(const double*q){                                        // conserved -> primitive over the whole padded block
    LOCALS; double*w=g.w; const double gm=g.gamma-1;
-   #pragma omp target teams loop
+   #pragma omp target teams distribute parallel for
    for(size_t c=0;c<nc;c++){ double r=q[c],u=q[nc+c]/r,v=q[2*nc+c]/r,s=q[3*nc+c]/r;
      w[c]=r; w[nc+c]=u; w[2*nc+c]=v; w[3*nc+c]=s; w[4*nc+c]=gm*(q[4*nc+c]-.5*r*(u*u+v*v+s*s)); }
  }
@@ -79,7 +79,7 @@ distinct from `face()`'s one-sided/averaged stencil at a face:
 +  // the central difference is valid at every index with both neighbours in
 +  // bounds -- exactly this range, symmetric on both sides, expressed
 +  // directly rather than through FOR3 since the bounds differ from it.
-+  #pragma omp target teams loop collapse(3)
++  #pragma omp target teams distribute parallel for collapse(3)
 +  for(int k=1;k<nz+2*NG-1;k++) for(int j=1;j<ny+2*NG-1;j++) for(int i=1;i<nx+2*NG-1;i++){
 +    const long c=IDX(i,j,k);
 +    const double *u=w+nc+c, *v=w+2*nc+c, *s=w+3*nc+c;              // u, v, s: the three velocity components at this cell
@@ -206,7 +206,7 @@ static void closure_batched(void){
   // Same range as closure() in section 3 (the padded block minus one layer
   // on each side), for the same reason: every neighbour the central
   // difference below reads must be in bounds and halo-filled.
-  #pragma omp target teams loop collapse(3)
+  #pragma omp target teams distribute parallel for collapse(3)
   for(int k=1;k<nz+2*NG-1;k++) for(int j=1;j<ny+2*NG-1;j++) for(int i=1;i<nx+2*NG-1;i++){
     const long c=IDX(i,j,k); const double *u=w+nc+c,*v=w+2*nc+c,*s=w+3*nc+c;
     double *f9=feat+9*c;

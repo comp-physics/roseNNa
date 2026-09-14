@@ -1,6 +1,6 @@
 # rosenna: ONNX to a GPU-callable Fortran/C library
 
-This is the roseNNa code generator: it reads a dense ONNX model and emits a
+This is the roseNNa code generator: it reads an ONNX model and emits a
 small, self-contained Fortran module and/or C library that a solver written
 in C or Fortran links directly, and calls per point inside its own compute
 loop -- on the host, or on a GPU under OpenMP target offload, OpenACC, CUDA
@@ -56,7 +56,7 @@ model file's stem. `generate` prints every file it wrote:
 | `<name>_kernel.cu` | `--lang c\|both` | the native CUDA/HIP batched kernel; inert unless built with `ROSENNA_BACKEND=cuda\|hip` |
 | `rosenna_rt.h` | `--lang c\|both` | the CUDA/HIP runtime macro mapping; identical for every model |
 | `<name>.mk` | `--lang c\|both` | the C build recipe: builds `lib<name>.a` for `ROSENNA_BACKEND=cuda\|hip\|omp` |
-| `<name>_model.f90` | `--lang fortran\|both` | the Fortran module |
+| `<name>_model.F90` | `--lang fortran\|both` | the Fortran module (capital `.F90`: `infer_batch`'s device-pointer clause is chosen by the preprocessor, since nvfortran does not implement `has_device_addr`) |
 | `<name>_fortran.mk` | `--lang fortran\|both` | the Fortran build recipe: builds `lib<name>_f.a` |
 | `<name>.rwt` | file-loaded weights only | the weights file `<name>_init` reads |
 
@@ -106,7 +106,7 @@ int main(void) {
 
     /* (a) The per-point path: model_infer inside your own offload loop. */
 #if defined(_OPENMP)
-    #pragma omp target teams loop map(to: x[0:NPTS * 2]) map(from: y_loop[0:NPTS * 3])
+    #pragma omp target teams distribute parallel for map(to: x[0:NPTS * 2]) map(from: y_loop[0:NPTS * 3])
 #endif
     for (int p = 0; p < NPTS; ++p)
         model_infer(x + p * 2, y_loop + p * 3);
@@ -248,7 +248,7 @@ program host
     ! if (status /= 0) stop 1
 
     ! (a) The per-point path: model_infer inside your own offload loop.
-    !$omp target teams loop map(to: x) map(from: y_loop)
+    !$omp target teams distribute parallel do map(to: x) map(from: y_loop)
     do p = 1, npts
         call model_infer(x(:, p), y_loop(:, p))
     end do
@@ -395,20 +395,64 @@ per-point Fortran host, and a host that hands device-resident data to
 `infer_batch` -- each compared against onnxruntime and timed, writing every
 command and its output to `gate-report.md`.
 
-Until `gpu-gate` has been run on a GPU machine, the device path is
-unvalidated: everything above compiles and runs on the host, but none of
-it has executed on a device. A compile-only `nvcc` job exists in CI
-(`.github/workflows/CI.yml`, `nvcc_compile`) and its result will be
-reported here after its first run; `hipcc` is only ever exercised by the
-gate. See `python/examples/microfd_closure/` for a worked example of
-wiring a generated model into a solver, with the same caveat.
+The CUDA device path has been validated. `gpu-gate` was run on an NVIDIA
+A100 80GB (driver 590.48.01) with NVIDIA HPC SDK 25.11 -- `nvc`/`nvfortran`
+`-mp=gpu -gpu=cc80` as the host compilers, `nvcc` 13.0 as the device
+compiler -- and reported `PASS: every configuration matched`: all six
+harnesses (embedded and file-loaded x per-point C, per-point Fortran,
+`infer_batch`) matched onnxruntime, and the `nsys` capture scoped to the
+timed `infer_batch` call recorded **zero** `cudaMemcpy` calls in both
+configurations. Per point, over the same million distinct points with the
+data mapped outside the timed window in every harness, every route through
+the library lands within noise of every other: 1.7 ns calling `infer` from
+a C `target teams distribute parallel for`, 1.7-1.8 ns from the Fortran
+equivalent, and 1.5 ns through the native batched kernel, embedded and
+file-loaded alike. That is what should be expected of the same arithmetic
+over the same data, and two changes were needed to get there.
+
+The first is how a dense layer is written. Write it the obvious way --
+seed the accumulator with the bias, `acc = b[i]`, then
+add the dot product -- and nvc refuses to generate a `distribute parallel
+for` body at all: it emits a kernel that traps at runtime. Add the bias
+*after* the dot product instead and the same loop compiles and runs. Both
+emitters do it that way, so the two backends stay bit-comparable. Without
+that workaround the only form nvc accepts is `target teams loop`, which
+maps one point to one *team* -- 1,000,000 blocks of 32 threads with a
+single active lane each -- and costs ~47-49 ns per point, some 30x more.
+
+The second is where the embedded weights live. `__constant__` memory is
+fast only while the working set fits a per-SM cache of a couple of KB; past
+that every read misses, and `ncu` showed embedded `infer_batch` spending
+71% of its warp-issue stalls on constant-cache misses. Embedded weights now
+go to `__constant__` only below 2 KB and to `__device__ const` above it,
+which took embedded `infer_batch` from 4.7 to 1.5 ns per point.
+
+See [`examples/nvhpc_teams_mapping/`](examples/nvhpc_teams_mapping/) for the
+PTX, the `ncu` geometry and stall counters, and a self-contained
+reproducer.
+
+The HIP path remains unvalidated -- `hipcc` is only ever exercised by the
+gate, and no ROCm machine has run it. A compile-only `nvcc` job also exists
+in CI (`.github/workflows/CI.yml`, `nvcc_compile`). See
+`python/examples/microfd_closure/` for a worked example of wiring a
+generated model into a solver.
 
 ## Limits
 
-- Supported ops: `Gemm`, `MatMul`, `Relu`, `Tanh`, `Sigmoid` -- dense MLPs
-  only (no convolution, pooling, batch norm, or recurrent ops), one point
-  per call (every value is rank 1 or a rank-2 tensor with leading dimension
-  1), one input and one output tensor.
+- Supported ops: `Gemm`, `MatMul`, `Conv`, `MaxPool`, `AveragePool`, `LSTM`,
+  `Add`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`,
+  `Identity`, `Relu`, `Tanh`, `Sigmoid`. Values may be rank 1 to 4; the
+  spatial ops are 2-D (rank-4 NCHW) only, `Conv` must be ungrouped, and
+  `LSTM` must be forward-direction with the default activations. No batch
+  norm, no `Concat`, no `Softmax`, no `Pad` node, no GRU.
+- One output tensor. Several *inputs* are fine: they arrive concatenated in
+  `x` in declaration order, so `infer(x, y)` -- and with it `infer_batch`,
+  the native kernel and the whole device contract -- is unchanged.
+- Everything constant is folded away at generation time, so a `Reshape` of a
+  weight or an int64 shape tensor never reaches the generated code. A
+  relabelling op on a runtime value (`Reshape`, `Squeeze`, `Flatten`, and any
+  `Transpose` that only moves size-1 axes) becomes a buffer alias: no code,
+  no copy.
 - A file-loaded model's `<name>_infer` reads unset (zero-initialized static)
   weights if `<name>_init` was never called, or failed, before it. Nothing
   in the loop path checks this -- checking it there would be the transfer

@@ -70,7 +70,7 @@ class VerifyResult:
 
 
 def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir,
-                 embed: bool | None = None) -> list:
+                 embed: bool | None = None, name: str | None = None) -> list:
     """Generate, compile and run `lang` backend(s) for `model_path`, and compare to onnxruntime.
 
     Draws `cases` random inputs from a fixed seed and compares every backend's output
@@ -94,7 +94,7 @@ def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir,
     if no resampled batch is alive.
     """
     workdir = Path(workdir)
-    graph = load_graph(model_path)
+    graph = load_graph(model_path, name)
     plan = build_plan(graph, dtype=dtype, embed=embed)
     validate_model_name(plan.model)
 
@@ -106,11 +106,12 @@ def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir,
     model_dtype = graph.values[graph.inputs[0]].dtype
 
     session = ort.InferenceSession(str(model_path))
-    shape = session.get_inputs()[0].shape
-    inputs, expected = _live_inputs(session, shape, cases, model_path, _NUMPY[model_dtype])
+    shapes = [i.shape for i in session.get_inputs()]
+    inputs, expected = _live_inputs(session, shapes, cases, model_path, _NUMPY[model_dtype])
 
     backends = ["fortran", "c"] if lang == "both" else [lang]
     rtol, atol = _TOL[model_dtype]
+    atol = atol + _cancellation_atol(plan, model_dtype, expected)
     results = []
     for backend in backends:
         backend_dir = workdir / backend
@@ -129,22 +130,32 @@ def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir,
     return results
 
 
-def _live_inputs(session, shape, cases: int, model_path, np_dtype):
+def _live_inputs(session, shapes, cases: int, model_path, np_dtype):
     """Resample input batches (fixed seed) until the onnxruntime reference is alive.
 
     See verify_model's docstring: a dead reference is a property of the model's own
     (possibly unseeded) weights, not of the code under test, and no comparison against
     it can distinguish "correct" from "also dead".
+
+    A model with several graph inputs (an LSTM's initial hidden and cell state)
+    gets one drawn row per case holding all of them concatenated in declaration
+    order -- exactly the layout the generated infer(x, y) expects -- and the row
+    is split back up to feed onnxruntime.
     """
-    input_name = session.get_inputs()[0].name
-    n = int(np.prod(shape))
+    names = [i.name for i in session.get_inputs()]
+    lens = [int(np.prod(sh)) for sh in shapes]
+    n = sum(lens)
     for attempt in range(_MAX_ATTEMPTS):
         rng = np.random.default_rng(_SEED + attempt)
         inputs = rng.uniform(-2, 2, (cases, n)).astype(np_dtype)
-        expected = np.array([
-            session.run(None, {input_name: row.reshape(shape).astype(np_dtype)})[0].ravel()
-            for row in inputs
-        ])
+        expected = []
+        for row in inputs:
+            feed, off = {}, 0
+            for name, sh, ln in zip(names, shapes, lens):
+                feed[name] = row[off:off + ln].reshape(sh).astype(np_dtype)
+                off += ln
+            expected.append(session.run(None, feed)[0].ravel())
+        expected = np.array(expected)
         if np.count_nonzero(expected) >= 2:
             return inputs, expected
     raise VerificationError(
@@ -237,13 +248,13 @@ def _run_backend(backend: str, plan, workdir: Path, inputs):
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
     dtype = plan.dtype
     if backend == "fortran":
-        (workdir / f"{name}_model.f90").write_text(emit_fortran(plan))
+        (workdir / f"{name}_model.F90").write_text(emit_fortran(plan))
         (workdir / "verify_main.f90").write_text(_fortran_driver(name, n_in, n_out, dtype, plan.embed))
         # Compile the module to an object, archive it, and link the driver
         # against the archive -- the library form -- rather than compiling
         # both sources together, mirroring the C backend below.
         _run("compile", backend,
-             ["gfortran", "-O2", "-Wall", "-Wextra", "-c", f"{name}_model.f90"],
+             ["gfortran", "-O2", "-Wall", "-Wextra", "-c", f"{name}_model.F90"],
              cwd=workdir)
         # lib<name>_f.a, not lib<name>.a (ruling R13): the C backend's own
         # archive is lib<name>.a, and although verify's fortran/c backends
@@ -282,3 +293,43 @@ def _run_backend(backend: str, plan, workdir: Path, inputs):
     stdin = f"{len(inputs)}\n" + "\n".join(" ".join(repr(float(v)) for v in row) for row in inputs)
     out = _run("run", backend, ["./verify_run"], cwd=workdir, input=stdin).stdout
     return np.array([[float(v) for v in line.split()] for line in out.strip().splitlines()])
+
+
+def _reduction_depth(op) -> int:
+    """How many terms the longest single summation inside this op adds up."""
+    if op.kind == "gemm":
+        return op.n_in
+    if op.kind == "conv":
+        return op.spatial.c_in * op.spatial.kh * op.spatial.kw
+    if op.kind == "avgpool":
+        return op.spatial.kh * op.spatial.kw
+    if op.kind == "lstm":
+        return op.lstm.input_size + op.lstm.hidden
+    return 1
+
+
+def _cancellation_atol(plan, model_dtype: str, expected) -> float:
+    """Slack for the one error a relative-to-output tolerance cannot express.
+
+    onnxruntime and the generated code compute in the same precision but not in
+    the same order -- ORT blocks and vectorises its convolutions and GEMMs. The
+    classical bound on summing n terms is n * eps * sum|terms|, and when the sum
+    cancels, sum|terms| is far larger than |result|: the error is then large
+    relative to the output while both implementations are perfectly correct.
+    A tolerance written as rtol * |expected| cannot see that and will reject a
+    correct implementation.
+
+    sum|terms| is not observable from here, so the batch's largest |expected|
+    stands in for the scale of the computation. That is a proxy, and a
+    deliberately generous one -- it is the only quantity available that tracks
+    the magnitude the accumulation actually works at.
+
+    mnist is the case that forced this: a 256-term MatMul, an output of
+    magnitude 0.05 carrying 4.6e-6 of absolute error, and the same plan built
+    in double matching an independent float64 reference to 2.4e-15. Models
+    whose deepest reduction is short get a negligible bump and keep the flat
+    tolerance in practice.
+    """
+    depth = max((_reduction_depth(op) for op in plan.ops), default=1)
+    scale = float(np.max(np.abs(expected))) if expected.size else 0.0
+    return depth * float(np.finfo(_NUMPY[model_dtype]).eps) * scale
