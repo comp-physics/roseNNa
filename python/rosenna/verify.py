@@ -77,10 +77,10 @@ def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir,
     for backend in backends:
         backend_dir = workdir / backend
         backend_dir.mkdir(parents=True, exist_ok=True)
-        # Fortran (unchanged by this task) always loads weights from a file.
-        # The C backend only needs one when the plan is not embedding its
-        # weights as ROSENNA_CONST arrays in the header.
-        if backend == "fortran" or not plan.embed:
+        # Both backends now embed by default: a plan that embeds has no
+        # weights file to load in either language (every weight is a
+        # `parameter`/ROSENNA_CONST array baked into the generated source).
+        if not plan.embed:
             write_weights(plan, graph, backend_dir / f"{plan.model}.rwt")
         got = _run_backend(backend, plan, backend_dir, inputs)
         abs_err = np.abs(got - expected)
@@ -115,8 +115,16 @@ def _live_inputs(session, shape, cases: int, model_path, np_dtype):
         f"passing comparison here would not demonstrate anything")
 
 
-def _fortran_driver(name: str, n_in: int, n_out: int, dtype: str) -> str:
+def _fortran_driver(name: str, n_in: int, n_out: int, dtype: str, embed: bool) -> str:
     real_kind = "real64" if dtype == "f64" else "real32"
+    # An embedded plan has no `_init`: every weight is already a `parameter`
+    # array in the generated module, resident from program load.
+    init = "" if embed else f"""
+    call {name}_init('{name}.rwt', status)
+    if (status /= 0) then
+        print *, 'init status', status
+        stop 1
+    end if"""
     return f"""
 program verify_main
     use {name}_model
@@ -124,12 +132,7 @@ program verify_main
     implicit none
     real({real_kind}) :: x({n_in}), y({n_out})
     integer :: status, i, ncases
-    read(*,*) ncases
-    call {name}_init('{name}.rwt', status)
-    if (status /= 0) then
-        print *, 'init status', status
-        stop 1
-    end if
+    read(*,*) ncases{init}
     do i = 1, ncases
         read(*,*) x
         call {name}_infer(x, y)
@@ -197,10 +200,19 @@ def _run_backend(backend: str, plan, workdir: Path, inputs):
     dtype = plan.dtype
     if backend == "fortran":
         (workdir / f"{name}_model.f90").write_text(emit_fortran(plan))
-        (workdir / "verify_main.f90").write_text(_fortran_driver(name, n_in, n_out, dtype))
+        (workdir / "verify_main.f90").write_text(_fortran_driver(name, n_in, n_out, dtype, plan.embed))
+        # Compile the module to an object, archive it, and link the driver
+        # against the archive -- the library form -- rather than compiling
+        # both sources together, mirroring the C backend below.
+        _run("compile", backend,
+             ["gfortran", "-O2", "-Wall", "-Wextra", "-c", f"{name}_model.f90"],
+             cwd=workdir)
+        _run("archive", backend,
+             ["ar", "rcs", f"lib{name}.a", f"{name}_model.o"],
+             cwd=workdir)
         _run("compile/link", backend,
              ["gfortran", "-O2", "-Wall", "-Wextra", "-o", "verify_run",
-              f"{name}_model.f90", "verify_main.f90"],
+              "verify_main.f90", f"lib{name}.a"],
              cwd=workdir)
     elif backend == "c":
         source, header = emit_c(plan)

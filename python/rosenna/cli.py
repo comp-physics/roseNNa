@@ -7,7 +7,7 @@ from pathlib import Path
 from google.protobuf.message import DecodeError
 
 from .emit_c import emit_c, emit_c_recipe
-from .emit_fortran import emit_fortran
+from .emit_fortran import emit_fortran, emit_fortran_recipe
 from .emit_kernel import emit_kernel
 from .rt_header import rt_header
 from .frontend import UnsupportedModel, load_graph
@@ -84,8 +84,10 @@ def _cmd_generate(args) -> int:
     written = []
     if "fortran" in langs:
         f90_path = outdir / f"{name}_model.f90"
+        fmk_path = outdir / f"{name}_fortran.mk"
         f90_path.write_text(emit_fortran(plan))
-        written.append(f90_path)
+        fmk_path.write_text(emit_fortran_recipe(plan))
+        written += [f90_path, fmk_path]
     if "c" in langs:
         source, header = emit_c(plan)
         recipe = emit_c_recipe(plan)
@@ -103,11 +105,12 @@ def _cmd_generate(args) -> int:
         rt_path.write_text(rt_header())
         written += [c_path, h_path, mk_path, cu_path, rt_path]
 
-    # An embedded plan has no weights file to write: every weight is already a
-    # ROSENNA_CONST array baked into the header. Fortran generation (unchanged
-    # by this task) still needs a .rwt to load, so it is written whenever
-    # Fortran is one of the requested languages even if the plan embeds.
-    if plan.embed and "fortran" not in langs:
+    # An embedded plan has no weights file to write in either language: every
+    # weight is already a `parameter`/ROSENNA_CONST array baked into the
+    # generated source (controller ruling R3, flipped by Task 4: Fortran now
+    # embeds by default too, so this no longer depends on which languages
+    # were requested).
+    if plan.embed:
         print(f"embedded weights ({plan.n_params} parameters)")
     else:
         rwt_path = outdir / f"{name}.rwt"

@@ -372,7 +372,9 @@ def test_generated_fortran_fits_in_132_columns(golden_model, name, dtype):
 def test_generated_fortran_fits_in_132_columns_with_a_long_tensor_name(tmp_path):
     # The name buffer is plan-derived now, so a 176-character initializer name
     # becomes a 176-character case label unless the literal is continued.
-    src = emit_fortran(build_plan(load_graph(_long_name_model(tmp_path)), dtype="f64"))
+    # embed=False: the case label this test asserts on lives in `load_tensor`,
+    # which an embedded plan's module does not emit.
+    src = emit_fortran(build_plan(load_graph(_long_name_model(tmp_path)), dtype="f64", embed=False))
     assert _over_long_fortran_lines(src) == []
     # Wrapped, not dropped: the literal is continued across lines, so the
     # head of the name is still there and the tail follows a leading `&`.

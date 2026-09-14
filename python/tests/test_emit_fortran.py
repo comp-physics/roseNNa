@@ -11,8 +11,11 @@ DENSE = ["gemm_small", "gemm_big", "gemm_nobias", "droplet", "batchnet"]
 
 
 def _build_and_run(tmp_path, onnx_path, name, inputs, dtype="f64"):
+    # embed=False: this helper's driver always calls `<name>_init` against a
+    # written .rwt file, the file-loaded contract. The dedicated embed=True/
+    # False matrix lives in tests/test_device_fortran.py and tests/test_embed.py.
     graph = load_graph(onnx_path)
-    plan = build_plan(graph, dtype=dtype)
+    plan = build_plan(graph, dtype=dtype, embed=False)
     (tmp_path / f"{name}_model.f90").write_text(emit_fortran(plan))
     write_weights(plan, graph, tmp_path / f"{name}.rwt")
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
@@ -120,7 +123,10 @@ def test_matches_onnxruntime_f32(tmp_path, golden_model):
 
 
 def test_infer_is_pure_and_has_literal_bounds(golden_model):
-    plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64")
+    # embed=False: this test is specifically about the file-loaded contract
+    # (`protected` module variables filled by `init`), which an embedded
+    # plan's module does not declare.
+    plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64", embed=False)
     src = emit_fortran(plan)
     assert "pure subroutine gemm_small_infer" in src
     assert "real(wp), protected :: w0(2,2)" in src
@@ -128,10 +134,12 @@ def test_infer_is_pure_and_has_literal_bounds(golden_model):
 
 
 def test_init_rejects_a_foreign_weights_file(tmp_path, golden_model):
+    # embed=False: this test is specifically about `_init`, which an
+    # embedded plan's module does not declare.
     graph = load_graph(golden_model("gemm_small"))
-    plan = build_plan(graph, dtype="f64")
+    plan = build_plan(graph, dtype="f64", embed=False)
     other_graph = load_graph(golden_model("gemm_big"))
-    other_plan = build_plan(other_graph, dtype="f64")
+    other_plan = build_plan(other_graph, dtype="f64", embed=False)
     (tmp_path / "gemm_small_model.f90").write_text(emit_fortran(plan))
     write_weights(other_plan, other_graph, tmp_path / "gemm_small.rwt")
     (tmp_path / "main.f90").write_text("""
@@ -162,7 +170,9 @@ def test_case_labels_escape_quotes(tmp_path):
     m = helper.make_model(g, opset_imports=[helper.make_opsetid("", 13)])
     path = tmp_path / "quoted.onnx"
     onnx.save(m, path)
-    src = emit_fortran(build_plan(load_graph(path), dtype="f64"))
+    # embed=False: the case-label select lives in `load_tensor`, which an
+    # embedded plan's module does not emit.
+    src = emit_fortran(build_plan(load_graph(path), dtype="f64", embed=False))
     assert "case ('layer.0''weight')" in src
     (tmp_path / "quoted_model.f90").write_text(src)
     subprocess.run(["gfortran", "-O2", "-Wall", "-Wextra", "-c", "quoted_model.f90"],
