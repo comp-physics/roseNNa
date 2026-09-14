@@ -43,8 +43,7 @@ the halo buffers); `nut` is one more, one value per cell (not `NV*nc` like
 
 ```diff
    double L[3], o[3], h[3], gamma, mu, pr, cfl, tend, t;
--  double *q, *q1, *w, *F, *sbuf[2], *rbuf[2];      // F holds all three directions: [d][NV][nc]
-+  double *q, *q1, *w, *F, *sbuf[2], *rbuf[2];      // F holds all three directions: [d][NV][nc]
+   double *q, *q1, *w, *F, *sbuf[2], *rbuf[2];      // F holds all three directions: [d][NV][nc]
 +  double *nut;                                     // turbulent/SGS viscosity from the closure, one value per cell
    MPI_Comm comm;
 ```
@@ -53,9 +52,9 @@ the halo buffers); `nut` is one more, one value per cell (not `NV*nc` like
 
 Placed after `prim()` (which fills `w`, the primitives array `closure()`
 reads) and before `face()` (which reads `g.nut`), so it slots directly into
-`rhs_eval`'s existing sequence. It uses microfd's own `LOCALS`/`FOR3`/`IDX`
-macros and its own naming convention for the primitives array (`w[nc+c]` =
-u, `w[2*nc+c]` = v, `w[3*nc+c]` = the third velocity component, named `s`
+`rhs_eval`'s existing sequence. It uses microfd's own `LOCALS`/`IDX` macros
+and its own naming convention for the primitives array (`w[nc+c]` = u,
+`w[2*nc+c]` = v, `w[3*nc+c]` = the third velocity component, named `s`
 throughout microfd.c to avoid colliding with the `w` array itself). The
 gradients are ordinary second-order central differences at the cell center,
 distinct from `face()`'s one-sided/averaged stencil at a face:
@@ -70,7 +69,18 @@ distinct from `face()`'s one-sided/averaged stencil at a face:
  
 +static void closure(void){                     // per-cell turbulent viscosity from the velocity-gradient closure model
 +  LOCALS; const double*w=g.w; double*nut=g.nut; const double h0=g.h[0],h1=g.h[1],h2=g.h[2];
-+  FOR3(NG,NG,NG,){
++  // Range is the padded block minus one layer on each side (index 1 to
++  // nx+2*NG-2 along x, and likewise y, z) -- NOT FOR3's interior-only range
++  // (NG to n[d]+NG-1). face(d) reads g.nut one ghost cell into the low
++  // boundary of each direction (its own loop starts at i0=NG-(d==0) etc.,
++  // to reach the boundary face using the adjacent ghost cell), and halo()
++  // has already filled every ghost layer by the time closure() runs here
++  // (right after prim(), itself right after halo(), in rhs_eval below), so
++  // the central difference is valid at every index with both neighbours in
++  // bounds -- exactly this range, symmetric on both sides, expressed
++  // directly rather than through FOR3 since the bounds differ from it.
++  #pragma omp target teams loop collapse(3)
++  for(int k=1;k<nz+2*NG-1;k++) for(int j=1;j<ny+2*NG-1;j++) for(int i=1;i<nx+2*NG-1;i++){
 +    const long c=IDX(i,j,k);
 +    const double *u=w+nc+c, *v=w+2*nc+c, *s=w+3*nc+c;              // u, v, s: the three velocity components at this cell
 +    double feat[9]={ (u[1]-u[-1])/(2*h0), (u[sx]-u[-sx])/(2*h1), (u[sy]-u[-sy])/(2*h2),
@@ -83,21 +93,17 @@ distinct from `face()`'s one-sided/averaged stencil at a face:
  static void face(int d){                                               // flux through the face c+1/2 normal to d, stored in F at cell c
 ```
 
-`FOR3(NG,NG,NG,)` expands to microfd's own
-`#pragma omp target teams loop collapse(3)` over the interior cells, so
-`closure_infer` runs inside the same offloaded loop nest as every other
+`closure_infer` runs inside an offloaded loop nest matching every other
 kernel here -- it needs no pragma of its own, because `closure.h` already
 wraps it in a guarded `omp declare target` region (rulings this plan
-enforces on every generated header).
-
-Caveat, stated plainly rather than glossed over: `FOR3(NG,NG,NG,...)` covers
-only the interior physical cells, while `face()` reads `g.nut` one cell
-outside that range on the low side of each direction (its own loop starts
-at `NG-(d==0)` etc., to reach the boundary face using the adjacent ghost
-cell). A production integration would need `nut` extended into that ghost
-layer -- e.g. by including `closure()` in `halo()`'s boundary/exchange logic,
-or by writing constant extrapolation there -- which this worked example does
-not do, to keep the diff focused on the closure call itself.
+enforces on every generated header). The loop is written out explicitly
+(not through `FOR3`) precisely because its bounds are not `FOR3`'s: `FOR3`
+starts at a caller-given `(i0,j0,k0)` but always runs to `n[d]+NG` (the
+interior's high edge), one layer short of what `face()` needs on the low
+side and, not coincidentally, one layer short of what the *central
+difference itself* can support at the high side too -- `nx+2*NG-1` is the
+last valid padded index, and the stencil above reads index+1, so the loop
+must stop at `nx+2*NG-2` (i.e. `i<nx+2*NG-1`) to keep that read in bounds.
 
 ## 4. Call it from `rhs_eval`
 
@@ -185,7 +191,11 @@ static void closure_batched(void){
     feat=malloc(sizeof(double)*9*nc);
     #pragma omp target enter data map(alloc:feat[0:9*nc])
   }
-  FOR3(NG,NG,NG,){
+  // Same range as closure() in section 3 (the padded block minus one layer
+  // on each side), for the same reason: every neighbour the central
+  // difference below reads must be in bounds and halo-filled.
+  #pragma omp target teams loop collapse(3)
+  for(int k=1;k<nz+2*NG-1;k++) for(int j=1;j<ny+2*NG-1;j++) for(int i=1;i<nx+2*NG-1;i++){
     const long c=IDX(i,j,k); const double *u=w+nc+c,*v=w+2*nc+c,*s=w+3*nc+c;
     double *f9=feat+9*c;
     f9[0]=(u[1]-u[-1])/(2*h0); f9[1]=(u[sx]-u[-sx])/(2*h1); f9[2]=(u[sy]-u[-sy])/(2*h2);
@@ -203,6 +213,10 @@ static void closure_batched(void){
 4. Unlike `closure_infer`, `closure_infer_batch` is not header-inline, so
 this alternative links `libclosure.a` (`closure.mk`, whichever
 `ROSENNA_BACKEND` it was built with -- `cuda`, `hip` or `omp`) into
-microfd's own build, in addition to `-I.`. The `feat` gather loop is a
-separate `FOR3` pass over the same cells `closure()` covered above, so the
-same ghost-layer caveat from section 3 applies here too.
+microfd's own build, in addition to `-I.`. `closure_infer_batch` is called
+over all `nc` padded cells (not just the extended-minus-one-layer range the
+gather loop fills): the outermost single layer of `feat` is never written,
+so `closure_infer` runs on stale/uninitialized data there and writes a
+correspondingly meaningless `nut` at those indices -- harmless, since
+`face()` (section 5) never reads `nut` that far into the ghost region, but
+worth calling out explicitly rather than leaving it implicit.

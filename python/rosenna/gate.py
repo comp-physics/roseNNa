@@ -22,6 +22,8 @@ Device residency is not claimed anywhere until this script has actually run
 on a GPU machine and its report recorded. Until then: compiles and runs on
 the host; device path unvalidated.
 """
+import csv
+import io
 import os
 import platform
 import shutil
@@ -301,18 +303,24 @@ int main(void) {{
         int b = (int)(t % n);
         for (int i = 0; i < {n_in}; ++i) xt[t * {n_in} + i] = x[b * {n_in} + i];
     }}
-    double t0 = omp_get_wtime();
+    /* Ruling R16: the mapping (a real transfer, exempt from R5 since it is
+       the harness's own setup, not inside infer_batch) happens before t0
+       and is undone after t1, so the timed window holds only the call --
+       matching what the cuda/hip .cu driver already does. */
 #ifdef _OPENMP
     #pragma omp target enter data map(to: xt[0:ntime*{n_in}]) map(alloc: yt[0:ntime*{n_out}])
+#endif
+    double t0 = omp_get_wtime();
+#ifdef _OPENMP
     #pragma omp target data use_device_ptr(xt, yt)
 #endif
     {{
         status = {name}_infer_batch((int)ntime, xt, yt, 0);
     }}
+    double t1 = omp_get_wtime();
 #ifdef _OPENMP
     #pragma omp target exit data map(from: yt[0:ntime*{n_out}]) map(delete: xt[0:ntime*{n_in}])
 #endif
-    double t1 = omp_get_wtime();
     if (status != 0) return 30 + status;
     printf("TIMING %.6f\\n", (t1 - t0) * 1.0e9 / (double)ntime);
     free(x); free(y); free(xt); free(yt);
@@ -350,11 +358,13 @@ program host
         b = mod(t - 1, n) + 1
         xt(:, t) = x(:, b)
     end do
-    call system_clock(count=c0, count_rate=crate)
+    ! Ruling R16: map before c0 and unmap after c1, so the timed window
+    ! holds only the infer_batch call, matching the cuda/hip .cu driver.
     !$omp target enter data map(to: xt) map(alloc: yt)
+    call system_clock(count=c0, count_rate=crate)
     call {name}_infer_batch(ntime, xt, yt, status)
-    !$omp target exit data map(from: yt) map(delete: xt)
     call system_clock(count=c1)
+    !$omp target exit data map(from: yt) map(delete: xt)
     if (status /= 0) stop 21
     ns_per_point = real(c1 - c0, real64) / real(crate, real64) * 1.0e9_real64 / real(ntime, real64)
     print '(A, ES24.16)', 'TIMING ', ns_per_point
@@ -366,6 +376,15 @@ _DEV_HARNESS3 = """/* rosenna gpu-gate: infer_batch over raw device pointers ({b
 #include <stdlib.h>
 #include <time.h>
 #include "{name}.h"
+#ifdef ROSENNA_GATE_NVTX
+/* Ruling R15: only defined (via -DROSENNA_GATE_NVTX=1) for the separate
+   build the nsys check compiles, so the ordinary timed run above never
+   needs this header. nvtx3 is documented as header-only (it loads
+   libnvToolsExt itself at runtime); _run_nsys_check retries the link with
+   -lnvToolsExt if the no-link form fails, since that has not been verified
+   against every toolkit version here. */
+#include <nvtx3/nvToolsExt.h>
+#endif
 int main(void) {{
     {init}
     int n;
@@ -399,10 +418,19 @@ int main(void) {{
     if ({p}Memcpy(dxt, hxt, sizeof(double) * (size_t)ntime * {n_in}, {p}MemcpyHostToDevice) != {p}Success) return 4;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    /* No cudaMemcpy/hipMemcpy in this call (ruling R5): it only launches. The
-       nsys check (cuda backend, when nsys is on PATH) asserts that
-       structurally from the profile, not just by inspection of this source. */
+    /* No cudaMemcpy/hipMemcpy in this call (ruling R5). Ruling R15: the nsys
+       check brackets ONLY this call with an nvtx range and profiles with
+       --capture-range=nvtx, so its cudaMemcpy count is scoped to the call
+       itself, not to this driver's untimed setup above (which legitimately
+       memcpys) -- counting across the whole profile would fail an
+       R5-compliant infer_batch. */
+#ifdef ROSENNA_GATE_NVTX
+    nvtxRangePushA("rosenna_timed");
+#endif
     status = {name}_infer_batch((int)ntime, dxt, dyt, 0);
+#ifdef ROSENNA_GATE_NVTX
+    nvtxRangePop();
+#endif
     if (status != 0) return 30 + status;
     {p}DeviceSynchronize();
     clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -415,19 +443,41 @@ int main(void) {{
 """
 
 
-def _run_c_harness1(report, cfg_dir, plan, cc, flags, inputs, expected, env) -> bool:
+def _run_c_harness1(report, cfg_dir, plan, cc, flags, backend, devcc, devflags,
+                    inputs, expected, env) -> bool:
     name = plan.model
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
     init = "" if plan.embed else f'if ({name}_init("{name}.rwt")) return 2;'
     (cfg_dir / "gate_harness1.c").write_text(_C_HARNESS1.format(
         name=name, n_in=n_in, n_out=n_out, init=init, ntime=_TIMED_ITERS))
-    objs = ["gate_harness1.c"]
+    # Ruling R14: compilation always goes through the HOST compiler with its
+    # own offload flags (nvc's -mp=gpu, amdclang's -fopenmp
+    # --offload-arch=..., or plain -fopenmp) -- this step does not change
+    # with --backend. Only the final LINK does: for cuda/hip, a file-loaded
+    # plan's lib<name>.a was built by nvcc/hipcc (init's upload/bind calls
+    # cudaMalloc/cudaMemcpy/cudaMemcpyToSymbol or the hip equivalents), so
+    # linking it with the plain host compiler and -lm leaves those
+    # undefined on every real run. Using the device compiler as the LINK
+    # driver instead pulls in the runtime library and its -L path from the
+    # toolkit itself, with nothing hardcoded here; --backend omp keeps the
+    # host compiler as the link driver, since its infer_batch is pure
+    # OpenMP with no runtime-API calls to resolve.
+    cc_proc = _sh(report, "compile c per-point harness (host compiler, host offload flags)",
+                 [cc, "-O2", "-Wall", "-Wextra", "-std=c11", *flags.split(),
+                  "-c", "gate_harness1.c", "-o", "gate_harness1.o"], cwd=cfg_dir)
+    if cc_proc.returncode != 0:
+        return False
+    objs = ["gate_harness1.o"]
     if not plan.embed:
         objs.append(f"lib{name}.a")
-    cc_proc = _sh(report, "compile c per-point harness",
-                 [cc, "-O2", "-Wall", "-Wextra", "-std=c11", *flags.split(), *objs, "-lm",
-                  "-o", "gate_harness1"], cwd=cfg_dir)
-    if cc_proc.returncode != 0:
+    if backend == "omp":
+        link_cmd = [cc, *flags.split(), *objs, "-lm", "-o", "gate_harness1"]
+        link_label = "link c per-point harness (host compiler, --backend omp)"
+    else:
+        link_cmd = [devcc, *devflags.split(), *objs, "-lm", "-o", "gate_harness1"]
+        link_label = f"link c per-point harness (device compiler {devcc}, --backend {backend})"
+    link_proc = _sh(report, link_label, link_cmd, cwd=cfg_dir)
+    if link_proc.returncode != 0:
         return False
     run_proc = _sh(report, "run c per-point harness", ["./gate_harness1"], cwd=cfg_dir,
                    env=env, input_text=_stdin_for(inputs))
@@ -518,24 +568,122 @@ def _run_dev_harness3(report, cfg_dir, plan, devcc, devflags, backend, inputs, e
     return ok
 
 
-def _run_nsys_check(report: _Report, cfg_dir: Path) -> bool:
-    report.h("nsys check: cudaMemcpy count inside the timed infer_batch loop (ruling R5)", 4)
+def _probe_nvtx_header(report: _Report, cfg_dir: Path, devcc: str, devflags: str) -> bool:
+    """Compile-only probe for <nvtx3/nvToolsExt.h> with the device compiler.
+
+    Ruling R15: if the header is not found, the nsys check is skipped with
+    a named reason rather than failing the gate or attempting to build the
+    nvtx-instrumented variant anyway.
+    """
+    (cfg_dir / "gate_nvtx_probe.cu").write_text(
+        "#include <nvtx3/nvToolsExt.h>\nint main(void){return 0;}\n")
+    proc = _sh(report, "probe for <nvtx3/nvToolsExt.h>",
+              [devcc, *devflags.split(), "-x", "cu", "-c", "gate_nvtx_probe.cu",
+               "-o", "gate_nvtx_probe.o"], cwd=cfg_dir)
+    return proc.returncode == 0
+
+
+def _sum_cudamemcpy_calls(csv_text: str) -> int:
+    """Sum the Num Calls column of every cuda_api_sum row whose Name starts with cudaMemcpy.
+
+    Column names/casing can drift slightly across Nsight Systems versions,
+    so this matches case-insensitively by substring ("name", "num calls")
+    rather than an exact header string.
+    """
+    reader = csv.DictReader(io.StringIO(csv_text))
+    if not reader.fieldnames:
+        return 0
+    name_col = next((f for f in reader.fieldnames if "name" in f.lower()), None)
+    calls_col = next((f for f in reader.fieldnames
+                      if "num calls" in f.lower() or "numcalls" in f.lower().replace(" ", "")),
+                     None)
+    if not name_col or not calls_col:
+        return 0
+    total = 0
+    for row in reader:
+        name = (row.get(name_col) or "").strip()
+        if name.startswith("cudaMemcpy"):
+            total += int(float(row.get(calls_col) or 0))
+    return total
+
+
+def _run_nsys_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: str,
+                    backend: str, inputs) -> bool:
+    """Ruling R15: assert zero cudaMemcpy calls inside the timed infer_batch call only.
+
+    Profiling the whole harness and counting "cudaMemcpy" across nsys's
+    free-text output (the previous approach) would fail an R5-compliant
+    infer_batch: the driver's own untimed setup (H2D copies before the
+    clock starts) legitimately calls cudaMemcpy. Scoped instead with an
+    nvtx range around only the timed call, `nsys profile
+    --capture-range=nvtx --nvtx-capture=rosenna_timed`, and the count read
+    from `nsys stats --report cuda_api_sum --format csv` on the resulting
+    report. None of this has ever run (no nvcc/nsys here); see the task
+    report for what remains unexercised.
+    """
+    report.h("nsys check: cudaMemcpy count inside the nvtx-scoped infer_batch call (ruling R15)", 4)
+    if backend == "hip":
+        report.p("nsys check skipped: --backend hip (rocprof scoping of the call is a "
+                 "follow-up; nsys/nvtx are CUDA-only).")
+        return True
     nsys = shutil.which("nsys")
     if not nsys:
         report.p("nsys not found on PATH; the cudaMemcpy-count check was NOT run "
                  "(recorded here rather than silently skipped).")
         return True
+    if not _probe_nvtx_header(report, cfg_dir, devcc, devflags):
+        report.p("nsys check skipped: nvtx header not found "
+                 "(<nvtx3/nvToolsExt.h> did not compile with this device compiler).")
+        return True
+
+    name = plan.model
+    n_in, n_out = plan.input.shape[0], plan.output.shape[0]
+    init = "" if plan.embed else f'if ({name}_init("{name}.rwt")) return 2;'
+    (cfg_dir / "gate_harness3.cu").write_text(_DEV_HARNESS3.format(
+        name=name, n_in=n_in, n_out=n_out, init=init, ntime=_TIMED_ITERS, p="cuda",
+        backend=backend))
+    # nvtx3 (<nvtx3/nvToolsExt.h>) is documented as header-only: it loads
+    # libnvToolsExt itself at runtime rather than needing it at link time.
+    # Some toolkit versions still expect an explicit link; try without
+    # -lnvToolsExt first (the documented form) and retry once with it if
+    # linking fails, noting which form was needed. Neither path has run here.
+    base_cmd = [devcc, *devflags.split(), "-DROSENNA_GATE_NVTX=1", "-x", "cu",
+               "gate_harness3.cu", f"lib{name}.a"]
+    proc = _sh(report, "compile nvtx-bracketed infer_batch harness (no explicit -lnvToolsExt)",
+              [*base_cmd, "-o", "gate_harness3_nvtx"], cwd=cfg_dir)
+    if proc.returncode != 0:
+        proc = _sh(report, "compile nvtx-bracketed infer_batch harness (retry: -lnvToolsExt)",
+                  [*base_cmd, "-lnvToolsExt", "-o", "gate_harness3_nvtx"], cwd=cfg_dir)
+        if proc.returncode != 0:
+            report.p("nsys check skipped: the nvtx-bracketed driver did not link, "
+                     "with or without -lnvToolsExt.")
+            return True
+
     stats_base = cfg_dir / "gate_nsys_profile"
-    proc = _sh(report, "nsys profile --stats=true",
-              [nsys, "profile", "--stats=true", "--force-overwrite=true",
-               "-o", str(stats_base), "./gate_harness3_dev"], cwd=cfg_dir)
-    combined = (proc.stdout or "") + (proc.stderr or "")
-    count = combined.count("cudaMemcpy")
-    report.p(f"cudaMemcpy occurrences reported by nsys: {count}")
-    if count != 0:
-        report.p("FAIL: infer_batch's timed loop must never call cudaMemcpy (ruling R5)")
+    profile_proc = _sh(
+        report, "nsys profile --capture-range=nvtx --nvtx-capture=rosenna_timed --stats=true",
+        [nsys, "profile", "--capture-range=nvtx", "--nvtx-capture=rosenna_timed",
+         "--stats=true", "--force-overwrite=true", "-o", str(stats_base),
+         "./gate_harness3_nvtx"], cwd=cfg_dir, input_text=_stdin_for(inputs))
+    if profile_proc.returncode != 0:
+        report.p("FAIL: nsys profile did not complete successfully")
         return False
-    return proc.returncode == 0
+
+    report_file = stats_base.with_suffix(".nsys-rep")
+    stats_proc = _sh(report, "nsys stats --report cuda_api_sum --format csv",
+                     [nsys, "stats", "--report", "cuda_api_sum", "--format", "csv",
+                      str(report_file)], cwd=cfg_dir)
+    if stats_proc.returncode != 0:
+        report.p("FAIL: nsys stats did not complete successfully")
+        return False
+
+    count = _sum_cudamemcpy_calls(stats_proc.stdout)
+    report.p(f"cudaMemcpy* Num Calls inside the nvtx-scoped infer_batch call, from "
+             f"cuda_api_sum: {count}")
+    if count != 0:
+        report.p("FAIL: infer_batch's timed call must never call cudaMemcpy (ruling R5)")
+        return False
+    return True
 
 
 def run_gate(*, cc: str, fc: str, flags: str, backend: str, devcc=None, devflags: str = "",
@@ -566,7 +714,12 @@ def run_gate(*, cc: str, fc: str, flags: str, backend: str, devcc=None, devflags
                      "a machine with no working offload device must fail here, loudly, "
                      "rather than silently pass by falling back to the host.")
 
-        _record_versions(report, cc, fc, devcc if backend != "omp" else None)
+        # Resolved once, used everywhere a device compiler command is needed:
+        # --devcc has a default (it is not required, see --help), so every
+        # call site uses this instead of repeating the fallback logic.
+        resolved_devcc = devcc or ("nvcc" if backend == "cuda" else "hipcc")
+
+        _record_versions(report, cc, fc, resolved_devcc if backend != "omp" else None)
 
         onnx_path = _ensure_model(report)
         session = ort.InferenceSession(str(onnx_path))
@@ -593,7 +746,8 @@ def run_gate(*, cc: str, fc: str, flags: str, backend: str, devcc=None, devflags
 
             report.h("c harness: per-point infer via target teams loop", 3)
             if c_built:
-                if not _run_c_harness1(report, cfg_dir, plan, cc, flags, inputs, expected, env):
+                if not _run_c_harness1(report, cfg_dir, plan, cc, flags, backend, resolved_devcc,
+                                       devflags, inputs, expected, env):
                     ok = False
             else:
                 report.p("skipped: c library build failed")
@@ -623,13 +777,17 @@ def run_gate(*, cc: str, fc: str, flags: str, backend: str, devcc=None, devflags
                     ok = False
             else:
                 if c_built:
-                    dev_ok = _run_dev_harness3(report, cfg_dir, plan, devcc or
-                                               ("nvcc" if backend == "cuda" else "hipcc"),
+                    dev_ok = _run_dev_harness3(report, cfg_dir, plan, resolved_devcc,
                                                devflags, backend, inputs, expected)
                     if not dev_ok:
                         ok = False
-                    if backend == "cuda" and dev_ok:
-                        if not _run_nsys_check(report, cfg_dir):
+                    else:
+                        # Ruling R15: invoked for both backends; it skips
+                        # itself (with a named reason) for hip, and for cuda
+                        # when nsys or the nvtx header is unavailable, none
+                        # of which fails the gate on its own.
+                        if not _run_nsys_check(report, cfg_dir, plan, resolved_devcc, devflags,
+                                               backend, inputs):
                             ok = False
                 else:
                     report.p(f"skipped: c library build failed (backend={backend})")

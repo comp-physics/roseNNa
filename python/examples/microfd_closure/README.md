@@ -59,14 +59,20 @@ that path does link `libclosure.a`.
 ## Validating on a GPU machine
 
 ```
-rosenna gpu-gate --cc gcc-15 --fc gfortran --flags -fopenmp \
+rosenna gpu-gate --cc nvc --fc nvfortran --flags "-mp=gpu -gpu=cc80" \
     --backend cuda --devcc nvcc --out /tmp/rosenna-gate
 ```
 
 records `gate-report.md`: every command it ran, every line of output, the
 compiler versions, and nanoseconds per point for each of the three
-harnesses. Run it with `--backend hip --devcc hipcc` on an AMD GPU, or
-`--backend omp` to check the OpenMP-target fallback on either. Only after
-that report exists for the backend and hardware you actually run microfd on
-should the closure above be described as device-validated rather than
-host-validated.
+harnesses. `--cc`/`--fc` must be a HOST compiler capable of OpenMP target
+offload (the pairing above, NVIDIA HPC SDK's `nvc`/`nvfortran`, not a plain
+`gcc` -- `gcc-15` from Homebrew, for instance, has no offload device to
+target and would silently run every per-point harness on the host even
+though `--backend cuda` asks for the native kernel); `rosenna gpu-gate
+--help` lists the AMD (`amdclang`/`amdflang`/`hip`) and no-GPU
+(`gcc`/`gfortran`/`omp --host-fallback`) pairings too. Run it with `--backend
+hip --devcc hipcc` on an AMD GPU, or `--backend omp` to check the
+OpenMP-target fallback on either. Only after that report exists for the
+backend and hardware you actually run microfd on should the closure above be
+described as device-validated rather than host-validated.

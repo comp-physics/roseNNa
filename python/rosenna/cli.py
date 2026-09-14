@@ -57,15 +57,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     gate = sub.add_parser(
         "gpu-gate",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         help="build and run the device-library validation harnesses on a GPU machine "
              "(gemm_big, embedded and file-loaded, both languages, three harnesses); "
-             "writes gate-report.md")
+             "writes gate-report.md",
+        epilog="""\
+Harnesses 1 and 2 (the per-point C and Fortran hosts) always need a HOST
+compiler capable of OpenMP target offload, regardless of --backend: the
+per-point infer() call always goes through the host compiler's own offload
+region, never through --devcc. Concrete pairings:
+
+  --cc nvc      --fc nvfortran --flags "-mp=gpu -gpu=cc80"              --backend cuda --devcc nvcc
+  --cc amdclang --fc amdflang  --flags "-fopenmp --offload-arch=gfx90a" --backend hip  --devcc hipcc
+  --cc gcc      --fc gfortran  --flags -fopenmp                        --backend omp  --host-fallback   (no GPU)
+""")
     gate.add_argument("--cc", required=True, help="host C compiler")
     gate.add_argument("--fc", required=True, help="host Fortran compiler")
+    # A value here that itself starts with '-' (e.g. -fopenmp, or a
+    # multi-flag string like "-mp=gpu -gpu=cc80") is handled by
+    # _join_dash_valued_options below, not by argparse's own parsing.
     gate.add_argument("--flags", default="", help="host offload flags, e.g. -fopenmp")
     gate.add_argument("--backend", choices=["cuda", "hip", "omp"], required=True,
                       help="which infer_batch implementation to build and exercise")
-    gate.add_argument("--devcc", default=None, help="nvcc or hipcc; required for --backend cuda|hip")
+    gate.add_argument("--devcc", default=None,
+                      help="device compiler for --backend cuda|hip, and the link driver "
+                           "for the file-loaded C harnesses there (ruling R14); NOT "
+                           "required -- default: nvcc for cuda, hipcc for hip")
+    # Same dash-valued handling as --flags; see the comment above.
     gate.add_argument("--devflags", default="", help="device compiler flags")
     gate.add_argument("--out", default=".", help="directory for generated sources and gate-report.md")
     gate.add_argument("--host-fallback", action="store_true",
