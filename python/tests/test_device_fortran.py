@@ -86,13 +86,15 @@ def test_host_region_calls_module_infer_and_matches(tmp_path, golden_model, name
 def test_fortran_target_regions_are_real(tmp_path, golden_model):
     # A host-only libgomp refuses a target region under OMP_TARGET_OFFLOAD=MANDATORY.
     # If the pragmas were missing or ignored the program would succeed; this is the
-    # cheapest evidence without a GPU (mirrors tests/test_device_c.py).
+    # cheapest evidence without a GPU (mirrors tests/test_device_c.py). This check only
+    # needs the program to run one point and be refused by libgomp -- it does not compare
+    # against onnxruntime -- so a constant input (not _live_reference) is enough, and
+    # cannot itself be a dead-model false pass/fail like test_host_region_calls_module_
+    # infer_and_matches above needs to guard against.
     name = "gemm_small"
-    session = ort.InferenceSession(golden_model(name))
-    inputs, _ = _live_reference(session, session.get_inputs()[0].shape, np.float64, seed=9, batch=1)
-    assert inputs is not None
     graph = load_graph(golden_model(name)); plan = build_plan(graph, dtype="f64", embed=True)
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
+    inputs = np.full((1, n_in), 0.5)
     (tmp_path / f"{name}_model.f90").write_text(emit_fortran(plan))
     (tmp_path / "host.f90").write_text(HOST.format(name=name, n_in=n_in, n_out=n_out, init_lines=""))
     fc = _omp_fc()

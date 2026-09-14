@@ -29,6 +29,7 @@ import platform
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -443,6 +444,30 @@ int main(void) {{
 """
 
 
+def _host_flags_for_devcc_link(flags: str, backend: str) -> list:
+    """Ruling R19: forward the HOST offload flags into the device-compiler link line.
+
+    Ruling R14 uses the device compiler as the link driver for a
+    file-loaded plan under --backend cuda|hip, which resolves the CUDA/HIP
+    runtime symbols init needs -- but on its own it never sees the host
+    compiler's own offload-runtime flags (nvc's -mp=gpu -gpu=cc80), so that
+    runtime can be unresolved at link too, since gate_harness1.o was
+    compiled by the host compiler with those flags. nvcc treats an
+    unrecognised flag as compiler-only unless wrapped -Xcompiler <flag>, so
+    each host flag is forwarded that way for cuda; hipcc is clang-based
+    (like amdclang, the expected host compiler pairing) and accepts the
+    host flags directly. Neither form has been verified against a real
+    toolchain here (see the task report).
+    """
+    host_flags = flags.split()
+    if backend == "hip":
+        return host_flags
+    out = []
+    for f in host_flags:
+        out += ["-Xcompiler", f]
+    return out
+
+
 def _run_c_harness1(report, cfg_dir, plan, cc, flags, backend, devcc, devflags,
                     inputs, expected, env) -> bool:
     name = plan.model
@@ -474,8 +499,15 @@ def _run_c_harness1(report, cfg_dir, plan, cc, flags, backend, devcc, devflags,
         link_cmd = [cc, *flags.split(), *objs, "-lm", "-o", "gate_harness1"]
         link_label = "link c per-point harness (host compiler, --backend omp)"
     else:
-        link_cmd = [devcc, *devflags.split(), *objs, "-lm", "-o", "gate_harness1"]
-        link_label = f"link c per-point harness (device compiler {devcc}, --backend {backend})"
+        # Ruling R19: the host offload flags (nvc's -mp=gpu -gpu=cc80, or
+        # amdclang's -fopenmp --offload-arch=...) are forwarded into this
+        # link too -- gate_harness1.o's own OpenMP-target runtime needs
+        # them, and devflags alone (nvcc's/hipcc's own flags) does not
+        # supply them.
+        link_cmd = [devcc, *devflags.split(), *_host_flags_for_devcc_link(flags, backend),
+                   *objs, "-lm", "-o", "gate_harness1"]
+        link_label = (f"link c per-point harness (device compiler {devcc}, --backend {backend}, "
+                      f"host offload flags forwarded)")
     link_proc = _sh(report, link_label, link_cmd, cwd=cfg_dir)
     if link_proc.returncode != 0:
         return False
@@ -583,28 +615,51 @@ def _probe_nvtx_header(report: _Report, cfg_dir: Path, devcc: str, devflags: str
     return proc.returncode == 0
 
 
-def _sum_cudamemcpy_calls(csv_text: str) -> int:
-    """Sum the Num Calls column of every cuda_api_sum row whose Name starts with cudaMemcpy.
+@dataclass(frozen=True)
+class NsysParseResult:
+    """Ruling R18: a structured parse result, not a bare int.
+
+    `parsed` is True only when the Name/Num Calls columns were both
+    recognised AND at least one row was actually read -- proving the CSV
+    was genuinely parsed, not just that an empty or unrelated header
+    happened to match nothing. `count` (the sum of Num Calls over every row
+    whose Name starts with "cudaMemcpy") is meaningful only when `parsed`
+    is True: an unparsed 0 must never be read as a passing zero, since the
+    whole point of this check is R5 evidence.
+    """
+    parsed: bool
+    count: int
+
+
+def _sum_cudamemcpy_calls(csv_text: str) -> NsysParseResult:
+    """Parse `nsys stats --report cuda_api_sum --format csv` output.
 
     Column names/casing can drift slightly across Nsight Systems versions,
-    so this matches case-insensitively by substring ("name", "num calls")
-    rather than an exact header string.
+    so columns are matched case-insensitively by substring ("name", "num
+    calls") rather than an exact header string.
     """
     reader = csv.DictReader(io.StringIO(csv_text))
     if not reader.fieldnames:
-        return 0
+        return NsysParseResult(False, 0)
     name_col = next((f for f in reader.fieldnames if "name" in f.lower()), None)
     calls_col = next((f for f in reader.fieldnames
                       if "num calls" in f.lower() or "numcalls" in f.lower().replace(" ", "")),
                      None)
     if not name_col or not calls_col:
-        return 0
+        return NsysParseResult(False, 0)
+    rows_read = 0
     total = 0
     for row in reader:
+        rows_read += 1
         name = (row.get(name_col) or "").strip()
         if name.startswith("cudaMemcpy"):
             total += int(float(row.get(calls_col) or 0))
-    return total
+    if rows_read == 0:
+        # Header recognised but no data rows: still inconclusive, not a
+        # genuine (parsed) zero -- an empty cuda_api_sum table is at least
+        # as likely to mean "nsys produced nothing useful" as "zero calls".
+        return NsysParseResult(False, 0)
+    return NsysParseResult(True, total)
 
 
 def _run_nsys_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: str,
@@ -677,10 +732,21 @@ def _run_nsys_check(report: _Report, cfg_dir: Path, plan, devcc: str, devflags: 
         report.p("FAIL: nsys stats did not complete successfully")
         return False
 
-    count = _sum_cudamemcpy_calls(stats_proc.stdout)
+    result = _sum_cudamemcpy_calls(stats_proc.stdout)
+    if not result.parsed:
+        # Ruling R18: an unparseable export must never read as a passing
+        # zero -- it is treated as a gate failure, since the check's whole
+        # purpose is R5 evidence and an inconclusive parse provides none.
+        report.p("nsys check inconclusive: could not parse cuda_api_sum "
+                 "(no recognised Name/Num Calls columns, or no data rows read).")
+        raw_lines = stats_proc.stdout.splitlines()[:8]
+        report.block("first lines of `nsys stats --report cuda_api_sum --format csv`",
+                     "\n".join(raw_lines) if raw_lines else "(empty output)")
+        report.p("FAIL: an inconclusive parse counts as a gate failure, not a pass.")
+        return False
     report.p(f"cudaMemcpy* Num Calls inside the nvtx-scoped infer_batch call, from "
-             f"cuda_api_sum: {count}")
-    if count != 0:
+             f"cuda_api_sum: {result.count}")
+    if result.count != 0:
         report.p("FAIL: infer_batch's timed call must never call cudaMemcpy (ruling R5)")
         return False
     return True

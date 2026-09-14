@@ -1,7 +1,54 @@
 import shutil
 import pytest
 from rosenna.cli import main
+from rosenna.gate import _sum_cudamemcpy_calls
 from tests.test_device_c import _omp_cc
+
+# One header shape `nsys stats --report cuda_api_sum --format csv` actually
+# produces, close enough to exercise the parser's real column-matching path
+# rather than a hand-simplified stand-in.
+_NSYS_CSV_HEADER = (
+    '"Time (%)","Total Time (ns)","Num Calls","Avg (ns)","Med (ns)",'
+    '"Min (ns)","Max (ns)","StdDev (ns)","Name"\n'
+)
+
+
+def test_sum_cudamemcpy_calls_sums_the_matching_rows():
+    # Ruling R18 (a): two cudaMemcpy* rows (3 + 2 = 5 calls) plus one
+    # unrelated cudaLaunchKernel row; only the memcpy rows count.
+    csv_text = _NSYS_CSV_HEADER + (
+        '45.0,12345,3,4115.0,4000.0,3900.0,4500.0,120.5,"cudaMemcpyAsync"\n'
+        '30.0,8000,2,4000.0,4000.0,3900.0,4100.0,50.0,"cudaMemcpyHtoD"\n'
+        '25.0,6000,10,600.0,600.0,500.0,700.0,20.0,"cudaLaunchKernel"\n'
+    )
+    result = _sum_cudamemcpy_calls(csv_text)
+    assert result.parsed is True
+    assert result.count == 5
+
+
+def test_sum_cudamemcpy_calls_is_a_parsed_zero_with_no_memcpy_rows():
+    # Ruling R18 (b): a genuinely parsed export with zero cudaMemcpy* rows
+    # (only a launch row) is a real pass, not a fallback/unparsed zero --
+    # `parsed` distinguishes the two.
+    csv_text = _NSYS_CSV_HEADER + (
+        '100.0,6000,10,600.0,600.0,500.0,700.0,20.0,"cudaLaunchKernel"\n'
+    )
+    result = _sum_cudamemcpy_calls(csv_text)
+    assert result.parsed is True
+    assert result.count == 0
+
+
+def test_sum_cudamemcpy_calls_reports_not_parsed_rather_than_a_false_zero():
+    # Ruling R18 (c): neither an empty string nor an unrelated-columns CSV
+    # may come back as `parsed=True, count=0` -- that would be a silent
+    # pass on a check whose whole purpose is R5 evidence.
+    empty = _sum_cudamemcpy_calls("")
+    assert empty.parsed is False
+    assert empty.count == 0
+
+    unrelated = _sum_cudamemcpy_calls("foo,bar\n1,2\n3,4\n")
+    assert unrelated.parsed is False
+    assert unrelated.count == 0
 
 
 def test_gate_runs_in_host_fallback_mode_and_writes_a_report(tmp_path, golden_model):
