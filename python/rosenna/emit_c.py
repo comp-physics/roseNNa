@@ -43,6 +43,21 @@ def _weight_size(shape) -> int:
     return size
 
 
+def _c_weight_symbol(model: str, symbol: str) -> str:
+    """The C external identifier for a plan weight symbol (controller ruling R1).
+
+    plan.py names every model's weights `w0`, `b0`, `w1`, ... uniformly:
+    those symbols enter the plan hash and Fortran's module scope, where the
+    `module` keyword already isolates them, so plan.py stays as it is.
+    Dropping `static` from the C weight definitions (this task) gives them
+    external linkage, though, and two different models linked into one host
+    would then collide on `_w0`/`_b0`. Every C site that names a weight
+    array goes through this one helper, prefixed with the model name, so no
+    site can drift out of sync with another.
+    """
+    return f"{model}_{symbol}"
+
+
 def _weight_index_c(weight_by_symbol: dict, op) -> str:
     """Decide the accumulation index order from the op's own transB flag.
 
@@ -108,7 +123,7 @@ def _emit_header(plan: Plan, ctype: str) -> str:
         "",
     ]
     for w in plan.weights:
-        lines.append(f"extern {ctype} {w.symbol}[{_weight_size(w.shape)}];")
+        lines.append(f"extern {ctype} {_c_weight_symbol(m, w.symbol)}[{_weight_size(w.shape)}];")
     if plan.weights:
         lines.append("")
     lines += _emit_infer(plan, ctype)
@@ -130,13 +145,12 @@ def _emit_source_head(plan: Plan, ctype: str) -> list:
         "#include <stdint.h>",
         "#include <stdio.h>",
         "#include <string.h>",
-        "#include <math.h>",
         "",
         f"static const unsigned char expected_hash[32] = {{ {hash_bytes} }};",
         "",
     ]
     for w in plan.weights:
-        lines.append(f"{ctype} {w.symbol}[{_weight_size(w.shape)}];")
+        lines.append(f"{ctype} {_c_weight_symbol(m, w.symbol)}[{_weight_size(w.shape)}];")
     lines.append("")
     return lines
 
@@ -144,11 +158,13 @@ def _emit_source_head(plan: Plan, ctype: str) -> list:
 def _emit_load(plan: Plan) -> list:
     if not plan.weights:
         return []
+    m = plan.model
     lines = [
         "static int load_tensor(FILE *f, const char *name, int32_t namelen, long pos,",
         "                       int64_t length) {",
     ]
     for w in plan.weights:
+        c_sym = _c_weight_symbol(m, w.symbol)
         # `length` comes from the file's own table of contents; a tensor whose
         # declared byte count disagrees with the array it is about to fill
         # means a corrupt file, so reject it rather than short-read into the
@@ -156,9 +172,9 @@ def _emit_load(plan: Plan) -> list:
         lines.append(
             f"    if (namelen == {len(w.name)} && "
             f"memcmp(name, {_c_string(w.name)}, {len(w.name)}) == 0) {{")
-        lines.append(f"        if (length != (int64_t)sizeof {w.symbol}) return 9;")
+        lines.append(f"        if (length != (int64_t)sizeof {c_sym}) return 9;")
         lines.append("        if (fseek(f, pos, SEEK_SET) != 0) return 9;")
-        lines.append(f"        if (fread({w.symbol}, sizeof {w.symbol}, 1, f) != 1) return 9;")
+        lines.append(f"        if (fread({c_sym}, sizeof {c_sym}, 1, f) != 1) return 9;")
         lines.append("        return 0;")
         lines.append("    }")
     lines += ["    return 7;", "}", ""]
@@ -261,12 +277,13 @@ def _emit_infer(plan: Plan, ctype: str) -> list:
         dst, src = plan.assignment[op.out], plan.assignment[op.inp]
         if op.kind == "gemm":
             idx_expr = _weight_index_c(weight_by_symbol, op)
-            bias_init = f"{op.bias}[i]" if op.bias else _ZERO[plan.dtype]
+            weight_sym = _c_weight_symbol(m, op.weight)
+            bias_init = f"{_c_weight_symbol(m, op.bias)}[i]" if op.bias else _ZERO[plan.dtype]
             lines.append(f"    for (int i = 0; i < {op.n_out}; ++i) {{")
             lines.append(f"        {ctype} acc = {bias_init};")
             lines.append(
                 f"        for (int j = 0; j < {op.n_in}; ++j) "
-                f"acc += {src}[j] * {op.weight}[{idx_expr}];")
+                f"acc += {src}[j] * {weight_sym}[{idx_expr}];")
             lines.append(f"        {dst}[i] = acc;")
             lines.append("    }")
             cur_len = op.n_out
