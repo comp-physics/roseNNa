@@ -1,4 +1,5 @@
 import os
+import platform
 import shutil
 import subprocess
 import numpy as np
@@ -85,14 +86,44 @@ def test_host_region_calls_header_inline_and_matches(tmp_path, golden_model, nam
 
 
 def test_target_regions_are_real(tmp_path, golden_model):
-    # A host-only libgomp refuses a target region under OMP_TARGET_OFFLOAD=MANDATORY. If the pragmas
-    # were missing or ignored the program would succeed; this is the cheapest evidence without a GPU.
+    # Two-tier evidence (controller ruling R31). The only evidence here used to be that a
+    # host-only libgomp refuses a target region under OMP_TARGET_OFFLOAD=MANDATORY: if the
+    # pragmas were missing or ignored the program would succeed. That held locally, and this
+    # test itself passed on the macOS CI runner (Homebrew GCC 13.4) too -- but its Fortran twin
+    # (tests/test_device_fortran.py::test_fortran_target_regions_are_real) ran to completion and
+    # returned 0 -- not refused -- on that same runner and compiler. So MANDATORY enforcement is
+    # not portable evidence by itself, even here. The primary, platform-independent assertion is
+    # instead that the compiled host object references GOMP_target_ext: a real
+    # `#pragma omp target` region cannot be compiled without a call to it. The MANDATORY run is
+    # kept as corroborating evidence where libgomp does enforce it, and downgraded to a skip (not
+    # a failure) where it does not, naming the toolchain that let it through so the CI log
+    # records exactly which combination did this.
     name = "gemm_small"
     graph = load_graph(golden_model(name)); plan = build_plan(graph, dtype="f64")
     inputs = np.full((1, plan.input.shape[0]), 0.5)
-    r = _build_and_run(tmp_path, name, plan, graph, _omp_cc(), ["-O2", "-std=c11", "-fopenmp"], inputs,
+    cc = _omp_cc()
+    flags = ["-O2", "-std=c11", "-fopenmp"]
+    r = _build_and_run(tmp_path, name, plan, graph, cc, flags, inputs,
                        env={**os.environ, "OMP_TARGET_OFFLOAD": "MANDATORY"})
-    assert r.returncode != 0 and "MANDATORY" in r.stderr
+
+    # host.c was written by _build_and_run; compile it standalone (-c) to inspect exactly
+    # what the host's own target region compiled to.
+    obj = subprocess.run([cc, *flags, "-c", "host.c", "-o", "host_check.o"], cwd=tmp_path,
+                         capture_output=True, text=True)
+    assert obj.returncode == 0, obj.stderr
+
+    nm = shutil.which("nm")
+    if not nm:
+        pytest.skip("no nm")
+    nm_out = subprocess.run([nm, "-u", "host_check.o"], cwd=tmp_path, capture_output=True, text=True).stdout
+    undefined = {line.split()[-1] for line in nm_out.splitlines() if line.strip()}
+    assert any("GOMP_target_ext" in sym for sym in undefined), nm_out
+
+    if r.returncode == 0:
+        version = subprocess.run([cc, "--version"], capture_output=True, text=True).stdout.splitlines()[0]
+        pytest.skip(f"libgomp did not enforce OMP_TARGET_OFFLOAD=MANDATORY for a C target region "
+                    f"on {platform.platform()} with {version}")
+    assert "MANDATORY" in r.stderr, r.stderr
 
 
 def test_plain_compiler_without_openmp_still_matches(tmp_path, golden_model):

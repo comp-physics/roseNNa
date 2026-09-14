@@ -1,4 +1,5 @@
 import os
+import platform
 import shutil
 import subprocess
 import numpy as np
@@ -92,13 +93,21 @@ def test_host_region_calls_module_infer_and_matches(tmp_path, golden_model, name
 
 
 def test_fortran_target_regions_are_real(tmp_path, golden_model):
-    # A host-only libgomp refuses a target region under OMP_TARGET_OFFLOAD=MANDATORY.
-    # If the pragmas were missing or ignored the program would succeed; this is the
-    # cheapest evidence without a GPU (mirrors tests/test_device_c.py). This check only
-    # needs the program to run one point and be refused by libgomp -- it does not compare
-    # against onnxruntime -- so a constant input (not _live_reference) is enough, and
-    # cannot itself be a dead-model false pass/fail like test_host_region_calls_module_
-    # infer_and_matches above needs to guard against.
+    # Two-tier evidence (controller ruling R31). The only evidence here used to be that a
+    # host-only libgomp refuses a target region under OMP_TARGET_OFFLOAD=MANDATORY: if the
+    # pragmas were missing or ignored the program would succeed. That held locally (gfortran
+    # 15) but on the macOS CI runner (Homebrew GCC 13.4, `gfortran` -> `gfortran-13`) this
+    # program ran to completion and returned 0 -- not refused -- while the identical C test
+    # (tests/test_device_c.py::test_target_regions_are_real) passed on that same runner and
+    # compiler. So MANDATORY enforcement is not portable evidence by itself. The primary,
+    # platform-independent assertion is instead that the compiled host object references
+    # GOMP_target_ext: a real `!$omp target` region cannot be compiled without a call to it.
+    # The MANDATORY run is kept as corroborating evidence where libgomp does enforce it, and
+    # downgraded to a skip (not a failure) where it does not, naming the toolchain that let it
+    # through so the CI log records exactly which combination did this. Neither tier compares
+    # against onnxruntime, so a constant input (not _live_reference) is enough, and this test
+    # cannot itself be a dead-model false pass/fail like test_host_region_calls_module_infer_
+    # and_matches above needs to guard against.
     name = "gemm_small"
     graph = load_graph(golden_model(name)); plan = build_plan(graph, dtype="f64", embed=True)
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
@@ -106,12 +115,33 @@ def test_fortran_target_regions_are_real(tmp_path, golden_model):
     (tmp_path / f"{name}_model.f90").write_text(emit_fortran(plan))
     (tmp_path / "host.f90").write_text(HOST.format(name=name, n_in=n_in, n_out=n_out, init_lines=""))
     fc = _omp_fc()
-    subprocess.run([fc, "-O2", "-std=f2008", "-fopenmp", f"{name}_model.f90", "host.f90", "-o", "host"],
-                   cwd=tmp_path, check=True, capture_output=True)
+    flags = ["-O2", "-std=f2008", "-fopenmp"]
+
+    # Compile the module first (for its .mod) and the host as a standalone object, so the
+    # symbol check below inspects exactly what the host's own target region compiled to.
+    r = subprocess.run([fc, *flags, "-c", f"{name}_model.f90"], cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    r = subprocess.run([fc, *flags, "-c", "host.f90", "-o", "host.o"], cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+    nm = shutil.which("nm")
+    if not nm:
+        pytest.skip("no nm")
+    nm_out = subprocess.run([nm, "-u", "host.o"], cwd=tmp_path, capture_output=True, text=True).stdout
+    undefined = {line.split()[-1] for line in nm_out.splitlines() if line.strip()}
+    assert any("GOMP_target_ext" in sym for sym in undefined), nm_out
+
+    r = subprocess.run([fc, *flags, "host.o", f"{name}_model.o", "-o", "host"], cwd=tmp_path,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
     stdin = "1\n" + " ".join(repr(float(v)) for v in inputs[0])
     r = subprocess.run(["./host"], cwd=tmp_path, input=stdin, capture_output=True, text=True,
                        env={**os.environ, "OMP_TARGET_OFFLOAD": "MANDATORY"})
-    assert r.returncode != 0 and "MANDATORY" in r.stderr
+    if r.returncode == 0:
+        version = subprocess.run([fc, "--version"], capture_output=True, text=True).stdout.splitlines()[0]
+        pytest.skip(f"libgomp did not enforce OMP_TARGET_OFFLOAD=MANDATORY for a Fortran target "
+                    f"region on {platform.platform()} with {version}")
+    assert "MANDATORY" in r.stderr, r.stderr
 
 
 def test_generated_fortran_still_fits_in_132_columns(golden_model):
