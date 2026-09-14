@@ -160,6 +160,88 @@ def test_two_models_link_into_one_host(tmp_path, golden_model):
         np.testing.assert_allclose(got, expected, rtol=1e-5, atol=1e-6)
 
 
+def test_two_embedded_models_link_into_one_host(tmp_path, golden_model):
+    """Two different models' EMBEDDED weights must link into one host binary.
+
+    Mirrors test_two_models_link_into_one_host above, but for embed=True
+    (the default for these small models). ROSENNA_CONST resolves to `static
+    const` on the host, which gives each array internal linkage -- so an
+    unprefixed `w0` in two headers would not raise a linker collision the
+    way the file-loaded case's external `w0` did -- but both headers still
+    land in the same translation unit here (host.c #includes both), and an
+    unprefixed `w0` would be a duplicate *definition* inside that one TU
+    regardless of linkage. Ruling R1 already prefixes embedded weight
+    symbols with the model name (see emit_c._emit_embedded_weights); this
+    test proves that rather than assuming it.
+    """
+    names = ["gemm_small", "gemm_nobias"]
+    plans, sessions = {}, {}
+    cc = _cc()
+    for name in names:
+        graph = load_graph(golden_model(name))
+        plan = build_plan(graph, dtype="f64")
+        assert plan.embed is True, f"{name}: expected to auto-embed for this test to be meaningful"
+        plans[name] = plan
+        source, header = emit_c(plan)
+        (tmp_path / f"{name}.c").write_text(source)
+        (tmp_path / f"{name}.h").write_text(header)
+        sessions[name] = ort.InferenceSession(golden_model(name))
+
+    references = {}
+    for name in names:
+        session = sessions[name]
+        shape = session.get_inputs()[0].shape
+        inputs, expected = _live_reference(session, shape, np.float64, seed=7, batch=8)
+        if inputs is None:
+            pytest.skip(f"{name}: onnxruntime reference is all-zero across 10 resampled "
+                        f"batches; its golden-file weights produced a dead model")
+        references[name] = (inputs, expected)
+
+    host_lines = ["#include <stdio.h>"]
+    host_lines += [f'#include "{name}.h"' for name in names]
+    host_lines.append("int main(void) {")
+    for name in names:
+        plan = plans[name]
+        n_in, n_out = plan.input.shape[0], plan.output.shape[0]
+        host_lines.append(f"    double {name}_x[{n_in}], {name}_y[{n_out}];")
+    for name in names:
+        plan = plans[name]
+        n_in, n_out = plan.input.shape[0], plan.output.shape[0]
+        host_lines.append("    { int n; if (scanf(\"%d\", &n) != 1) return 1;")
+        host_lines.append("    for (int c = 0; c < n; ++c) {")
+        host_lines.append(
+            f"        for (int i = 0; i < {n_in}; ++i) "
+            f"if (scanf(\"%lf\", &{name}_x[i]) != 1) return 1;")
+        host_lines.append(f"        {name}_infer({name}_x, {name}_y);")
+        host_lines.append(
+            f"        for (int i = 0; i < {n_out}; ++i) printf(\"%.17e \", {name}_y[i]);")
+        host_lines.append('        printf("\\n");')
+        host_lines.append("    } }")
+    host_lines.append("    return 0;")
+    host_lines.append("}")
+    (tmp_path / "host.c").write_text("\n".join(host_lines) + "\n")
+
+    # No lib{name}.a to link: an embedded plan's .c is nearly empty and
+    # infer lives entirely in the header, so the host TU alone suffices.
+    subprocess.run([cc, "-O2", "-Wall", "-Wextra", "-std=c11", "host.c", "-lm", "-o", "host"],
+                    cwd=tmp_path, check=True, capture_output=True, text=True)
+
+    stdin_parts = []
+    for name in names:
+        inputs, _ = references[name]
+        stdin_parts.append(str(len(inputs)))
+        stdin_parts.append("\n".join(" ".join(repr(float(v)) for v in row) for row in inputs))
+    stdin = "\n".join(stdin_parts) + "\n"
+    out = subprocess.run(["./host"], cwd=tmp_path, input=stdin, capture_output=True, text=True, check=True).stdout
+    all_lines = out.strip().splitlines()
+    pos = 0
+    for name in names:
+        inputs, expected = references[name]
+        got = np.array([[float(v) for v in line.split()] for line in all_lines[pos:pos + len(inputs)]])
+        pos += len(inputs)
+        np.testing.assert_allclose(got, expected, rtol=1e-5, atol=1e-6)
+
+
 def test_recipe_builds_the_library(tmp_path, golden_model):
     name = "gemm_small"
     graph = load_graph(golden_model(name))

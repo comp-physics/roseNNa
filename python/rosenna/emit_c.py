@@ -169,13 +169,15 @@ def _emit_header(plan: Plan, ctype: str) -> str:
         "",
         "#include <math.h>",
         "",
-        # Every device decoration in this header goes through exactly these
-        # three macros (controller rulings: brief + P3). Under nvcc/hipcc,
-        # `infer` is callable from device code and embedded weights live in
-        # __constant__ memory; under any other compiler both are inert. C has
-        # no `restrict` keyword once this header is pulled into a C++ (or
-        # CUDA/HIP, which is always C++) translation unit, so ROSENNA_RESTRICT
-        # picks the compiler-correct spelling instead of `infer` hardcoding one.
+        "/* Under nvcc/hipcc: ROSENNA_DEVICE_FN = __host__ __device__ (infer is",
+        "   callable from device code), ROSENNA_CONST = __constant__ (embedded",
+        "   weights live in device memory), ROSENNA_RESTRICT = __restrict__.",
+        "   Otherwise (plain C, or a host OpenMP/OpenACC build): ROSENNA_DEVICE_FN",
+        "   is empty, ROSENNA_CONST = static const, and ROSENNA_RESTRICT is",
+        "   __restrict__ in C++ or restrict in C. infer is separately wrapped in a",
+        "   guarded OpenMP declare-target region with a guarded OpenACC routine-seq",
+        "   pragma below; both are no-ops unless that compiler defines",
+        "   _OPENMP/_OPENACC. */",
         "#if defined(__CUDACC__) || defined(__HIPCC__)",
         "#define ROSENNA_DEVICE_FN __host__ __device__",
         "#define ROSENNA_CONST __constant__",
@@ -210,20 +212,39 @@ def _emit_weight_declarations(plan: Plan, ctype: str) -> list:
     nothing fills them in until Task 3's CUDA/HIP init exists. Under a plain
     or OpenMP host build the __CUDACC__/__HIPCC__ guard is false, so this
     branch is never even compiled; no build in this task can reach it.
-    Compiles and runs on the host; device path unvalidated.
+    Compiles and runs on the host; device path unvalidated. The explanation
+    is emitted into the header itself (not just here), since a solver author
+    or the Task 3 implementer reads the generated .h, not this module.
     """
     m = plan.model
     if not plan.weights:
         return []
-    lines = ["#if defined(__CUDACC__) || defined(__HIPCC__)"]
+    lines = [
+        f"/* Device copies of the weights below: defined by the library and",
+        f"   filled in by {m}_init on a CUDA/HIP build (Task 3); not referenced",
+        f"   under a plain or OpenMP host build. */",
+        "#if defined(__CUDACC__) || defined(__HIPCC__)",
+    ]
     for w in plan.weights:
         sym = _c_weight_symbol(m, w.symbol)
         lines.append(f"extern {ctype} *{sym}_dev;")
-        lines.append(f"#define {_c_weight_ref_macro(m, w.symbol)} {sym}_dev")
     lines.append("#else")
     for w in plan.weights:
         sym = _c_weight_symbol(m, w.symbol)
         lines.append(f"extern {ctype} {sym}[{_weight_size(w.shape)}];")
+    lines += ["#endif", ""]
+
+    lines += [
+        "/* Selects the host array or the device pointer above, so infer's",
+        "   body below is emitted once and reads whichever this build has. */",
+        "#if defined(__CUDACC__) || defined(__HIPCC__)",
+    ]
+    for w in plan.weights:
+        sym = _c_weight_symbol(m, w.symbol)
+        lines.append(f"#define {_c_weight_ref_macro(m, w.symbol)} {sym}_dev")
+    lines.append("#else")
+    for w in plan.weights:
+        sym = _c_weight_symbol(m, w.symbol)
         lines.append(f"#define {_c_weight_ref_macro(m, w.symbol)} {sym}")
     lines += ["#endif", ""]
     return lines

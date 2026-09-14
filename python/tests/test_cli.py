@@ -13,6 +13,27 @@ def test_generate_writes_all_artifacts(tmp_path, capsys, golden_model):
     assert "gemm_small.rwt" in out
 
 
+def test_generate_writes_rwt_with_fortran_but_not_c_only(tmp_path, capsys, golden_model):
+    # gemm_small auto-embeds (well under EMBED_THRESHOLD). --lang both still
+    # writes the .rwt because Fortran generation is unchanged by this task
+    # and always loads weights from a file; --lang c alone has nothing left
+    # that needs one, since the weights are ROSENNA_CONST arrays baked into
+    # the header. NOTE: Task 4 (Fortran embedding) is expected to flip the
+    # first assertion once Fortran also embeds by default -- revisit this
+    # test then rather than assuming it still holds.
+    onnx_path = golden_model("gemm_small")
+
+    rc = main(["generate", str(onnx_path), "--lang", "both", "--out", str(tmp_path / "both")])
+    assert rc == 0
+    assert (tmp_path / "both" / "gemm_small.rwt").exists()
+
+    rc = main(["generate", str(onnx_path), "--lang", "c", "--out", str(tmp_path / "c")])
+    assert rc == 0
+    assert not (tmp_path / "c" / "gemm_small.rwt").exists()
+    out = capsys.readouterr().out
+    assert "embedded weights" in out
+
+
 def test_verify_passes_on_a_dense_model(capsys, golden_model):
     onnx_path = golden_model("gemm_small")
     rc = main(["verify", str(onnx_path), "--cases", "4"])
