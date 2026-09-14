@@ -8,6 +8,7 @@ from rosenna.frontend import load_graph
 from rosenna.plan import build_plan
 from rosenna.weights import write_weights
 from rosenna.emit_c import emit_c
+from tests.conftest import _assert_warning_free
 from tests.test_emit_fortran import _live_reference
 
 
@@ -56,11 +57,13 @@ def _build_and_run(tmp_path, name, plan, graph, cc, flags, inputs, env=None):
     objs = ["host.c"]
     if not plan.embed:
         r = subprocess.run([cc, *flags, "-c", f"{name}.c"], cwd=tmp_path, capture_output=True, text=True)
-        assert r.returncode == 0 and r.stderr == "", r.stderr
+        assert r.returncode == 0, r.stderr
+        _assert_warning_free("gcc", r.stderr)
         subprocess.run(["ar", "rcs", f"lib{name}.a", f"{name}.o"], cwd=tmp_path, check=True)
         objs.append(f"lib{name}.a")
     r = subprocess.run([cc, *flags, *objs, "-lm", "-o", "host"], cwd=tmp_path, capture_output=True, text=True)
-    assert r.returncode == 0 and r.stderr == "", r.stderr
+    assert r.returncode == 0, r.stderr
+    _assert_warning_free("gcc", r.stderr)
     stdin = f"{len(inputs)}\n" + " ".join(repr(float(v)) for v in inputs.ravel())
     return subprocess.run(["./host"], cwd=tmp_path, input=stdin, capture_output=True, text=True, env=env)
 
@@ -148,7 +151,8 @@ def test_device_pass_guard_needs_the_cuda_compiler_not_just_the_arch(tmp_path, g
     flags = ["-O2", "-Wall", "-Wextra", "-std=c11", "-D__CUDA_ARCH__=800"]
     for src in ("host.c", f"{name}.c"):
         r = subprocess.run([cc, *flags, "-c", src], cwd=tmp_path, capture_output=True, text=True)
-        assert r.returncode == 0 and r.stderr == "", (src, r.stderr)
+        assert r.returncode == 0, (src, r.stderr)
+        _assert_warning_free("gcc", r.stderr)
     pre = subprocess.run([cc, *flags, "-E", "host.c"], cwd=tmp_path, capture_output=True, text=True)
     assert pre.returncode == 0
     assert f"{name}_devw" not in pre.stdout and f"{name}_w0[" in pre.stdout

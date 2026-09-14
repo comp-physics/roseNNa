@@ -8,6 +8,7 @@ from rosenna.frontend import load_graph
 from rosenna.plan import build_plan
 from rosenna.weights import write_weights
 from rosenna.emit_fortran import emit_fortran, emit_fortran_recipe
+from tests.conftest import _assert_warning_free
 from tests.test_emit_fortran import _live_reference
 
 
@@ -67,10 +68,12 @@ def _build_and_run(tmp_path, name, embed, inputs, golden_model):
     fc = _omp_fc()
     flags = ["-O2", "-Wall", "-Wextra", "-std=f2008", "-fopenmp"]
     r = subprocess.run([fc, *flags, "-c", f"{name}_model.f90"], cwd=tmp_path, capture_output=True, text=True)
-    assert r.returncode == 0 and r.stderr == "", r.stderr
+    assert r.returncode == 0, r.stderr
+    _assert_warning_free("gfortran", r.stderr)
     subprocess.run(["ar", "rcs", f"lib{name}.a", f"{name}_model.o"], cwd=tmp_path, check=True)
     r = subprocess.run([fc, *flags, "host.f90", f"lib{name}.a", "-o", "host"], cwd=tmp_path, capture_output=True, text=True)
-    assert r.returncode == 0 and r.stderr == "", r.stderr
+    assert r.returncode == 0, r.stderr
+    _assert_warning_free("gfortran", r.stderr)
     stdin = f"{len(inputs)}\n" + "\n".join(" ".join(repr(float(v)) for v in row) for row in inputs)
     out = subprocess.run(["./host"], cwd=tmp_path, input=stdin, capture_output=True, text=True, check=True).stdout
     return np.array([[float(v) for v in line.split()] for line in out.strip().splitlines()])
@@ -172,7 +175,8 @@ def test_generated_fortran_is_warning_free_under_openacc(tmp_path, golden_model)
                 [fc, "-O2", "-Wall", "-Wextra", "-std=f2008", "-fopenacc", "-c",
                  src_path.name, "-o", f"{name}_{embed}_model.o"],
                 cwd=tmp_path, capture_output=True, text=True)
-            assert r.returncode == 0 and r.stderr == "", (name, embed, r.stderr)
+            assert r.returncode == 0, (name, embed, r.stderr)
+            _assert_warning_free("gfortran", r.stderr)
 
 
 def test_bind_c_interface_targets_the_c_infer_batch_symbol(golden_model):

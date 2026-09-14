@@ -21,7 +21,7 @@ from rosenna.emit_fortran import emit_fortran
 from rosenna.frontend import load_graph
 from rosenna.plan import build_plan
 from rosenna.weights import write_weights
-from tests.conftest import save_model
+from tests.conftest import _assert_warning_free, _source_diagnostics, save_model
 from tests.test_emit_c import _build_and_run as _c_build_and_run
 from tests.test_emit_fortran import _build_and_run as _f_build_and_run
 from tests.test_emit_fortran import _live_reference
@@ -264,31 +264,12 @@ def test_truncated_weights_file_returns_a_status(tmp_path, golden_model, lang):
 
 
 # --- item 10 / verification 3: generated code must compile warning-free ----
-
-# A diagnostic about the generated source carries a <file>:<line>: location.
-# A driver-level notice instead names the tool as its "location" -- for
-# example Apple clang on the macOS CI runner prints, on every invocation and
-# whatever the source,
+#
+# _DRIVER_NOTICE / _source_diagnostics / _assert_warning_free live in
+# conftest.py so every test module (device/kernel tests included) can filter
+# driver-level toolchain notices, e.g. Apple clang's on the macOS CI runner:
 #   clang: warning: overriding deployment version from '16.0' to '26.0' [-Woverriding-deployment-version]
-# which is about the SDK versus the deployment target and nothing to do with
-# our C (ruling R21). gfortran's own multi-line diagnostics keep their
-# `<file>:<line>:<col>:` header and a bare `Warning: ...` line, neither of
-# which this pattern matches, so they survive.
-_DRIVER_NOTICE = re.compile(r"^[^\s:]+: (warning|note): ")
-
-
-def _source_diagnostics(stderr: str):
-    """Split compiler stderr into (about the source, driver-level noise)."""
-    kept, dropped = [], []
-    for line in stderr.splitlines():
-        (dropped if _DRIVER_NOTICE.match(line) else kept).append(line)
-    return "\n".join(kept).strip(), "\n".join(dropped).strip()
-
-
-def _assert_warning_free(lang: str, stderr: str) -> None:
-    kept, dropped = _source_diagnostics(stderr)
-    assert kept == "", (f"{lang}: diagnostics about the generated source:\n{kept}\n"
-                        f"(driver-level notices ignored: {dropped or 'none'})")
+# (ruling R21, R30).
 
 
 def _compile_warnings(tmp_path, onnx_path, name, dtype="f64"):

@@ -10,7 +10,7 @@ from rosenna.plan import build_plan
 from rosenna.emit_kernel import emit_kernel
 from rosenna.rt_header import rt_header
 from rosenna.emit_c import emit_c, emit_c_recipe, CONSTANT_MEMORY_LIMIT
-from tests.conftest import save_model
+from tests.conftest import _assert_warning_free, save_model
 
 
 def test_kernel_source_uses_only_the_rt_macros(golden_model):
@@ -175,7 +175,8 @@ int main(void) {{ double x[2] = {{0.5, 0.5}}, y[3]; return {name}_infer_batch(1,
 """)
         r = subprocess.run([cc, "-O2", "-Wall", "-Wextra", "-std=c11", "-fopenacc", f"{name}.c", "host.c", "-lm", "-o", "host"],
                            cwd=d, capture_output=True, text=True)
-        assert r.returncode == 0 and r.stderr == "", r.stderr
+        assert r.returncode == 0, r.stderr
+        _assert_warning_free("gcc", r.stderr)
         if embed:
             assert subprocess.run(["./host"], cwd=d, capture_output=True).returncode == 0
     # Status 10 is in the emitted legend, next to the routine that returns it.
@@ -276,7 +277,8 @@ def _omp_build_and_run(tmp_path, name, plan, cc, init):
     assert "warning" not in r.stderr, r.stderr
     (tmp_path / "host.c").write_text(_omp_host(name, plan.input.shape[0], plan.output.shape[0], 16, init))
     r = subprocess.run([cc, "-O2", "-Wall", "-Wextra", "-std=c11", "-fopenmp", "host.c", f"lib{name}.a", "-lm", "-o", "host"], cwd=tmp_path, capture_output=True, text=True)
-    assert r.returncode == 0 and r.stderr == "", r.stderr
+    assert r.returncode == 0, r.stderr
+    _assert_warning_free("gcc", r.stderr)
     return subprocess.run(["./host"], cwd=tmp_path, capture_output=True, text=True)
 
 
@@ -335,7 +337,8 @@ def test_generated_c_is_warning_free_under_a_plain_compiler(tmp_path, golden_mod
         source, header = emit_c(plan)
         (d / f"{name}.c").write_text(source); (d / f"{name}.h").write_text(header)
         r = subprocess.run([cc, "-O2", "-Wall", "-Wextra", "-std=c11", "-c", f"{name}.c"], cwd=d, capture_output=True, text=True)
-        assert r.returncode == 0 and r.stderr == "", r.stderr
+        assert r.returncode == 0, r.stderr
+        _assert_warning_free("gcc", r.stderr)
 
 
 def test_generated_c_compiles_as_cpp_with_the_rt_header_stubbed(tmp_path, golden_model):

@@ -1,4 +1,5 @@
 """Fixtures for golden file models and for inline models built with onnx.helper."""
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -7,6 +8,31 @@ import numpy as np
 import onnx
 import pytest
 from onnx import helper, numpy_helper, TensorProto
+
+# A diagnostic about the generated source carries a <file>:<line>: location.
+# A driver-level notice instead names the tool as its "location" -- for
+# example Apple clang on the macOS CI runner prints, on every invocation and
+# whatever the source,
+#   clang: warning: overriding deployment version from '16.0' to '26.0' [-Woverriding-deployment-version]
+# which is about the SDK versus the deployment target and nothing to do with
+# our C (ruling R21). gfortran's own multi-line diagnostics keep their
+# `<file>:<line>:<col>:` header and a bare `Warning: ...` line, neither of
+# which this pattern matches, so they survive.
+_DRIVER_NOTICE = re.compile(r"^[^\s:]+: (warning|note): ")
+
+
+def _source_diagnostics(stderr: str):
+    """Split compiler stderr into (about the source, driver-level noise)."""
+    kept, dropped = [], []
+    for line in stderr.splitlines():
+        (dropped if _DRIVER_NOTICE.match(line) else kept).append(line)
+    return "\n".join(kept).strip(), "\n".join(dropped).strip()
+
+
+def _assert_warning_free(lang: str, stderr: str) -> None:
+    kept, dropped = _source_diagnostics(stderr)
+    assert kept == "", (f"{lang}: diagnostics about the generated source:\n{kept}\n"
+                        f"(driver-level notices ignored: {dropped or 'none'})")
 
 
 def save_model(directory, name, nodes, inits, in_shape, out_shape, elem=TensorProto.FLOAT):
