@@ -466,7 +466,7 @@ def _emit_infer(plan: Plan) -> list:
         ("r", any(op.kind == "gemm" and op.rows > 1 for op in plan.ops)),
         ("n, oc, oh, ow, ic, kh, kw, ih, iw", bool(spatial)),
         ("seen", "maxpool" in kinds),
-        ("cnt", "avgpool" in kinds),
+        ("cnt", any(_avgpool_needs_count(op) for op in plan.ops)),
         ("lt, lb, lk", "lstm" in kinds),
         (", ".join(f"c{k}" for k in range(_max_counter_rank(plan))),
          bool(kinds & {"add", "transpose"}))) if used]
@@ -659,6 +659,19 @@ def _emit_add_f(op, dst, src):
     return L
 
 
+def _avgpool_needs_count(op) -> bool:
+    """True when AveragePool's divisor is the count of in-bounds cells.
+
+    Otherwise it is a literal and nothing reads the counter -- and a counter
+    set but never read is a warning (clang reports it on the C twin; keeping
+    the two emitters in step keeps the Fortran one quiet too).
+    """
+    if op.kind != "avgpool":
+        return False
+    sp = op.spatial
+    return not (sp.every_window_is_inside or sp.count_include_pad)
+
+
 def _emit_spatial_f(op, dst, src):
     """The Fortran twin of _emit_spatial_c: same loop nest, same arithmetic.
 
@@ -688,7 +701,8 @@ def _emit_spatial_f(op, dst, src):
         L.append("            ic = oc")
     else:
         L.append("            acc = 0.0_wp")
-        L.append("            cnt = 0")
+        if _avgpool_needs_count(op):
+            L.append("            cnt = 0")
         L.append("            ic = oc")
     if op.kind == "conv":
         L.append(f"            do ic = 0, {sp.c_in - 1}")
@@ -711,7 +725,8 @@ def _emit_spatial_f(op, dst, src):
         L.append("                    end if")
     else:
         L.append(f"                    acc = acc + {src}({idx_in})")
-        L.append("                    cnt = cnt + 1")
+        if _avgpool_needs_count(op):
+            L.append("                    cnt = cnt + 1")
     L.append("                end if")
     L.append("            end do")
     L.append("            end do")

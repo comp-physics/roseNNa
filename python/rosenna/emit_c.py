@@ -1042,6 +1042,11 @@ def _emit_spatial_c(op, ctype, dst, src, weight_sym, bias_sym, zero):
     cells were real, which is what `cnt` counts.
     """
     sp = op.spatial
+    # AveragePool divides by the count of in-bounds cells only when a window
+    # can actually reach outside the input and the caller did not ask for the
+    # full-kernel divisor; otherwise the divisor is a literal.
+    needs_count = (op.kind == "avgpool"
+                   and not (sp.every_window_is_inside or sp.count_include_pad))
     L = []
     idx_in = f"((n * {sp.c_in} + ic) * {sp.h_in} + ih) * {sp.w_in} + iw"
     idx_out = f"((n * {sp.c_out} + oc) * {sp.h_out} + oh) * {sp.w_out} + ow"
@@ -1059,7 +1064,11 @@ def _emit_spatial_c(op, ctype, dst, src, weight_sym, bias_sym, zero):
         L.append("const int ic = oc;")
     else:
         L.append(f"{ctype} acc = {zero};")
-        L.append("int cnt = 0;")
+        # Only when the divisor is the count of cells that fell inside. With a
+        # constant divisor nothing reads it, and a counter that is incremented
+        # and never read is a warning clang reports and gcc does not.
+        if needs_count:
+            L.append("int cnt = 0;")
         L.append("const int ic = oc;")
 
     L.append(f"for (int kh = 0; kh < {sp.kh}; ++kh)")
@@ -1080,7 +1089,8 @@ def _emit_spatial_c(op, ctype, dst, src, weight_sym, bias_sym, zero):
         L.append("}")
     else:
         L.append(f"    acc += {src}[{idx_in}];")
-        L.append("    ++cnt;")
+        if needs_count:
+            L.append("    ++cnt;")
         L.append("}")
 
     if op.kind == "conv":
@@ -1091,7 +1101,7 @@ def _emit_spatial_c(op, ctype, dst, src, weight_sym, bias_sym, zero):
         L.append(f"{dst}[{idx_out}] = best;")
     else:
         full = sp.kh * sp.kw
-        if sp.every_window_is_inside or sp.count_include_pad:
+        if not needs_count:
             # No pad cell can fall in a window, or the caller asked for the
             # full-kernel divisor: a literal either way.
             L.append(f"{dst}[{idx_out}] = acc / ({ctype}){full};")
