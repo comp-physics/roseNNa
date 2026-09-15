@@ -28,7 +28,16 @@ OFFLOAD  := -mp=gpu -gpu=$(ARCH)
 BACKEND  := cuda
 DEVCC    := nvcc
 DEVFLAGS := -O2 -arch=sm_$(patsubst cc%,%,$(ARCH))
-RTLIB    := -lcudart
+# -cuda -c++libs, not -lcudart: both are nvc/nvfortran's own flags, so neither
+# hardcodes a path or a C++ runtime implementation.
+#   -cuda      links the CUDA runtime. A bare -lcudart needs a -L the HPC SDK
+#              does not put on the default search path (its libcudart lives
+#              under cuda/lib64, not beside nvcc), so it fails with
+#              "cannot find -lcudart" on a stock install.
+#   -c++libs   nvcc compiles <model>_kernel.cu as C++, and a per-op kernel's
+#              function-local static leaves __cxa_guard_acquire/_release
+#              undefined when the C or Fortran driver links the archive.
+RTLIB    := -cuda -c++libs
 FMOD     := -module
 else
 CC       := gcc
