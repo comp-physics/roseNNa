@@ -70,5 +70,12 @@ def emit_kernel(plan: Plan) -> str:
         "    return 0;",
         "}",
         "",
+        "/* The one synchronization in this file, and only when the caller asks:",
+        "   a host with no stream of its own (an OpenMP host) waits here before",
+        "   its next target region reads y. */",
+        f'extern "C" int {m}_sync(void *stream) {{',
+        "    return ROSENNA_SYNC((ROSENNA_STREAM_T)stream) == ROSENNA_OK ? 0 : 11;",
+        "}",
+        "",
     ]
     return "\n".join(lines)

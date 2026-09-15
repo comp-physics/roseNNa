@@ -308,6 +308,15 @@ def _emit_header(plan: Plan, ctype: str) -> str:
         "   called counts as that); 11 if the kernel launch failed (cuda/hip). */",
         f"int {m}_infer_batch(int n, const {ctype} *ROSENNA_RESTRICT x, {ctype} *ROSENNA_RESTRICT y, void *stream);",
         "",
+        f"/* Wait for every {m}_infer_batch launched on `stream` to finish. The",
+        "   backend-agnostic way for a host that has no stream of its own -- an",
+        "   OpenMP host whose next target region would otherwise race a cuda/hip",
+        "   launch -- to order the two: StreamSynchronize in the cuda/hip",
+        "   archive, a no-op in the omp one, whose loop is synchronous. Returns",
+        "   0, or 11 if the wait reported an error (an asynchronous fault in the",
+        "   kernel surfaces here). */",
+        f"int {m}_sync(void *stream);",
+        "",
         "#if defined(__cplusplus)",
         "}",
         "#endif",
@@ -679,8 +688,12 @@ def _emit_fallback_infer_batch(plan: Plan, ctype: str) -> list:
     backends define the same function in <name>_kernel.cu instead. Under a
     host compiler without -fopenmp/-fopenacc the pragmas are inert and this
     is a plain loop over host pointers, which is also what use_device_ptr
-    yields on a host-only build. Validated on an A100 through nvc -mp=gpu by
-    the GPU gate; the AMD host compilers are still unexercised.
+    yields on a host-only build. The loop is `teams distribute parallel for`,
+    one point per thread: `teams loop` maps one point per TEAM under nvc (the
+    ~30x cliff python/README.md describes) and under amdclang (3.5 us per
+    point on an MI210, seen on examples/surrogates/B), and the bias
+    reordering that lets nvc compile the per-point harnesses' distribute
+    parallel for applies to this loop too.
     """
     m = plan.model
     n_in, n_out = plan.input.shape[0], plan.output.shape[0]
@@ -690,11 +703,17 @@ def _emit_fallback_infer_batch(plan: Plan, ctype: str) -> list:
         "    (void)stream;",
         "    if (n <= 0) return 0;",
         "#if defined(_OPENMP)",
-        "#pragma omp target teams loop is_device_ptr(x, y)",
+        "#pragma omp target teams distribute parallel for is_device_ptr(x, y)",
         "#elif defined(_OPENACC)",
         "#pragma acc parallel loop deviceptr(x, y)",
         "#endif",
         f"    for (int p = 0; p < n; ++p) {m}_infer(x + (size_t)p * {n_in}, y + (size_t)p * {n_out});",
+        "    return 0;",
+        "}",
+        "",
+        "/* The loop above is synchronous, so there is nothing to wait for. */",
+        f"int {m}_sync(void *stream) {{",
+        "    (void)stream;",
         "    return 0;",
         "}",
         "#endif",

@@ -10,6 +10,7 @@ from rosenna.plan import build_plan
 from rosenna.emit_kernel import emit_kernel
 from rosenna.rt_header import rt_header
 from rosenna.emit_c import emit_c, emit_c_recipe, CONSTANT_MEMORY_LIMIT
+from rosenna.emit_fortran import emit_fortran
 from tests.conftest import skip_unless_libgomp_enforces_mandatory
 from tests.conftest import _assert_warning_free, save_model
 
@@ -65,11 +66,17 @@ def test_loop_path_never_transfers(golden_model):
     # be free of every transfer token. The kernel file's `<name>_device_bind`
     # only forwards to the header's `<name>_device_bind_here`, which is where
     # the one symbol copy of the plan step lives; that header function is
-    # checked here to be the sole holder of ROSENNA_MEMCPY_TO_SYMBOL.
+    # checked here to be the sole holder of ROSENNA_MEMCPY_TO_SYMBOL. Also
+    # exempt: `<name>_sync`, the wait a host asks for by name (a caller with
+    # no stream of its own has no other way to order its next target region
+    # after a cuda/hip launch); infer and infer_batch themselves never sync.
     for embed in (True, False):
         name = "gemm_big"; plan = build_plan(load_graph(golden_model(name)), dtype="f64", embed=embed)
         source, header = emit_c(plan)
         cu = emit_kernel(plan)
+        sync = _function_body(cu, f'extern "C" int {name}_sync(')
+        assert "ROSENNA_SYNC" in sync
+        cu = cu.replace(sync, "")
         rest_c = source
         if not embed:
             init = _function_body(source, f"int {name}_init(")
@@ -113,7 +120,13 @@ def test_header_declares_infer_batch_with_c_linkage_on_both_forms(golden_model):
         assert ('extern "C" int gemm_small_infer_batch(int n, const double *__restrict__ x, '
                 "double *__restrict__ y, void *stream) {") in emit_kernel(plan)
         assert "#if !defined(__CUDACC__) && !defined(__HIPCC__)" in source
-        assert "#if defined(_OPENMP)\n#pragma omp target teams loop is_device_ptr(x, y)\n" in source
+        # distribute parallel for, not teams loop: teams loop maps one point per
+        # TEAM under nvc (the ~30x cliff the README describes) and under
+        # amdclang (3.5 us per point on an MI210, measured on the reaction-
+        # diffusion example); the bias reordering that lets nvc compile the
+        # per-point harnesses' distribute parallel for applies here too.
+        assert ("#if defined(_OPENMP)\n#pragma omp target teams distribute parallel for "
+                "is_device_ptr(x, y)\n") in source
         assert "#elif defined(_OPENACC)\n#pragma acc parallel loop deviceptr(x, y)\n#endif" in source
 
 
@@ -522,3 +535,39 @@ def test_cuda_backend_compiles_past_the_constant_memory_budget(tmp_path):
     assert "__device__ const" in emit_c(plan)[1]
     d = tmp_path / "b"; d.mkdir()
     _nvcc_build(d, "over", plan)
+
+
+def test_every_backend_defines_a_sync_the_host_can_call(golden_model):
+    # infer_batch never synchronizes (ruling R5: the caller owns the stream),
+    # but an OpenMP host has no stream of its own: it maps arrays, hands
+    # infer_batch their device addresses, and its next target region runs on
+    # libomptarget's queue with no ordering against a HIP/CUDA null-stream
+    # launch. Seen on an MI210: an OpenMP scatter read a hip infer_batch's
+    # output before the kernel finished. <name>_sync(stream) is the
+    # backend-agnostic wait: StreamSynchronize in the cuda/hip archive, a
+    # no-op in the omp one (whose loop is synchronous), so one solver source
+    # links against any ROSENNA_BACKEND.
+    name = "gemm_small"; plan = build_plan(load_graph(golden_model(name)), dtype="f64", embed=True)
+    source, header = emit_c(plan)
+    assert f"int {name}_sync(void *stream);" in header
+    assert f"int {name}_sync(void *stream) {{\n    (void)stream;\n    return 0;\n}}" in source
+    kernel = emit_kernel(plan)
+    assert f'extern "C" int {name}_sync(void *stream) {{' in kernel
+    assert "ROSENNA_SYNC((ROSENNA_STREAM_T)stream)" in kernel
+    fortran = emit_fortran(plan)
+    assert f'bind(C, name="{name}_sync")' in fortran
+
+
+def test_fortran_module_binds_the_archive_init_for_a_file_loaded_plan(golden_model):
+    # A Fortran host that calls a file-loaded model's native kernel through
+    # <name>_infer_batch_dev must also run the ARCHIVE's init (the C one
+    # that uploads the archive's device copies); the module's own init only
+    # fills the module's arrays for the Fortran per-point path. Seen on an
+    # MI210: infer_batch_dev returned 10 after the Fortran init alone.
+    name = "gemm_big"; plan = build_plan(load_graph(golden_model(name)), dtype="f64", embed=False)
+    fortran = emit_fortran(plan)
+    assert f'bind(C, name="{name}_init")' in fortran
+    assert f"public :: {name}_init_dev" in fortran
+    # An embedded plan has no init on either side.
+    plan_e = build_plan(load_graph(golden_model(name)), dtype="f64", embed=True)
+    assert "_init_dev" not in emit_fortran(plan_e)
