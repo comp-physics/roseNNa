@@ -736,3 +736,39 @@ def test_conv_batchnorm_folds_away_and_still_matches_onnxruntime(tmp_path):
     want = ort.InferenceSession(str(path)).run(None, {"x": x})[0].ravel()
     assert np.allclose(c, want, rtol=1e-5, atol=1e-6), f"c: {np.max(np.abs(c - want)):.3e}"
     assert np.allclose(f, want, rtol=1e-5, atol=1e-6), f"fortran: {np.max(np.abs(f - want)):.3e}"
+
+
+@pytest.mark.parametrize("c_in,c_out,group,label", [
+    (4, 4, 4, "depthwise"),          # one input channel per output channel
+    (4, 6, 2, "uneven groups"),      # c_in_per_group 2, c_out_per_group 3
+    (6, 6, 3, "square groups"),
+])
+def test_grouped_conv_reads_only_its_own_group(tmp_path, c_in, c_out, group, label):
+    """A grouped Conv is wrong in a way that still runs: it reads the neighbouring
+    group's channels. Only a reference catches that, so compare to onnxruntime.
+
+    The uneven case matters most: with c_in_per_group != c_out_per_group an
+    off-by-one in the group offset lands inside the buffer and returns
+    plausible numbers.
+    """
+    rng = np.random.default_rng(31 + group)
+    w = numpy_helper.from_array(
+        rng.uniform(-1, 1, (c_out, c_in // group, 3, 3)).astype(np.float32), "w")
+    b = numpy_helper.from_array(rng.uniform(-1, 1, c_out).astype(np.float32), "b")
+    graph = helper.make_graph(
+        [helper.make_node("Conv", ["x", "w", "b"], ["y"], name="c0",
+                          kernel_shape=[3, 3], pads=[1, 1, 1, 1], group=group)], "grp",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, c_in, 5, 5])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, c_out, 5, 5])], [w, b])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+    import onnx as _onnx
+    path = tmp_path / f"grp{group}.onnx"
+    _onnx.save(model, str(path))
+
+    x = rng.uniform(-2, 2, (1, c_in, 5, 5)).astype(np.float32)
+    f, c = _both_backends(tmp_path, path, f"grp{group}", x.reshape(1, -1), dtype="f32")
+    want = ort.InferenceSession(str(path)).run(None, {"x": x})[0].ravel()
+    for got, lang in ((f, "fortran"), (c, "c")):
+        assert np.allclose(got, want, rtol=1e-5, atol=1e-6), \
+            f"{label} {lang}: max |diff| {np.max(np.abs(np.asarray(got).ravel() - want)):.3e}"

@@ -1083,13 +1083,27 @@ def _emit_spatial_c(op, ctype, dst, src, weight_sym, bias_sym, zero):
     needs_count = (op.kind == "avgpool"
                    and not (sp.every_window_is_inside or sp.count_include_pad))
     L = []
-    idx_in = f"((n * {sp.c_in} + ic) * {sp.h_in} + ih) * {sp.w_in} + iw"
+    # Grouped Conv: output channel oc belongs to group oc/c_out_per_group and
+    # reads only that group's c_in_per_group input channels, so the loop bound
+    # is the per-group count and the input channel is offset by the group. For
+    # group=1 c_in_per_group == c_in and every expression below collapses to
+    # exactly what it was, so an ordinary convolution emits identical code.
+    cpg = sp.c_in_per_group or sp.c_in
+    # The group's first input channel, hoisted: it depends only on oc, so
+    # recomputing it per element would put an integer division in the
+    # innermost index expression (and gfortran warns about the division under
+    # -Winteger-division there, which is a fair complaint about the shape of
+    # the code rather than a false positive).
+    in_c = "(icg + ic)" if sp.grouped else "ic"
+    idx_in = f"((n * {sp.c_in} + {in_c}) * {sp.h_in} + ih) * {sp.w_in} + iw"
     idx_out = f"((n * {sp.c_out} + oc) * {sp.h_out} + oh) * {sp.w_out} + ow"
     loops = [("n", sp.n), ("oc", sp.c_out), ("oh", sp.h_out), ("ow", sp.w_out)]
 
     if op.kind == "conv":
         L.append(f"{ctype} acc = {zero};")
-        L.append(f"for (int ic = 0; ic < {sp.c_in}; ++ic)")
+        if sp.grouped:
+            L.append(f"const int icg = oc / {sp.c_out_per_group} * {cpg};")
+        L.append(f"for (int ic = 0; ic < {cpg}; ++ic)")
     elif op.kind == "maxpool":
         # The first in-range cell seeds the running maximum; `seen` makes that
         # independent of any sentinel value, so a window of all -inf inputs
@@ -1112,7 +1126,7 @@ def _emit_spatial_c(op, ctype, dst, src, weight_sym, bias_sym, zero):
     L.append(f"    const int iw = ow * {sp.sw} - {sp.pw} + kw * {sp.dw};")
     L.append(f"    if (ih < 0 || ih >= {sp.h_in} || iw < 0 || iw >= {sp.w_in}) continue;")
     if op.kind == "conv":
-        widx = f"((oc * {sp.c_in} + ic) * {sp.kh} + kh) * {sp.kw} + kw"
+        widx = f"((oc * {cpg} + ic) * {sp.kh} + kh) * {sp.kw} + kw"
         L.append(f"    acc += {src}[{idx_in}] * {weight_sym}[{widx}];")
         L.append("}")
     elif op.kind == "maxpool":

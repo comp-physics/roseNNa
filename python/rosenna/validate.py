@@ -197,11 +197,20 @@ def _validate_spatial(graph: Graph, node) -> None:
         if w.ndim != 4:
             raise UnsupportedModel(f"{where}: Conv weight has rank {w.ndim}; only rank 4 is supported")
         group = int(node.attrs.get("group", 1))
-        if group != 1:
-            raise UnsupportedModel(f"{where}: grouped Conv (group={group}) is not supported")
-        if x.shape[1] != w.shape[1]:
+        c_in, c_out = int(x.shape[1]), int(w.shape[0])
+        if group < 1:
+            raise UnsupportedModel(f"{where}: Conv group={group} must be at least 1")
+        # A group that does not divide either channel count leaves some
+        # channel in no group at all, and the emitted loop would read across a
+        # group boundary rather than refusing.
+        if c_in % group or c_out % group:
             raise UnsupportedModel(
-                f"{where}: Conv input has {x.shape[1]} channels but the weight expects {w.shape[1]}")
+                f"{where}: Conv group={group} divides neither {c_in} input channels "
+                f"nor {c_out} output channels evenly")
+        if w.shape[1] != c_in // group:
+            raise UnsupportedModel(
+                f"{where}: Conv input has {c_in} channels in {group} group(s), so the "
+                f"weight's channel axis should be {c_in // group}; it is {w.shape[1]}")
         if len(node.inputs) > 2 and node.inputs[2]:
             b = graph.initializers.get(node.inputs[2])
             if b is None:

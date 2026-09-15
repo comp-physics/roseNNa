@@ -465,6 +465,7 @@ def _emit_infer(plan: Plan) -> list:
         ("j", "gemm" in kinds),
         ("r", any(op.kind == "gemm" and op.rows > 1 for op in plan.ops)),
         ("n, oc, oh, ow, ic, kh, kw, ih, iw", bool(spatial)),
+        ("icg", any(op.kind == "conv" and op.spatial.grouped for op in plan.ops)),
         ("smn, smj", "softmax" in kinds),
         ("seen", "maxpool" in kinds),
         ("cnt", any(_avgpool_needs_count(op) for op in plan.ops)),
@@ -722,7 +723,16 @@ def _emit_spatial_f(op, dst, src):
     """
     sp = op.spatial
     L = []
-    idx_in = f"((n * {sp.c_in} + ic) * {sp.h_in} + ih) * {sp.w_in} + iw + 1"
+    # Grouped Conv: output channel oc belongs to group oc/c_out_per_group and
+    # reads only that group's c_in_per_group input channels, so the loop bound
+    # is the per-group count and the input channel is offset by the group. For
+    # group=1 c_in_per_group == c_in and every expression below collapses to
+    # exactly what it was, so an ordinary convolution emits identical code.
+    cpg = sp.c_in_per_group or sp.c_in
+    # See _emit_spatial_c: hoisted out of the index expression, both because
+    # it is invariant there and because gfortran warns about the division.
+    in_c = "(icg + ic)" if sp.grouped else "ic"
+    idx_in = f"((n * {sp.c_in} + {in_c}) * {sp.h_in} + ih) * {sp.w_in} + iw + 1"
     idx_out = f"((n * {sp.c_out} + oc) * {sp.h_out} + oh) * {sp.w_out} + ow + 1"
     L.append(f"        do n = 0, {sp.n - 1}")
     L.append(f"        do oc = 0, {sp.c_out - 1}")
@@ -740,7 +750,9 @@ def _emit_spatial_f(op, dst, src):
             L.append("            cnt = 0")
         L.append("            ic = oc")
     if op.kind == "conv":
-        L.append(f"            do ic = 0, {sp.c_in - 1}")
+        if sp.grouped:
+            L.append(f"            icg = oc / {sp.c_out_per_group} * {cpg}")
+        L.append(f"            do ic = 0, {cpg - 1}")
     L.append(f"            do kh = 0, {sp.kh - 1}")
     L.append(f"            do kw = 0, {sp.kw - 1}")
     L.append(f"                ih = oh * {sp.sh} - {sp.ph} + kh * {sp.dh}")

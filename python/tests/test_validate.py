@@ -134,10 +134,17 @@ def test_conv_rejections():
     _reject(_graph(Node("Conv", "c", ("x", "w"), ("y",), {"kernel_shape": (3, 3)}),
                    vals, {"w": _arr(2, 2, 3)}),
             "weight has rank 3")
+    # Grouped Conv is supported now, so what is refused is a group that does
+    # not describe the weight: with 2 input channels in 2 groups the weight's
+    # channel axis has to be 1, and `good` has 2.
     _reject(_graph(Node("Conv", "c", ("x", "w"), ("y",), {"group": 2}), vals, {"w": good}),
-            "grouped Conv")
+            "channel axis should be 1")
+    _reject(_graph(Node("Conv", "c", ("x", "w"), ("y",), {"group": 3}), vals, {"w": _arr(2, 1, 3, 3)}),
+            "divides neither")
+    _reject(_graph(Node("Conv", "c", ("x", "w"), ("y",), {"group": 0}), vals, {"w": good}),
+            "must be at least 1")
     _reject(_graph(Node("Conv", "c", ("x", "w"), ("y",), {}), vals, {"w": _arr(2, 5, 3, 3)}),
-            "channels but the weight expects")
+            "channel axis should be 2")
     _reject(_graph(Node("Conv", "c", ("x", "w", "rb"), ("y",), {}),
                    {**vals, "rb": _t("rb", (2,))}, {"w": good}),
             "bias 'rb' must be a constant")

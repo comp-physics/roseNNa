@@ -95,6 +95,17 @@ class Spatial:
     # AveragePool only: divide by the full kernel (True) or by the count of
     # cells that actually fell inside the input (False, the ONNX default).
     count_include_pad: bool = False
+    # Conv only. group=1 is an ordinary convolution; group=c_in with
+    # c_out=c_in is a depthwise one. The weight's channel axis is c_in/group,
+    # and output channel oc reads only its own group's input channels, so the
+    # loop bound and the input-channel offset both change. Carried as the two
+    # derived extents the loop actually needs rather than as `group`.
+    c_in_per_group: int = 0
+    c_out_per_group: int = 0
+
+    @property
+    def grouped(self) -> bool:
+        return self.c_in_per_group not in (0, self.c_in)
 
     @property
     def every_window_is_inside(self) -> bool:
@@ -308,10 +319,12 @@ def _spatial(graph: Graph, node) -> Spatial:
     sh, sw = _pair(node.attrs.get("strides"), 1)
     dh, dw = _pair(node.attrs.get("dilations"), 1)
     ph, pw = _begin_pads(node, (h_in, w_in), (h_out, w_out), (kh, kw), (sh, sw), (dh, dw))
+    group = int(node.attrs.get("group", 1)) if node.op == "Conv" else 1
     return Spatial(n=n, c_in=c_in, h_in=h_in, w_in=w_in,
                    c_out=c_out, h_out=h_out, w_out=w_out,
                    kh=kh, kw=kw, sh=sh, sw=sw, ph=ph, pw=pw, dh=dh, dw=dw,
-                   count_include_pad=bool(int(node.attrs.get("count_include_pad", 0))))
+                   count_include_pad=bool(int(node.attrs.get("count_include_pad", 0))),
+                   c_in_per_group=c_in // group, c_out_per_group=c_out // group)
 
 
 def _broadcast(out_shape, const_shape) -> Broadcast:

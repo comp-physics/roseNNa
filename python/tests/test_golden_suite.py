@@ -21,7 +21,7 @@ from rosenna.verify import verify_model
 # Kept as a literal list rather than a glob so that a golden model quietly
 # disappearing is a failure, not a silently smaller suite.
 GOLDEN = [
-    "avgpool_basic", "batchnet", "conv_basic", "conv_padding",
+    "avgpool_basic", "batchnet", "conv_basic", "conv_grouped", "conv_padding",
     "conv_padding-stride", "conv_strides", "droplet", "gemm_big",
     "gemm_nobias", "gemm_small", "lstm_cell", "lstm_gemm", "lstm_gemm_hid",
     "lstm_nostate", "lstm_output", "maxpool_basic", "maxpool_nonsquare",
