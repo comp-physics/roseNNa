@@ -1,42 +1,42 @@
-*
-!*/
-!goldenFiles/*/
-!openNP.fpp
-!userTesting.fpp
-!modelCreator.fpp
-!variables.fpp
-!*.f90
-!*.py
-!Makefile
-!*.sh
-!*.yml
-!*.c
-!*.toml
-!goldenFiles/mnist/mnist.onnx
-!instructions/*
-!python/examples/**/*.md
-!python/examples/**/*.cu
-!python/README.md
-!doc/*.md
-!*.F90
-!*.mk
-!examples/**/*.md
-!examples/**/*.onnx
-reading.f90
-userTesting.f90
-linearV3copy.f90
-test.txt
-goldenFiles/gemm_huge/
-goldenFiles/vgg16/
-goldenFiles/turbulentShear/
-graphs/
-graph_scripts/
-fLibrary/*.txt
+# This file was a whitelist: `*` followed by `!*.py`, `!*.c` and so on, plus a
+# one-off exception every time something new needed to ship (`!requirements.txt`,
+# `!goldenFiles/mnist/mnist.onnx`). That inverts the failure mode. A file nobody
+# remembered to whitelist is not merely untracked, it is invisible: absent from
+# `git status`, skipped by `git add .`, and gone at the next clean checkout. The
+# root `README.md` and `LICENSE` were both matched by it and survived only
+# because they were already in the index.
+#
+# So: ignore what is generated, and let everything else be seen.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.coverage
+
+# Compiled objects, modules and archives
+*.o
+*.mod
+*.smod
+*.a
+*.so
+
+# Weights written beside a model, and the scratch file the golden generators
+# drop next to their working directory.
+*.rwt
+*.fpp
+
+# The golden models are exported by their own .py at test time and dump a .txt
+# of expected outputs; mnist is the exception, a fixture whose .py reads it
+# rather than generating it (deleting it once cost an afternoon).
+goldenFiles/*/*.onnx
 goldenFiles/*/*.txt
-randomStuff/
-fLibrary/modelCreator.f90
-fLibrary/variables.fpp
-test/modelCreator.f90
-test/variables.fpp
-!requirements.txt
+!goldenFiles/mnist/mnist.onnx
+
+# Example builds: generated sources go to gen/, and each Makefile links a pair
+# of drivers named <model>_c and <model>_f.
 examples/surrogates/*/gen/
+examples/surrogates/*/*_c
+examples/surrogates/*/*_f
