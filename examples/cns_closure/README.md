@@ -81,6 +81,16 @@ succeeding is the assertion:
    `closure_infer_batch` (the native CUDA/HIP kernel, or the OpenMP fallback)
    against the header-inline `closure_infer`, compared directly rather than
    each against the host.
+5. **Kinetic energy decreases.** A periodic box with no forcing can only lose
+   kinetic energy, to viscous and numerical dissipation. This is the one
+   assertion about the flow rather than about the code, and it is what would
+   catch a closure wired in with the wrong sign -- negative turbulent
+   viscosity adds energy.
+
+The conservation bound grows with the step count (`1e-12 + 1e-15 * NSTEPS`)
+rather than sitting at a fixed value a long run would trip for no reason:
+drift is 2.2e-14 at 5 steps on the host and 1.3e-13 at 2000 steps at 128^3,
+while a genuinely non-conservative update is wrong by many orders more.
 
 ## Measured
 
@@ -99,10 +109,40 @@ agree exactly. `TOOLCHAIN=amd` builds from the same source but has not been
 run here; the test suite runs it wherever an AMD GPU and `amdclang` are
 present.
 
+### The flow
+
+`NX=128 NSTEPS=2000` takes the Taylor-Green vortex to t = 1.19 (Re = 1000,
+M = 0.1):
+
+```
+128x128x128, 2000 steps, dt 5.950e-04, t 1.1901
+  mass drift      1.276e-13 (relative)
+  energy drift    9.619e-14 (relative)
+  min rho / p     0.997583 / 71.187575   non-finite cells 0
+  kinetic energy  3.100628e+01 -> 3.037493e+01  (-2.036%, dissipating)
+  closure mu_t    mean 7.350e-05, max 3.101e-04   (molecular mu 1.000e-03)
+  closure nut vs host evaluation: worst |device-host| 2.168e-19
+OK
+```
+
+The closure contributes about 7% of the molecular viscosity on average and up
+to 31% at its peak, so it is changing the dissipation rather than rounding off
+under it -- which is the point of adding a closure at all. (At `NX=64` the
+timestep is twice as large, so the same 2000 steps reach t = 2.38 and lose
+16.6% of the kinetic energy: coarser grid, longer time, much more numerical
+dissipation. Not a resolution study.)
+
 ### Speed, A100 80GB, 20 steps
 
 The run prints this itself. Each step is SSP-RK3, so three closure calls;
 "per cell per call" divides by the range the closure covers.
+
+These come from an otherwise-idle GPU. **The numbers move by more than an
+order of magnitude on a shared machine** -- the same 64^3 case measured 2.0 ms
+per step on a quiet card and 63 ms per step with four other jobs saturating
+all four A100s, and the giveaway was 64^3 and 128^3 reporting the same total
+time, which is per-launch stall and not compute. Check `nvidia-smi` before
+trusting any of this, and pin with `CUDA_VISIBLE_DEVICES`.
 
 | | ns per cell per call | closure share of the step |
 |---|---|---|

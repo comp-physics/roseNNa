@@ -477,19 +477,22 @@ static void init(void) {
 
 /* ---------------------------------------------------------------- checks */
 
-static void totals(const double *q, double *mass, double *energy) {
+static void totals(const double *q, double *mass, double *energy, double *ke) {
     LOCALS;
-    double m = 0, e = 0;
+    double m = 0, e = 0, k2 = 0;
     for (int k = NG; k < nz + NG; k++)
         for (int j = NG; j < ny + NG; j++)
             for (int i = NG; i < nx + NG; i++) {
                 const long c = IDX(i, j, k);
                 m += q[c];
                 e += q[4 * nc + c];
+                k2 += .5 * (q[nc + c] * q[nc + c] + q[2 * nc + c] * q[2 * nc + c] +
+                            q[3 * nc + c] * q[3 * nc + c]) / q[c];
             }
     const double dv = g.h[0] * g.h[1] * g.h[2];
     *mass = m * dv;
     *energy = e * dv;
+    *ke = k2 * dv;
 }
 
 /* The host's own evaluation of the same model on the same primitives, for
@@ -551,8 +554,8 @@ int main(void) {
     const double hmin = fmin(g.h[0], fmin(g.h[1], g.h[2]));
     g.dt = g.cfl * hmin / (3 * smax);
 
-    double m0, e0;
-    totals(g.q, &m0, &e0);
+    double m0, e0, ke0;
+    totals(g.q, &m0, &e0, &ke0);
 
     double *q = g.q, *q1 = g.q1, *qs = g.qs, *w = g.w, *F = g.F, *nut = g.nut;
     /* These are used only in the map clauses below, which a compiler built
@@ -589,8 +592,8 @@ int main(void) {
     #pragma omp target exit data map(release: feat[0:9*nc])
 #endif
 
-    double m1, e1;
-    totals(q, &m1, &e1);
+    double m1, e1, ke1;
+    totals(q, &m1, &e1, &ke1);
 
     /* 4. The two ways of calling the model, compared against each other
      * directly rather than each against the host. The batched path ran during
@@ -633,6 +636,18 @@ int main(void) {
     /* 3. the closure agrees with a host evaluation of the same model */
     const double nerr = nut_mismatch();
 
+    /* How much viscosity the closure is actually contributing. */
+    double nut_sum = 0, nut_max = 0;
+    long nut_n = 0;
+    for (int k = NG; k < nz + NG; k++)
+        for (int j = NG; j < ny + NG; j++)
+            for (int i = NG; i < nx + NG; i++) {
+                const double v = nut[IDX(i, j, k)] * q[IDX(i, j, k)];   /* rho * nut */
+                nut_sum += v;
+                if (v > nut_max) nut_max = v;
+                nut_n++;
+            }
+
     /* The closure runs over the padded block minus one layer on each side,
      * which is the count to divide by -- not the interior cell count. */
     const long ncl = (long)(nx + 2 * NG - 2) * (ny + 2 * NG - 2) * (nz + 2 * NG - 2);
@@ -648,13 +663,25 @@ int main(void) {
     printf("  mass drift      %.3e (relative)\n", dm);
     printf("  energy drift    %.3e (relative)\n", de);
     printf("  min rho / p     %.6f / %.6f   non-finite cells %ld\n", rmin, pmin, bad);
+    printf("  kinetic energy  %.6e -> %.6e  (%+.3f%%, dissipating)\n",
+           ke0, ke1, 100 * (ke1 - ke0) / ke0);
+    printf("  closure mu_t    mean %.3e, max %.3e   (molecular mu %.3e)\n",
+           nut_sum / (double)nut_n, nut_max, g.mu);
     printf("  closure nut vs host evaluation: worst |device-host| %.3e\n", nerr);
 #ifdef BATCHED
     printf("  batched vs per-point: worst |infer_batch-infer| %.3e\n", nut_paths);
 #endif
 
-    const int ok = dm < 1e-12 && de < 1e-12 && bad == 0 && rmin > 0 && pmin > 0 &&
-                   nerr < 1e-12 && nut_paths < 1e-12;
+    /* Conservation drifts by roundoff per step, so the bound grows with the
+     * step count rather than sitting at a fixed value a long run would trip
+     * for no reason. Observed: 2.2e-14 at 5 steps on the host, 1.3e-13 at
+     * 2000 steps at 128^3. A genuinely non-conservative update is wrong by
+     * many orders more than this, so the floor is generous on purpose.
+     * Kinetic energy may only decrease: periodic box, no forcing, viscous and
+     * numerical dissipation only. */
+    const double cons_tol = 1e-12 + 1e-15 * NSTEPS;
+    const int ok = dm < cons_tol && de < cons_tol && bad == 0 && rmin > 0 && pmin > 0 &&
+                   nerr < 1e-12 && nut_paths < 1e-12 && ke1 < ke0 && ke1 > 0;
     puts(ok ? "OK" : "FAIL");
     return ok ? 0 : 1;
 }
