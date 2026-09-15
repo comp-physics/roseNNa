@@ -498,47 +498,91 @@ def test_generate_writes_the_kernel_and_rt_header(tmp_path, golden_model):
     assert not (tmp_path / "f" / "rosenna_rt.h").exists()
 
 
-def _nvcc_build(d, name, plan):
+_DEV = {"cuda": ("nvcc", "DEVFLAGS=-O2 -arch=sm_80"), "hip": ("hipcc", "DEVFLAGS=-O2 --offload-arch=gfx90a")}
+
+
+def _dev_build(d, name, plan, backend):
+    """Build lib<name>.a with the backend's device compiler; compile only, no GPU needed."""
     source, header = emit_c(plan)
     (d / f"{name}.c").write_text(source); (d / f"{name}.h").write_text(header)
     (d / f"{name}_kernel.cu").write_text(emit_kernel(plan)); (d / "rosenna_rt.h").write_text(rt_header())
     (d / "Makefile").write_text(emit_c_recipe(plan))
-    r = subprocess.run(["make", "ROSENNA_BACKEND=cuda", "DEVFLAGS=-O2 -arch=sm_80"], cwd=d, capture_output=True, text=True)
-    # nvcc's own diagnostics (warnings included) go to the CI log under -s:
-    # they are the only view of this code a CUDA compiler gives us.
-    print(f"\n--- nvcc {name} embed={plan.embed} dtype={plan.dtype} ---\n{r.stdout}{r.stderr}")
+    devcc, flags = _DEV[backend]
+    r = subprocess.run(["make", f"ROSENNA_BACKEND={backend}", flags], cwd=d, capture_output=True, text=True)
+    # The device compiler's own diagnostics (warnings included) go to the CI
+    # log under -s: they are the only view of this code such a compiler gives us.
+    print(f"\n--- {devcc} {name} embed={plan.embed} dtype={plan.dtype} ---\n{r.stdout}{r.stderr}")
     assert r.returncode == 0, r.stderr
     assert (d / f"lib{name}.a").exists()
 
 
-@pytest.mark.skipif(not shutil.which("nvcc"), reason="nvcc not installed")
-def test_cuda_backend_compiles(tmp_path, golden_model):
-    # Compile only: nvcc builds device code with no GPU present. Running needs the GPU gate.
+def _devcc(backend):
+    return shutil.which(_DEV[backend][0])
+
+
+BACKENDS = [pytest.param(b, marks=pytest.mark.skipif(not shutil.which(_DEV[b][0]), reason=f"{_DEV[b][0]} not installed"))
+            for b in ("cuda", "hip")]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_device_backend_compiles(tmp_path, golden_model, backend):
+    # Compile only: the device compiler builds device code with no GPU present.
+    # Running needs the GPU gate.
     for embed in (True, False):
         name = "gemm_small"; graph = load_graph(golden_model(name)); plan = build_plan(graph, dtype="f64", embed=embed)
         d = tmp_path / ("e" if embed else "f"); d.mkdir()
-        _nvcc_build(d, name, plan)
+        _dev_build(d, name, plan, backend)
 
 
-@pytest.mark.skipif(not shutil.which("nvcc"), reason="nvcc not installed")
+@pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("name", ["gemm_big", "gemm_nobias", "droplet", "batchnet"])
 @pytest.mark.parametrize("dtype", ["f32", "f64"])
 @pytest.mark.parametrize("embed", [True, False])
-def test_cuda_backend_compiles_every_dense_model(tmp_path, golden_model, name, dtype, embed):
+def test_device_backend_compiles_every_dense_model(tmp_path, golden_model, name, dtype, embed, backend):
     # The activations (tanhf/expf and their double forms) and every weight
-    # layout the plan can produce must also pass nvcc, not just gemm_small.
+    # layout the plan can produce must also pass the device compiler.
     plan = build_plan(load_graph(golden_model(name)), dtype=dtype, embed=embed)
-    _nvcc_build(tmp_path, name, plan)
+    _dev_build(tmp_path, name, plan, backend)
 
 
-@pytest.mark.skipif(not shutil.which("nvcc"), reason="nvcc not installed")
-def test_cuda_backend_compiles_past_the_constant_memory_budget(tmp_path):
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_device_backend_compiles_past_the_constant_memory_budget(tmp_path, backend):
     # An embedded model over CONSTANT_MEMORY_LIMIT takes the __device__ const
-    # path (ruling R4); nvcc must accept that header too.
+    # path (ruling R4); the device compiler must accept that header too.
     plan = _embedded_plan(tmp_path, "over", 64, 100)
     assert "__device__ const" in emit_c(plan)[1]
     d = tmp_path / "b"; d.mkdir()
-    _nvcc_build(d, "over", plan)
+    _dev_build(d, "over", plan, backend)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_device_backend_compiles_a_whole_field_model(tmp_path, backend):
+    # A plan whose per-point locals exceed a thread's stack: the archive's
+    # infer_batch must route through infer_one, or hipcc refuses the kernel
+    # ("stack frame size exceeds limit").
+    from tests.test_layer_kernels import _whole_field_plan
+    plan = _whole_field_plan(tmp_path)
+    d = tmp_path / "w"; d.mkdir()
+    _dev_build(d, "field", plan, backend)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_device_compiler_links_a_driver_against_the_archive(tmp_path, golden_model, backend):
+    # The way the gate and the examples link: the driver .cu plus the archive
+    # as -L/-l. A bare lib<name>.a after the .cu is compiled as source by
+    # hipcc (it puts -x hip ahead of the .cu and it applies to what follows).
+    name = "gemm_small"; plan = build_plan(load_graph(golden_model(name)), dtype="f64", embed=True)
+    _dev_build(tmp_path, name, plan, backend)
+    (tmp_path / "driver.cu").write_text(f"""
+#include "rosenna_rt.h"
+#include "{name}.h"
+int main(void) {{ double *x = 0, *y = 0; (void)x; (void)y;
+  return {name}_infer_batch(0, x, y, 0) + {name}_infer_one(x, y, 0) * 0 + {name}_sync(0) * 0; }}
+""")
+    devcc, flags = _DEV[backend]
+    r = subprocess.run([devcc, *flags.split("=", 1)[1].split(), "driver.cu", "-L.", f"-l{name}", "-o", "driver"],
+                       cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
 
 
 def test_every_backend_defines_a_sync_the_host_can_call(golden_model):

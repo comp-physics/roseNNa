@@ -91,3 +91,48 @@ jobs:
           cd python && python3 -m pytest tests/test_kernel.py -v -rs -s -k cuda 2>&1 | tee cuda.log
           ! grep -q "SKIPPED" cuda.log
           grep -q "PASSED" cuda.log
+
+  # The HIP twin of nvcc_compile: hipcc and the HIP headers from AMD's apt
+  # repository, no GPU and no driver. It compiles the kernel and the .c-as-HIP
+  # library for gfx90a and links a driver against the archive, which is where
+  # hipcc-specific issues surfaced on the MI210 (an archive named after the .cu
+  # is compiled as HIP source; __HIP__ is not a HIP-compilation signal).
+  # Running is the GPU gate's job.
+  hipcc_compile:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Install hipcc and the HIP headers (no driver)
+        run: |
+          set -euo pipefail
+          sudo mkdir -p --mode=0755 /etc/apt/keyrings
+          wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4.1 noble main" \
+            | sudo tee /etc/apt/sources.list.d/rocm.list
+          printf 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600\n' | sudo tee /etc/apt/preferences.d/rocm-pin-600
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends hipcc hip-dev rocm-device-libs
+          echo "/opt/rocm/bin" >> "$GITHUB_PATH"
+
+      - name: Check hipcc
+        run: hipcc --version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e python
+
+      - name: HIP backend compiles under hipcc (not skipped)
+        run: |
+          set -o pipefail
+          cd python && python3 -m pytest tests/test_kernel.py -v -rs -s -k hip 2>&1 | tee hip.log
+          ! grep -q "SKIPPED" hip.log
+          grep -q "PASSED" hip.log
