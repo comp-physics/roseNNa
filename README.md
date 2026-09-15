@@ -60,15 +60,18 @@ A model under a million parameters embeds its weights into the generated source 
 
 ## Supported ONNX operators and limits
 
-roseNNa generates code for: `Gemm`, `MatMul`, `Conv`, `MaxPool`, `AveragePool`, `LSTM`, `Add`, `Concat`,
-`Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`, `Identity`, `Relu`, `Sigmoid`, `Tanh`.
+roseNNa generates code for: `Gemm`, `MatMul`, `Conv` (including grouped and depthwise), `MaxPool`, `AveragePool`, `LSTM`, `Add`, `Concat`, `Pad`,
+`Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`, `Identity`, `Relu`, `Sigmoid`, `Tanh`, `Softmax`.
+An inference `BatchNormalization` is folded into the `Conv` or `Gemm` that feeds it, so it costs nothing at runtime.
 
 Everything statically knowable is resolved at generation time: shapes, buffer sizes, padding (including `auto_pad`), and every node whose inputs are all constants -- so a `Reshape` of a weight, or an int64 shape tensor, never reaches the emitted code.
 
 A model using something the generator cannot lower is **refused by name at generation time**, never silently mis-computed. `rosenna info model.onnx` reports what it found. The limits:
 
 - 2-D spatial ops only (rank-4 NCHW); `ceil_mode` must be 0
-- `Conv` `group` must be 1 (no grouped or depthwise convolution)
+- `Conv` `group` must divide both channel counts, and the weight's channel axis must be `C_in / group`
+- `Softmax` normalises the last axis only; `Pad` is constant-mode with non-negative, constant pads
+- a `BatchNormalization` that cannot be folded (training mode, non-constant parameters, or an intermediate read elsewhere) is refused
 - `Gemm` `alpha` and `beta` must be 1, `transA` must be 0, and weights must be constant
 - `LSTM` must be forward-direction with the default activations, no `clip`, `input_forget`, `sequence_lens` or peepholes
 - several inputs and several outputs are fine; they arrive concatenated in `x` and leave concatenated in `y` (see below)

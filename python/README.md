@@ -498,7 +498,8 @@ Navier-Stokes solver with a learned per-cell closure.
 
 ## Limits
 
-- Supported ops: `Gemm`, `MatMul`, `Conv`, `MaxPool`, `AveragePool`, `LSTM`,
+- Supported ops: `Gemm`, `MatMul`, `Conv` (grouped/depthwise too), `Pad`, `Softmax`,
+  `BatchNormalization` (folded into the preceding `Conv`/`Gemm`), `MaxPool`, `AveragePool`, `LSTM`,
   `Add`, `Concat`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`,
   `Identity`, `Relu`, `Tanh`, `Sigmoid`. Values may be rank 1 to 4; the
   spatial ops are 2-D (rank-4 NCHW) only, `Conv` must be ungrouped, and
