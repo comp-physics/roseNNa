@@ -5,6 +5,9 @@
 # arrived at the hard way.
 MODEL := closure
 PROG  := cns
+# `make train` re-exports closure.onnx, which is checked in like the
+# surrogates' models. It is an exporter, not a trainer -- see closure.py.
+TRAINER := closure.py
 LANGS   := c
 GENLANG := c
 

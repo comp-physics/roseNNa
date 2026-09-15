@@ -67,8 +67,9 @@ run: $(foreach l,$(LANGS),$(PROG)_$(l))
 	# semicolon-separated list would hide every failure but the last one.
 	$(foreach l,$(LANGS),$(RUNENV) ./$(PROG)_$(l) &&) true
 
+TRAINER ?= train.py
 train:                                  # the .onnx is checked in; this rebuilds it
-	$(PYTHON) train.py
+	$(PYTHON) $(TRAINER)
 
 gen/$(MODEL).h gen/$(MODEL)_model.F90 gen/$(MODEL).mk: $(MODEL).onnx
 	$(ROSENNA) generate $< --lang $(GENLANG) --precision double $(GENFLAGS) --out gen
