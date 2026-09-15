@@ -204,9 +204,13 @@ static void closure_batched(void) {
                 f9[8] = (s[sy] - s[-sy]) / (2 * h2);
             }
     int status;
-    /* use_device_addr, not the deprecated use_device_ptr: both arrays are
-     * already mapped, and ruling R5 says the call transfers nothing. */
-    #pragma omp target data use_device_addr(feat, nut)
+    /* use_device_ptr, not use_device_addr: the list items are pointer
+     * variables, and use_device_addr takes the device address of the item
+     * itself, not of what it points to -- the kernel then faulted on an
+     * MI210 (amdclang), where the host build, with the clause inert, had
+     * passed. Both arrays are already mapped; ruling R5 says the call
+     * transfers nothing. */
+    #pragma omp target data use_device_ptr(feat, nut)
     { status = closure_infer_batch((int)nc, feat, nut, 0); }
     if (status) {
         fprintf(stderr, "closure_infer_batch failed: %d\n", status);
