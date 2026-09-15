@@ -145,8 +145,9 @@ def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir,
         backend_dir = workdir / backend
         backend_dir.mkdir(parents=True, exist_ok=True)
         # Both backends now embed by default: a plan that embeds has no
-        # weights file to load in either language (every weight is a
-        # `parameter`/ROSENNA_CONST array baked into the generated source).
+        # weights file to load in either language (every weight is baked into
+        # the generated source -- an initialized `protected` module array in
+        # Fortran, deliberately not `parameter`, and ROSENNA_CONST in C).
         if not plan.embed:
             write_weights(plan, graph, backend_dir / f"{plan.model}.rwt")
         got = _run_backend(backend, plan, backend_dir, inputs)
@@ -195,8 +196,10 @@ def _live_inputs(session, shapes, cases: int, model_path, np_dtype):
 
 def _fortran_driver(name: str, n_in: int, n_out: int, dtype: str, embed: bool) -> str:
     real_kind = "real64" if dtype == "f64" else "real32"
-    # An embedded plan has no `_init`: every weight is already a `parameter`
-    # array in the generated module, resident from program load.
+    # An embedded plan has no `_init`: every weight is already an initialized
+    # `protected` array in the generated module, resident from program load.
+    # (`protected`, not `parameter`: gfortran -fopenacc will not take a
+    # `declare` on a named constant. See _emit_embedded_weights.)
     init = "" if embed else f"""
     call {name}_init('{name}.rwt', status)
     if (status /= 0) then
