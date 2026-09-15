@@ -24,7 +24,7 @@ from rosenna.verify import VerificationError, verify_model
 
 # Fixed, not random per run: a fuzzer whose corpus changes every run reports a
 # failure nobody can reproduce, and turns an unrelated CI run red.
-SEEDS = list(range(24))
+SEEDS = list(range(48))
 
 _ACTS = ["Relu", "Tanh", "Sigmoid"]
 
@@ -47,6 +47,17 @@ def _dense_chain(rng, nodes, inits, cur, width, n_gemm):
             nodes.append(helper.make_node("MatMul", [cur, w.name], [nxt], name=f"m{len(nodes)}"))
         n_gemm[0] += 1
         cur, width = nxt, out_w
+        if rng.random() < 0.35:
+            # Add a constant, broadcast from one of the shapes that reaches the
+            # per-axis stride arithmetic: a full row, a single value, or a
+            # rank-1 vector that has to be right-aligned against a rank-2 value.
+            shp = [(1, width), (1, 1), (width,)][int(rng.integers(0, 3))]
+            c = numpy_helper.from_array(
+                rng.uniform(-1, 1, shp).astype(np.float32), f"ad{n_gemm[0]}_{len(nodes)}")
+            inits.append(c)
+            nxt = f"v{len(nodes)}"
+            nodes.append(helper.make_node("Add", [cur, c.name], [nxt], name=f"ad{len(nodes)}"))
+            cur = nxt
         if rng.random() < 0.7:
             act = _ACTS[int(rng.integers(0, len(_ACTS)))]
             nxt = f"v{len(nodes)}"
@@ -80,6 +91,15 @@ def _spatial_chain(rng, nodes, inits, cur, c, h, w, n_conv):
             h, w, c = h + 2 * pad - k + 1, w + 2 * pad - k + 1, oc
             n_conv[0] += 1
             cur = nxt
+            if rng.random() < 0.35:
+                # A per-channel bias: (C,1,1) against (1,C,H,W) is the mnist
+                # shape, and the one whose strides are (0, 1, 0, 0).
+                cb = numpy_helper.from_array(
+                    rng.uniform(-1, 1, (c, 1, 1)).astype(np.float32), f"pc{n_conv[0]}")
+                inits.append(cb)
+                nxt = f"v{len(nodes)}"
+                nodes.append(helper.make_node("Add", [cur, cb.name], [nxt], name=f"pa{len(nodes)}"))
+                cur = nxt
         else:
             k = int(rng.integers(2, 4))
             st = int(rng.integers(1, k + 1))
@@ -100,11 +120,64 @@ def _spatial_chain(rng, nodes, inits, cur, c, h, w, n_conv):
     return cur, c, h, w
 
 
+def _lstm_head(rng, nodes, inits, graph_in):
+    """An LSTM over a random sequence, reduced to a rank-2 value for the tail.
+
+    ONNX wants X as (seq, batch, input) and hands back Y (seq, 1, batch, H),
+    Y_h and Y_c (1, batch, H). batch is 1, as in every golden LSTM, so the
+    Squeeze/Transpose a PyTorch export emits are the ones plan.py folds into
+    buffer aliases. Which of the three outputs the tail reads is drawn, because
+    an unread one has to be dropped without shifting the others out of their
+    positional slots -- that shipped as a bug.
+    """
+    seq = int(rng.integers(2, 5))
+    inp = int(rng.integers(2, 5))
+    hid = int(rng.integers(2, 5))
+    graph_in.append(helper.make_tensor_value_info("x", TensorProto.FLOAT, [seq, 1, inp]))
+    W = numpy_helper.from_array(rng.uniform(-1, 1, (1, 4 * hid, inp)).astype(np.float32), "lw")
+    R = numpy_helper.from_array(rng.uniform(-1, 1, (1, 4 * hid, hid)).astype(np.float32), "lr")
+    args = ["x", "lw", "lr"]
+    inits += [W, R]
+    if rng.random() < 0.6:
+        B = numpy_helper.from_array(rng.uniform(-1, 1, (1, 8 * hid)).astype(np.float32), "lb")
+        inits.append(B)
+        args.append("lb")
+    outs = ["Y", "Y_h", "Y_c"]
+    nodes.append(helper.make_node("LSTM", args, outs, name="lstm0", hidden_size=hid))
+    pick = int(rng.integers(0, 3))
+    if pick == 0:                      # Y: (seq,1,1,H) -> squeeze to (seq,H)
+        sq_axes = numpy_helper.from_array(np.array([1, 2], np.int64), "sq_axes")
+        inits.append(sq_axes)
+        nodes.append(helper.make_node("Squeeze", ["Y", "sq_axes"], ["yflat"], name="sq0"))
+        return "yflat", hid, seq
+    # Y_h or Y_c: (1,1,H) -> squeeze the leading axis to (1,H)
+    src = outs[1 + (pick - 1)]
+    ax = numpy_helper.from_array(np.array([0], np.int64), f"sq_{src}")
+    inits.append(ax)
+    nodes.append(helper.make_node("Squeeze", [src, ax.name], ["yflat"], name="sq1"))
+    return "yflat", hid, 1
+
+
 def _model_for_seed(seed: int, path):
     """Build one random supported model. Deterministic in `seed`."""
     rng = np.random.default_rng(seed)
     nodes, inits = [], []
-    spatial = rng.random() < 0.5
+    n_gemm = [0]
+    kind = rng.random()
+    if kind < 0.25:
+        graph_in = []
+        cur, width, rows = _lstm_head(rng, nodes, inits, graph_in)
+        cur, width = _dense_chain(rng, nodes, inits, cur, width, n_gemm)
+        graph = helper.make_graph(
+            nodes, f"fuzz{seed}", graph_in,
+            [helper.make_tensor_value_info(cur, TensorProto.FLOAT, [rows, width])], inits)
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        model.ir_version = 8
+        model = onnx.shape_inference.infer_shapes(model)
+        onnx.checker.check_model(model)
+        onnx.save(model, str(path))
+        return model
+    spatial = kind < 0.6
     if spatial:
         c, h, w = int(rng.integers(1, 3)), int(rng.integers(6, 13)), int(rng.integers(6, 13))
         in_shape = [1, c, h, w]
@@ -121,7 +194,6 @@ def _model_for_seed(seed: int, path):
         width = int(rng.integers(2, 7))
         in_shape = [1, width]
         cur = "x"
-    n_gemm = [0]
     cur, width = _dense_chain(rng, nodes, inits, cur, width, n_gemm)
     # A branch: one value feeding two chains that are then concatenated. This is
     # the shape the buffer planner is least safe on -- liveness has to keep the
@@ -136,11 +208,29 @@ def _model_for_seed(seed: int, path):
                                       name=f"cat{len(nodes)}", axis=1))
         cur, width = nxt, lw + rw
         cur, width = _dense_chain(rng, nodes, inits, cur, width, n_gemm)
-    graph = helper.make_graph(
-        nodes, f"fuzz{seed}",
-        [helper.make_tensor_value_info("x", TensorProto.FLOAT, in_shape)],
-        [helper.make_tensor_value_info(cur, TensorProto.FLOAT, [1, width])],
-        inits)
+    # A second graph input, consumed by its own chain and merged in. The
+    # generated entry point takes every input concatenated in x, in declaration
+    # order, so this exercises the slice-copy that hands each secondary input
+    # its part -- and the offsets, which nothing else here varies.
+    graph_in = [helper.make_tensor_value_info("x", TensorProto.FLOAT, in_shape)]
+    if rng.random() < 0.4:
+        w2 = int(rng.integers(2, 6))
+        graph_in.append(helper.make_tensor_value_info("x2", TensorProto.FLOAT, [1, w2]))
+        side, sw = _dense_chain(rng, nodes, inits, "x2", w2, n_gemm)
+        nxt = f"v{len(nodes)}"
+        nodes.append(helper.make_node("Concat", [cur, side], [nxt],
+                                      name=f"jin{len(nodes)}", axis=1))
+        cur, width = nxt, width + sw
+        cur, width = _dense_chain(rng, nodes, inits, cur, width, n_gemm)
+
+    # A second graph output, which leaves concatenated in y.
+    graph_out = [helper.make_tensor_value_info(cur, TensorProto.FLOAT, [1, width])]
+    if rng.random() < 0.4:
+        tail, tw = _dense_chain(rng, nodes, inits, cur, width, n_gemm)
+        if tail != cur:
+            graph_out.append(helper.make_tensor_value_info(tail, TensorProto.FLOAT, [1, tw]))
+
+    graph = helper.make_graph(nodes, f"fuzz{seed}", graph_in, graph_out, inits)
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
     model.ir_version = 8
     model = onnx.shape_inference.infer_shapes(model)
@@ -173,3 +263,25 @@ def test_the_corpus_is_reproducible(tmp_path):
     _model_for_seed(7, a)
     _model_for_seed(7, b)
     assert a.read_bytes() == b.read_bytes()
+
+
+def test_the_corpus_covers_every_shape_it_claims_to(tmp_path):
+    """The pinned seeds actually draw each construction this file is for.
+
+    A fuzzer that quietly stops drawing LSTMs, or branches, looks exactly like
+    one that is finding nothing. This asserts the corpus still reaches each
+    construction, so a change to the generator that narrows it fails here
+    rather than silently reducing what the other tests cover.
+    """
+    seen = {k: 0 for k in ("lstm", "spatial", "branch", "add", "multi_in", "multi_out")}
+    for seed in SEEDS:
+        model = _model_for_seed(seed, tmp_path / f"c{seed}.onnx")
+        ops = {n.op_type for n in model.graph.node}
+        seen["lstm"] += "LSTM" in ops
+        seen["spatial"] += bool(ops & {"Conv", "MaxPool", "AveragePool"})
+        seen["branch"] += "Concat" in ops
+        seen["add"] += "Add" in ops
+        seen["multi_in"] += len(model.graph.input) > 1
+        seen["multi_out"] += len(model.graph.output) > 1
+    thin = {k: v for k, v in seen.items() if v < 3}
+    assert not thin, f"corpus covers these too thinly: {thin} (full tally {seen})"
