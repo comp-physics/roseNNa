@@ -6,7 +6,7 @@ from .frontend import Graph, UnsupportedModel
 # relabelling ops plan.py turns into buffer aliases. Everything here is
 # lowered by plan.py into explicit loop nests over flat buffers; an op that is
 # not here is refused by name rather than silently mis-lowered.
-SUPPORTED = {"Gemm", "MatMul", "Relu", "Tanh", "Sigmoid",
+SUPPORTED = {"Gemm", "MatMul", "Relu", "Tanh", "Sigmoid", "Softmax",
              "Conv", "MaxPool", "AveragePool", "Add", "Transpose", "LSTM", "Concat",
              # Relabelling ops: fold.resolve_shape_ops deletes these outright
              # unless one produces the graph output, where it becomes a copy.
@@ -40,6 +40,8 @@ def validate(graph: Graph) -> None:
                 raise UnsupportedModel(
                     f"node '{node.name}': MatMul weight '{node.inputs[1]}' has rank "
                     f"{rhs.ndim}; only rank 2 is supported")
+        if node.op == "Softmax":
+            _validate_softmax(graph, node)
         if node.op == "Add":
             _validate_add(graph, node)
         if node.op == "Concat":
@@ -98,6 +100,37 @@ def _validate_gemm(graph: Graph, node) -> None:
             raise UnsupportedModel(
                 f"node '{node.name}': Gemm bias has {bias.shape[0]} values for {n_out} outputs; "
                 f"a broadcast bias is not supported")
+
+
+def _validate_softmax(graph: Graph, node) -> None:
+    """Softmax along the last axis only.
+
+    ONNX changed this operator at opset 13. Before, `axis` coerced the input to
+    2-D and normalised every trailing axis together, with a default of 1;
+    after, it normalises along that one axis, with a default of -1. The two
+    readings agree exactly when the normalised axis is the last one, so
+    requiring that makes the emitted loop correct under either opset instead of
+    silently picking one. An absent `axis` is accepted only at rank 2, where
+    both defaults land on the last axis anyway.
+    """
+    where = f"node '{node.name}'"
+    x = graph.values.get(node.inputs[0])
+    if x is None:
+        raise UnsupportedModel(f"{where}: input '{node.inputs[0]}' has no inferred shape")
+    rank = len(x.shape)
+    if "axis" not in node.attrs:
+        if rank != 2:
+            raise UnsupportedModel(
+                f"{where}: Softmax without an explicit axis on a rank-{rank} input is "
+                f"ambiguous across opsets (the default is 1 before opset 13 and -1 from "
+                f"13); only rank 2, where both mean the last axis, is supported")
+        return
+    axis = int(node.attrs["axis"])
+    resolved = axis + rank if axis < 0 else axis
+    if resolved != rank - 1:
+        raise UnsupportedModel(
+            f"{where}: Softmax axis={axis} normalises axis {resolved} of a rank-{rank} "
+            f"input; only the last axis is supported")
 
 
 def _validate_spatial(graph: Graph, node) -> None:

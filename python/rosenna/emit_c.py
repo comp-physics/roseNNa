@@ -1028,6 +1028,41 @@ def _emit_add_c(op, dst, src, wsym):
     return list(zip(names, bc.out_shape)), [f"{dst}[{flat}] = {src}[{flat}] + {wsym}[{widx}];"]
 
 
+def _emit_softmax_c(op, ctype: str, dtype: str, dst: str, src: str, zero: str):
+    """Last-axis Softmax: max, then exp into the destination, then normalise.
+
+    Subtracting the row maximum before exponentiating is what keeps a logit of
+    +800 from overflowing to inf; it cancels exactly in the ratio, so it costs
+    only the extra pass.
+
+    The maximum uses `v > mx`, which the NaN rule in doc/opensource.md tells
+    you not to write -- deliberately, and this is the one op where it is
+    right. A NaN must LOSE the maximum here: a NaN-sticky maximum would make
+    every exponent NaN - NaN, whereas letting the NaN lose keeps `mx` a real
+    number, so `exp(NaN - mx)` is NaN, the row sum is NaN, and every output in
+    that row is NaN. The NaN propagates through the sum instead of through the
+    maximum, and no finite input can overflow on the way.
+    """
+    sm = op.softmax
+    expf = "expf" if dtype == "f32" else "exp"
+    c = sm.axis_len
+    at = f"n * {c}"
+    return [("n", sm.outer)], [
+        f"{ctype} mx = {src}[{at}];",
+        f"for (int j = 1; j < {c}; ++j) {{",
+        f"    const {ctype} v = {src}[{at} + j];",
+        "    if (v > mx) mx = v;",
+        "}",
+        f"{ctype} s = {zero};",
+        f"for (int j = 0; j < {c}; ++j) {{",
+        f"    const {ctype} e = {expf}({src}[{at} + j] - mx);",
+        f"    {dst}[{at} + j] = e;",
+        "    s += e;",
+        "}",
+        f"for (int j = 0; j < {c}; ++j) {dst}[{at} + j] = {dst}[{at} + j] / s;",
+    ]
+
+
 def _emit_spatial_c(op, ctype, dst, src, weight_sym, bias_sym, zero):
     """A 2-D Conv / MaxPool / AveragePool as an explicit loop nest over flat buffers.
 
@@ -1189,6 +1224,8 @@ def _op_pieces(plan: Plan, ctype: str, op, dst, src, extra_srcs=None):
         soff = f"{op.src_offset} + " if op.src_offset else ""
         doff = f"{op.dst_offset} + " if op.dst_offset else ""
         return [("i", op.n_out)], [f"{dst}[{doff}i] = {src}[{soff}i];"]
+    if op.kind == "softmax":
+        return _emit_softmax_c(op, ctype, plan.dtype, dst, src, zero)
     if op.kind in ("conv", "maxpool", "avgpool"):
         return _emit_spatial_c(op, ctype, dst, src,
                                _weight_ref(plan, m, op.weight) if op.weight else None,

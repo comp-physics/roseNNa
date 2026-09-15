@@ -17,11 +17,17 @@ def _unsupported_model(tmp_path, name="softmaxed"):
     Not a golden file: the golden set is what the generator is growing to
     cover, so pinning a rejection test to one of them turns every genuine
     coverage win into a spurious failure (mnist did exactly that once Conv,
-    MaxPool, Add and the shape ops landed). Softmax is unsupported on purpose.
+    MaxPool, Add and the shape ops landed).
+
+    The op here has to be one that is NOT on the roadmap, for the same reason
+    one level up: this test used Softmax until Softmax was implemented, and
+    then three tests failed for a coverage win. `Erf` is elementwise and
+    unremarkable, so if it is ever added, move this to another op the
+    generator does not intend to handle rather than deleting the check.
     """
     x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 3])
     y = helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 3])
-    node = helper.make_node("Softmax", ["x"], ["y"], axis=1, name="sm0")
+    node = helper.make_node("Erf", ["x"], ["y"], name="sm0")
     m = helper.make_model(helper.make_graph([node], "t", [x], [y]),
                           opset_imports=[helper.make_opsetid("", 13)])
     m.ir_version = 8
@@ -184,7 +190,7 @@ def test_info_reports_unsupported(tmp_path, capsys):
     assert rc == 1
     # Assert on the real rejection text, not merely on an op name _describe_ops
     # would print either way.
-    assert "Softmax is not supported" in out
+    assert "Erf is not supported" in out
     # If the rejection branch silently disappeared, build_plan would have to have
     # succeeded, and the success branch's bare "supported" line would appear instead.
     assert "supported" not in out.splitlines()

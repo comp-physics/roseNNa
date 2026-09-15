@@ -465,6 +465,7 @@ def _emit_infer(plan: Plan) -> list:
         ("j", "gemm" in kinds),
         ("r", any(op.kind == "gemm" and op.rows > 1 for op in plan.ops)),
         ("n, oc, oh, ow, ic, kh, kw, ih, iw", bool(spatial)),
+        ("smn, smj", "softmax" in kinds),
         ("seen", "maxpool" in kinds),
         ("cnt", any(_avgpool_needs_count(op) for op in plan.ops)),
         ("lt, lb, lk", "lstm" in kinds),
@@ -478,6 +479,8 @@ def _emit_infer(plan: Plan) -> list:
     reals = ["acc"] if (spatial or "lstm" in kinds or remainder) else []
     if "maxpool" in kinds:
         reals.append("v")
+    if "softmax" in kinds:
+        reals += ["smx", "ssum", "sexp"]
     if "lstm" in kinds:
         reals += ["lgi", "lgo", "lgf", "lgc", "lcn"]
     if blocked:
@@ -537,6 +540,8 @@ def _emit_infer(plan: Plan) -> list:
             lines.append(f"        do i = 1, {op.n_out}")
             lines.append(f"            {dst}({doff}i) = {src}({soff}i)")
             lines.append("        end do")
+        elif op.kind == "softmax":
+            lines += _emit_softmax_f(op, plan.assignment[op.out], plan.assignment[op.inp])
         elif op.kind in ("conv", "maxpool", "avgpool"):
             lines += _emit_spatial_f(op, plan.assignment[op.out], plan.assignment[op.inp])
         elif op.kind in _ACT:
@@ -551,6 +556,36 @@ def _emit_infer(plan: Plan) -> list:
     lines.append("    end subroutine")
     lines.append("")
     return lines
+
+
+def _emit_softmax_f(op, dst: str, src: str) -> list:
+    """The Fortran twin of _emit_softmax_c, line for line.
+
+    Counters stay 0-based so the index arithmetic reads the same as C's; only
+    the subscript gains the `+ 1`. See _emit_softmax_c for why the maximum is
+    written `>` here rather than the NaN-preserving form the other reductions
+    use.
+    """
+    sm = op.softmax
+    c = sm.axis_len
+    at = f"smn * {c}"
+    return [
+        f"        do smn = 0, {sm.outer - 1}",
+        f"            smx = {src}({at} + 1)",
+        f"            do smj = 1, {c - 1}",
+        f"                if ({src}({at} + smj + 1) > smx) smx = {src}({at} + smj + 1)",
+        "            end do",
+        "            ssum = 0.0_wp",
+        f"            do smj = 0, {c - 1}",
+        f"                sexp = exp({src}({at} + smj + 1) - smx)",
+        f"                {dst}({at} + smj + 1) = sexp",
+        "                ssum = ssum + sexp",
+        "            end do",
+        f"            do smj = 0, {c - 1}",
+        f"                {dst}({at} + smj + 1) = {dst}({at} + smj + 1) / ssum",
+        "            end do",
+        "        end do",
+    ]
 
 
 def _flat_index_f(names, shape):

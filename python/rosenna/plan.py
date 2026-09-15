@@ -112,6 +112,18 @@ class Spatial:
 
 
 @dataclass(frozen=True)
+class Softmax:
+    """A last-axis Softmax, as `outer` independent rows of `axis_len` each.
+
+    The axis is resolved to the trailing one in validate.py, so the emitters
+    see a flat [outer, axis_len] view of a buffer that is already row-major
+    and never learn that `axis` existed.
+    """
+    outer: int
+    axis_len: int
+
+
+@dataclass(frozen=True)
 class Broadcast:
     """How a constant operand maps onto the output of an elementwise op.
 
@@ -182,6 +194,8 @@ class Op:
     spatial: Spatial | None = None
     # Set for kind == "add".
     bcast: Broadcast | None = None
+    # Set for kind == "softmax".
+    softmax: "Softmax | None" = None
     # kind == "concat": the operands are inp (the first runtime one) plus
     # extra_in (the remaining runtime ones) and the weight symbols in
     # concat_syms, interleaved in ONNX input order as concat.consts says.
@@ -406,6 +420,13 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
             act_len = _length(graph.values[node.outputs[0]])
             ops.append(Op(_ACTIVATIONS[node.op], node.outputs[0], node.inputs[0],
                           None, None, act_len, act_len))
+            continue
+        if node.op == "Softmax":
+            shape = tuple(int(d) for d in graph.values[node.outputs[0]].shape)
+            axis_len = shape[-1]
+            n = _length(graph.values[node.outputs[0]])
+            ops.append(Op("softmax", node.outputs[0], node.inputs[0], None, None, n, n,
+                          softmax=Softmax(outer=n // axis_len, axis_len=axis_len)))
             continue
         if node.op in _RELABEL or (node.op == "Transpose" and _flat_preserving(
                 graph.values[node.inputs[0]].shape,

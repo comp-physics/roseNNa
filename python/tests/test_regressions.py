@@ -602,3 +602,93 @@ def test_lstm_without_its_y_output_is_refused_not_a_traceback(tmp_path):
     path = save_model(tmp_path, "lstmy", nodes, [W, R], (1, 1, n_in), (1, hidden))
     with pytest.raises(UnsupportedModel, match="Y"):
         build_plan(load_graph(path), dtype="f64", embed=False)
+
+
+# --- Softmax ---------------------------------------------------------------
+
+def _softmax_model(path, shape, axis=None, out_shape=None):
+    """A Softmax-only graph, so nothing upstream can mask what it computes."""
+    attrs = {} if axis is None else {"axis": axis}
+    graph = helper.make_graph(
+        [helper.make_node("Softmax", ["x"], ["y"], name="s0", **attrs)], "smx",
+        [helper.make_tensor_value_info("x", TensorProto.DOUBLE, list(shape))],
+        [helper.make_tensor_value_info("y", TensorProto.DOUBLE, list(out_shape or shape))], [])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+    import onnx as _onnx
+    _onnx.save(model, str(path))
+    return path
+
+
+def test_softmax_matches_onnxruntime_on_both_backends(tmp_path):
+    path = _softmax_model(tmp_path / "smx.onnx", (1, 7))
+    rng = np.random.default_rng(11)
+    x = rng.uniform(-4, 4, (1, 7))
+    f, c = _both_backends(tmp_path, path, "smx", x)
+    session = ort.InferenceSession(str(path))
+    want = session.run(None, {"x": x})[0].ravel()
+    for got, lang in ((f, "fortran"), (c, "c")):
+        assert np.allclose(got, want, rtol=1e-12, atol=1e-14), f"{lang}: {got} != {want}"
+    # Whatever else it is, a softmax is a distribution.
+    assert abs(float(np.sum(c)) - 1.0) < 1e-12
+
+
+def test_softmax_over_the_last_axis_of_a_rank4_value(tmp_path):
+    """Each of the 2*3*4 rows normalises independently, not the whole buffer."""
+    path = _softmax_model(tmp_path / "smx4.onnx", (2, 3, 4, 5), axis=-1)
+    rng = np.random.default_rng(12)
+    x = rng.uniform(-3, 3, (2, 3, 4, 5))
+    # The driver takes a list of cases, each a flat n_in vector: one case here.
+    f, c = _both_backends(tmp_path, path, "smx4", x.reshape(1, -1))
+    want = ort.InferenceSession(str(path)).run(None, {"x": x})[0].ravel()
+    assert np.allclose(c, want, rtol=1e-12, atol=1e-14)
+    assert np.allclose(f, want, rtol=1e-12, atol=1e-14)
+    # 24 rows each summing to 1, which a single global softmax would fail.
+    assert np.allclose(np.asarray(c).reshape(2, 3, 4, 5).sum(axis=-1), 1.0)
+
+
+def test_softmax_does_not_overflow_on_a_large_logit(tmp_path):
+    """exp(800) is inf; subtracting the row maximum is what avoids it.
+
+    Without the max-subtraction pass this returns nan (inf/inf), which is why
+    the pass is there rather than being an optimisation.
+    """
+    path = _softmax_model(tmp_path / "big.onnx", (1, 4))
+    x = np.array([[800.0, 799.0, -800.0, 0.0]])
+    f, c = _both_backends(tmp_path, path, "big", x)
+    want = ort.InferenceSession(str(path)).run(None, {"x": x})[0].ravel()
+    for got, lang in ((f, "fortran"), (c, "c")):
+        assert np.all(np.isfinite(got)), f"{lang}: {got}"
+        assert np.allclose(got, want, rtol=1e-12, atol=1e-14), f"{lang}: {got} != {want}"
+
+
+def test_softmax_propagates_a_nan_through_the_row_sum(tmp_path):
+    """A NaN anywhere in a row makes that row all-NaN, and leaves others alone.
+
+    The maximum is written `v > mx`, so a NaN loses it -- the propagation comes
+    from the row sum instead (exp(nan - mx) is nan, so the sum is nan and every
+    ratio in the row is nan). A NaN-sticky maximum would give nan - nan for
+    every element and lose the reason. See _emit_softmax_c.
+    """
+    path = _softmax_model(tmp_path / "nan.onnx", (2, 3), axis=-1)
+    x = np.array([[1.0, np.nan, 2.0], [1.0, 2.0, 3.0]])
+    f, c = _both_backends(tmp_path, path, "nan", x.reshape(1, -1))
+    for got, lang in ((np.asarray(f), "fortran"), (np.asarray(c), "c")):
+        row0, row1 = got.reshape(2, 3)
+        assert np.all(np.isnan(row0)), f"{lang}: the NaN row should be all NaN, got {row0}"
+        assert np.all(np.isfinite(row1)), f"{lang}: the clean row should survive, got {row1}"
+        assert abs(float(row1.sum()) - 1.0) < 1e-12, f"{lang}: {row1}"
+
+
+@pytest.mark.parametrize("shape,axis,fragment", [
+    ((2, 3, 4), 1, "only the last axis"),
+    ((2, 3, 4), -2, "only the last axis"),
+    ((2, 3, 4), 0, "only the last axis"),
+    ((2, 3, 4), None, "ambiguous across opsets"),
+])
+def test_softmax_refuses_what_its_loop_does_not_compute(tmp_path, shape, axis, fragment):
+    from rosenna.validate import validate
+    out = (1,) if axis is None else shape
+    path = _softmax_model(tmp_path / "bad.onnx", shape, axis=axis, out_shape=shape)
+    with pytest.raises(UnsupportedModel, match=fragment):
+        validate(load_graph(path))

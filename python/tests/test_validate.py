@@ -249,9 +249,11 @@ def test_rank_and_dtype_rejections():
 
 def test_an_unsupported_op_names_the_node_and_lists_what_is_supported():
     with pytest.raises(UnsupportedModel) as e:
-        validate(_graph(Node("Softmax", "sm0", ("x",), ("y",), {"axis": 1}),
+        # Not an op on the roadmap: this assertion named Softmax until
+        # Softmax was implemented, and then failed for a coverage win.
+        validate(_graph(Node("Erf", "sm0", ("x",), ("y",), {}),
                         {"x": _t("x", (1, 3)), "y": _t("y", (1, 3))}))
-    assert "sm0" in str(e.value) and "Softmax is not supported" in str(e.value)
+    assert "sm0" in str(e.value) and "Erf is not supported" in str(e.value)
     assert "Gemm" in str(e.value), "the message should list what it does handle"
 
 

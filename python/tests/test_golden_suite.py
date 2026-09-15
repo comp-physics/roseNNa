@@ -26,6 +26,7 @@ GOLDEN = [
     "gemm_nobias", "gemm_small", "lstm_cell", "lstm_gemm", "lstm_gemm_hid",
     "lstm_nostate", "lstm_output", "maxpool_basic", "maxpool_nonsquare",
     "maxpool_padding", "maxpool_strides", "mnist", "pool_batch",
+    "softmax_head",
 ]
 
 
