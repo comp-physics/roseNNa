@@ -14,7 +14,9 @@
 #define NU 0.02
 #define DT 0.01
 #define N_SUB 64            /* fine sub-steps per coarse step */
+#ifndef NSTEPS
 #define NSTEPS 200
+#endif
 static const double L = 2.0 * M_PI;
 
 static double godunov(double ul, double ur) {

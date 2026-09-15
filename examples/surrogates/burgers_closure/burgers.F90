@@ -8,7 +8,10 @@ program burgers
     implicit none
     integer, parameter :: nb_ = NB, nf = 2048, factor = 16, nc = nf / factor
     real(real64), parameter :: nu = 0.02_real64, dt = 0.01_real64
-    integer, parameter :: n_sub = 64, nsteps = 200
+#ifndef NSTEPS
+#define NSTEPS 200
+#endif
+    integer, parameter :: n_sub = 64, nsteps = NSTEPS
     real(real64), parameter :: pi = 3.14159265358979323846_real64, L = 2.0_real64 * pi
 
     real(real64), allocatable :: uf(:,:), tf(:,:), ref(:,:), uc(:,:), tc(:,:), un(:,:), tn(:,:)

@@ -91,12 +91,30 @@ def _sanitize(work, name, plan, graph, lang):
     return r
 
 
+def _can_sanitize(tool, source, tmp_path):
+    """Can this toolchain actually build a sanitized binary?
+
+    Probed, not assumed: Homebrew's gcc on macOS accepts -fsanitize=address
+    and then fails at link with `ld: library 'asan' not found`, because the
+    runtime ships with Apple's clang rather than with gcc. Checking the
+    compiler exists is not the same question.
+    """
+    if not shutil.which(tool):
+        return False
+    d = tmp_path / f"probe_{tool}"
+    d.mkdir(exist_ok=True)
+    (d / source).write_text("int main(void){return 0;}\n" if source.endswith(".c")
+                            else "program p\nend program\n")
+    r = subprocess.run([tool, *SAN, source, "-o", "probe"], cwd=d, capture_output=True, text=True)
+    return r.returncode == 0
+
+
 @pytest.mark.parametrize("lang", ["c", "fortran"])
 @pytest.mark.parametrize("name", GOLDEN)
 def test_golden_model_is_clean_under_asan_and_ubsan(name, lang, tmp_path, golden_model):
-    for tool in (("gcc",) if lang == "c" else ("gfortran",)):
-        if not shutil.which(tool):
-            pytest.skip(f"no {tool}")
+    tool, probe = ("gcc", "p.c") if lang == "c" else ("gfortran", "p.f90")
+    if not _can_sanitize(tool, probe, tmp_path):
+        pytest.skip(f"{tool} cannot link a sanitized binary here")
     safe = re.sub(r"[^0-9A-Za-z_]", "_", name)
     graph = load_graph(golden_model(name), safe)
     plan = build_plan(graph, dtype="f64")
