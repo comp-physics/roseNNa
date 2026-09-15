@@ -1028,6 +1028,39 @@ def _emit_add_c(op, dst, src, wsym):
     return list(zip(names, bc.out_shape)), [f"{dst}[{flat}] = {src}[{flat}] + {wsym}[{widx}];"]
 
 
+def _literal_c(value: float, ctype: str) -> str:
+    """The pad value as a C literal, at the generated code's precision."""
+    return f"{value!r}f" if ctype == "float" else repr(float(value))
+
+
+def _emit_pad_c(op, ctype: str, dst: str, src: str):
+    """Constant Pad: loop the output, read the input where the shift is in range.
+
+    Only axes that are actually padded get a bounds test -- on an unpadded axis
+    the output index IS the input index, so a test there would always pass and
+    would only make the generated nest harder to read.
+    """
+    pd = op.pad
+    names = [f"c{k}" for k in range(len(pd.out_shape))]
+    shifted, checks = [], []
+    for k, (nm, b) in enumerate(zip(names, pd.begins)):
+        if b == 0 and pd.in_shape[k] == pd.out_shape[k]:
+            shifted.append(nm)
+            continue
+        expr = f"({nm} - {b})" if b else nm
+        shifted.append(expr)
+        if b:
+            checks.append(f"{expr} >= 0")
+        checks.append(f"{expr} < {pd.in_shape[k]}")
+    out_idx = _flat_index(names, pd.out_shape)
+    in_idx = _flat_index(shifted, pd.in_shape)
+    val = _literal_c(pd.value, ctype)
+    if not checks:
+        return list(zip(names, pd.out_shape)), [f"{dst}[{out_idx}] = {src}[{in_idx}];"]
+    return list(zip(names, pd.out_shape)), [
+        f"{dst}[{out_idx}] = ({' && '.join(checks)}) ? {src}[{in_idx}] : {val};"]
+
+
 def _emit_softmax_c(op, ctype: str, dtype: str, dst: str, src: str, zero: str):
     """Last-axis Softmax: max, then exp into the destination, then normalise.
 
@@ -1238,6 +1271,8 @@ def _op_pieces(plan: Plan, ctype: str, op, dst, src, extra_srcs=None):
         soff = f"{op.src_offset} + " if op.src_offset else ""
         doff = f"{op.dst_offset} + " if op.dst_offset else ""
         return [("i", op.n_out)], [f"{dst}[{doff}i] = {src}[{soff}i];"]
+    if op.kind == "pad":
+        return _emit_pad_c(op, ctype, dst, src)
     if op.kind == "softmax":
         return _emit_softmax_c(op, ctype, plan.dtype, dst, src, zero)
     if op.kind in ("conv", "maxpool", "avgpool"):

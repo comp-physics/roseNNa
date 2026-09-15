@@ -772,3 +772,82 @@ def test_grouped_conv_reads_only_its_own_group(tmp_path, c_in, c_out, group, lab
     for got, lang in ((f, "fortran"), (c, "c")):
         assert np.allclose(got, want, rtol=1e-5, atol=1e-6), \
             f"{label} {lang}: max |diff| {np.max(np.abs(np.asarray(got).ravel() - want)):.3e}"
+
+
+# --- Pad -------------------------------------------------------------------
+
+def _pad_model(path, in_shape, pads, value=0.0, mode="constant", runtime_pads=False):
+    rank = len(in_shape)
+    out = tuple(int(d) + pads[k] + pads[k + rank] for k, d in enumerate(in_shape))
+    ini = [] if runtime_pads else [
+        numpy_helper.from_array(np.array(pads, np.int64), "p"),
+        numpy_helper.from_array(np.array(value, np.float64), "v")]
+    ins = [helper.make_tensor_value_info("x", TensorProto.DOUBLE, list(in_shape))]
+    if runtime_pads:
+        ins.append(helper.make_tensor_value_info("p", TensorProto.INT64, [2 * rank]))
+    graph = helper.make_graph(
+        [helper.make_node("Pad", ["x", "p"] + ([] if runtime_pads else ["v"]),
+                          ["y"], name="p0", mode=mode)], "pad", ins,
+        [helper.make_tensor_value_info("y", TensorProto.DOUBLE, list(out))], ini)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+    import onnx as _onnx
+    _onnx.save(model, str(path))
+    return path, out
+
+
+def test_pad_places_the_input_block_and_fills_the_rest(tmp_path):
+    """Asymmetric pads on two axes, so a begins/ends mix-up cannot pass."""
+    path, out = _pad_model(tmp_path / "pad.onnx", (1, 2, 4, 5),
+                           [0, 0, 1, 2, 0, 0, 3, 1], value=-1.5)
+    rng = np.random.default_rng(41)
+    x = rng.uniform(-2, 2, (1, 2, 4, 5))
+    f, c = _both_backends(tmp_path, path, "pad", x.reshape(1, -1))
+    want = ort.InferenceSession(str(path)).run(None, {"x": x})[0].ravel()
+    assert np.allclose(c, want) and np.allclose(f, want)
+    # The fill value really is the constant, and the block really moved.
+    got = np.asarray(c).reshape(out)
+    assert got[0, 0, 0, 0] == -1.5
+    assert np.allclose(got[0, :, 1:5, 2:7], x)
+
+
+def test_pad_feeding_a_conv_is_the_shape_that_turns_up(tmp_path):
+    """An explicit Pad before a Conv: what an export emits for asymmetric padding."""
+    rng = np.random.default_rng(42)
+    w = numpy_helper.from_array(rng.uniform(-1, 1, (3, 2, 3, 3)).astype(np.float32), "w")
+    pads = numpy_helper.from_array(np.array([0, 0, 1, 1, 0, 0, 1, 1], np.int64), "p")
+    graph = helper.make_graph(
+        [helper.make_node("Pad", ["x", "p"], ["xp"], name="p0", mode="constant"),
+         helper.make_node("Conv", ["xp", "w"], ["y"], name="c0", kernel_shape=[3, 3])],
+        "padconv",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 2, 6, 6])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 3, 6, 6])], [w, pads])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+    import onnx as _onnx
+    path = tmp_path / "padconv.onnx"
+    _onnx.save(model, str(path))
+    x = rng.uniform(-2, 2, (1, 2, 6, 6)).astype(np.float32)
+    f, c = _both_backends(tmp_path, path, "padconv", x.reshape(1, -1), dtype="f32")
+    want = ort.InferenceSession(str(path)).run(None, {"x": x})[0].ravel()
+    assert np.allclose(c, want, rtol=1e-5, atol=1e-6)
+    assert np.allclose(f, want, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("kwargs,fragment", [
+    (dict(pads=[0, 0, 1, 1, 0, 0, 1, 1], mode="reflect"), "only 'constant'"),
+    (dict(pads=[0, 0, -1, 0, 0, 0, 0, 0]), "negative pads"),
+    # A runtime `pads` is an int64 graph input, which the frontend refuses on
+    # dtype before validate sees the node at all. Still named, still refused,
+    # just earlier -- pinning the message that actually fires rather than the
+    # one _validate_pad would have given.
+    (dict(pads=[0, 0, 1, 1, 0, 0, 1, 1], runtime_pads=True), "only float32 and float64"),
+])
+def test_pad_refuses_what_its_loop_does_not_compute(tmp_path, kwargs, fragment):
+    from rosenna.validate import validate
+    pads = kwargs.pop("pads")
+    # A negative pad's output shape is smaller, which the helper computes, so
+    # the graph is well-formed and only validate should object.
+    path, _ = _pad_model(tmp_path / "bad.onnx", (1, 2, 4, 5), pads, **kwargs)
+    with pytest.raises(UnsupportedModel, match=fragment):
+        validate(load_graph(path))

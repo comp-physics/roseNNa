@@ -135,6 +135,20 @@ class Softmax:
 
 
 @dataclass(frozen=True)
+class Pad:
+    """Constant-mode Pad: where the input block sits inside the output.
+
+    `begins` is one offset per axis; the emitters loop over the output and
+    read the input where the shifted index is in range, writing `value`
+    everywhere else.
+    """
+    in_shape: tuple
+    out_shape: tuple
+    begins: tuple
+    value: float
+
+
+@dataclass(frozen=True)
 class Broadcast:
     """How a constant operand maps onto the output of an elementwise op.
 
@@ -207,6 +221,8 @@ class Op:
     bcast: Broadcast | None = None
     # Set for kind == "softmax".
     softmax: "Softmax | None" = None
+    # Set for kind == "pad".
+    pad: "Pad | None" = None
     # kind == "concat": the operands are inp (the first runtime one) plus
     # extra_in (the remaining runtime ones) and the weight symbols in
     # concat_syms, interleaved in ONNX input order as concat.consts says.
@@ -433,6 +449,16 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
             act_len = _length(graph.values[node.outputs[0]])
             ops.append(Op(_ACTIVATIONS[node.op], node.outputs[0], node.inputs[0],
                           None, None, act_len, act_len))
+            continue
+        if node.op == "Pad":
+            in_shape = tuple(int(d) for d in graph.values[node.inputs[0]].shape)
+            out_shape = tuple(int(d) for d in graph.values[node.outputs[0]].shape)
+            pads = tuple(int(v) for v in node.attrs["pads"])
+            ops.append(Op("pad", node.outputs[0], node.inputs[0], None, None,
+                          _length(graph.values[node.inputs[0]]),
+                          _length(graph.values[node.outputs[0]]),
+                          pad=Pad(in_shape, out_shape, pads[:len(in_shape)],
+                                  float(node.attrs.get("value", 0.0)))))
             continue
         if node.op == "Softmax":
             shape = tuple(int(d) for d in graph.values[node.outputs[0]].shape)

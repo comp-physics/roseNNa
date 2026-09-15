@@ -6,7 +6,7 @@ from .frontend import Graph, UnsupportedModel
 # relabelling ops plan.py turns into buffer aliases. Everything here is
 # lowered by plan.py into explicit loop nests over flat buffers; an op that is
 # not here is refused by name rather than silently mis-lowered.
-SUPPORTED = {"Gemm", "MatMul", "Relu", "Tanh", "Sigmoid", "Softmax",
+SUPPORTED = {"Gemm", "MatMul", "Relu", "Tanh", "Sigmoid", "Softmax", "Pad",
              "Conv", "MaxPool", "AveragePool", "Add", "Transpose", "LSTM", "Concat",
              # Relabelling ops: fold.resolve_shape_ops deletes these outright
              # unless one produces the graph output, where it becomes a copy.
@@ -52,6 +52,8 @@ def validate(graph: Graph) -> None:
                     f"{rhs.ndim}; only rank 2 is supported")
         if node.op == "Softmax":
             _validate_softmax(graph, node)
+        if node.op == "Pad":
+            _validate_pad(graph, node)
         if node.op == "Add":
             _validate_add(graph, node)
         if node.op == "Concat":
@@ -141,6 +143,47 @@ def _validate_softmax(graph: Graph, node) -> None:
         raise UnsupportedModel(
             f"{where}: Softmax axis={axis} normalises axis {resolved} of a rank-{rank} "
             f"input; only the last axis is supported")
+
+
+def _validate_pad(graph: Graph, node) -> None:
+    """Constant-mode Pad with non-negative, constant pads.
+
+    fold.absorb_pad_inputs has already moved the operand form into attributes,
+    so a Pad still carrying them is one whose pads are computed at runtime --
+    which this generator cannot turn into literal loop bounds.
+    """
+    where = f"node '{node.name}'"
+    x, out = graph.values.get(node.inputs[0]), graph.values.get(node.outputs[0])
+    if x is None or out is None:
+        raise UnsupportedModel(f"{where}: Pad operands must have inferred shapes")
+    if len(node.inputs) > 1:
+        raise UnsupportedModel(
+            f"{where}: Pad needs constant pads; '{node.inputs[1]}' is computed at runtime "
+            f"(or an `axes` operand is present, which is not supported)")
+    mode = node.attrs.get("mode", "constant")
+    if isinstance(mode, bytes):
+        mode = mode.decode()
+    if mode != "constant":
+        raise UnsupportedModel(
+            f"{where}: Pad mode='{mode}' is not supported; only 'constant'")
+    pads = node.attrs.get("pads")
+    if pads is None:
+        raise UnsupportedModel(f"{where}: Pad needs pads")
+    rank = len(x.shape)
+    if len(pads) != 2 * rank:
+        raise UnsupportedModel(
+            f"{where}: pads has {len(pads)} entries for a rank-{rank} input; expected {2 * rank}")
+    if any(int(v) < 0 for v in pads):
+        # A negative pad is a crop. The loop nest below only ever writes the
+        # output and reads inside the input, so a crop would silently become a
+        # no-op on that axis rather than removing anything.
+        raise UnsupportedModel(f"{where}: negative pads (a crop) are not supported: {tuple(pads)}")
+    for axis, (i, o) in enumerate(zip(x.shape, out.shape)):
+        if int(i) + int(pads[axis]) + int(pads[axis + rank]) != int(o):
+            raise UnsupportedModel(
+                f"{where}: axis {axis} is {i} padded by ({pads[axis]}, {pads[axis + rank]}), "
+                f"which is {int(i) + int(pads[axis]) + int(pads[axis + rank])}, but the output "
+                f"says {o}")
 
 
 def _validate_spatial(graph: Graph, node) -> None:

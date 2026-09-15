@@ -253,6 +253,50 @@ def fold_batchnorm(graph):
     return Graph(graph.name, nodes, values, inits, graph.inputs, graph.outputs)
 
 
+def absorb_pad_inputs(graph):
+    """Move a Pad's constant `pads`/`constant_value` operands into its attributes.
+
+    ONNX moved these from attributes (opset 2) to inputs (opset 11), and the
+    input form is a problem here for a reason that has nothing to do with Pad:
+    `pads` is an int64 tensor, and validate.py refuses any initializer that is
+    not floating-point, because everything that survives to the emitters gets
+    laid out as a weight. Normalising back to attributes means plan.py reads
+    literal integers -- as it already does for auto_pad -- and the int64 array
+    never reaches the layout pass at all.
+
+    A Pad whose operands are not constant is left alone, and validate.py
+    refuses it by name.
+    """
+    from .frontend import Graph, Node
+    inits = graph.initializers
+    nodes, changed = [], False
+    for n in graph.nodes:
+        if n.op != "Pad" or len(n.inputs) < 2 or n.inputs[1] not in inits:
+            nodes.append(n)
+            continue
+        attrs = dict(n.attrs)
+        attrs["pads"] = tuple(int(v) for v in np.asarray(inits[n.inputs[1]]).ravel())
+        if len(n.inputs) > 2 and n.inputs[2]:
+            if n.inputs[2] not in inits:
+                nodes.append(n)
+                continue
+            attrs["value"] = float(np.asarray(inits[n.inputs[2]]).ravel()[0])
+        # A third operand (axes, opset 18) is deliberately not absorbed: it
+        # would change which axes `pads` counts, so leaving it makes
+        # validate.py refuse the node rather than mis-read it.
+        if len(n.inputs) > 3 and n.inputs[3]:
+            nodes.append(n)
+            continue
+        nodes.append(Node(n.op, n.name, n.inputs[:1], n.outputs, attrs))
+        changed = True
+    if not changed:
+        return graph
+    used = {i for n in nodes for i in n.inputs if i} | set(graph.outputs)
+    return Graph(graph.name, tuple(nodes), graph.values,
+                 {k: v for k, v in graph.initializers.items() if k in used},
+                 graph.inputs, graph.outputs)
+
+
 # Shape ops that only relabel axes: on a flat row-major buffer the bytes are
 # unchanged, so the value they "produce" is the value they were given. They are
 # NOT removed from the graph -- a later Transpose's perm counts axes, so the

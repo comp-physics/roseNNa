@@ -471,7 +471,7 @@ def _emit_infer(plan: Plan) -> list:
         ("cnt", any(_avgpool_needs_count(op) for op in plan.ops)),
         ("lt, lb, lk", "lstm" in kinds),
         (", ".join(f"c{k}" for k in range(_max_counter_rank(plan))),
-         bool(kinds & {"add", "transpose"}))) if used]
+         bool(kinds & {"add", "transpose", "pad"}))) if used]
     if loop_vars:
         lines.append("        integer :: " + ", ".join(loop_vars))
     gemms = [op for op in plan.ops if op.kind == "gemm"]
@@ -541,6 +541,8 @@ def _emit_infer(plan: Plan) -> list:
             lines.append(f"        do i = 1, {op.n_out}")
             lines.append(f"            {dst}({doff}i) = {src}({soff}i)")
             lines.append("        end do")
+        elif op.kind == "pad":
+            lines += _emit_pad_f(op, plan.assignment[op.out], plan.assignment[op.inp])
         elif op.kind == "softmax":
             lines += _emit_softmax_f(op, plan.assignment[op.out], plan.assignment[op.inp])
         elif op.kind in ("conv", "maxpool", "avgpool"):
@@ -557,6 +559,37 @@ def _emit_infer(plan: Plan) -> list:
     lines.append("    end subroutine")
     lines.append("")
     return lines
+
+
+def _emit_pad_f(op, dst: str, src: str) -> list:
+    """The Fortran twin of _emit_pad_c: same nest, same bounds, 1-based subscripts."""
+    pd = op.pad
+    names = [f"c{k}" for k in range(len(pd.out_shape))]
+    shifted, checks = [], []
+    for k, (nm, b) in enumerate(zip(names, pd.begins)):
+        if b == 0 and pd.in_shape[k] == pd.out_shape[k]:
+            shifted.append(nm)
+            continue
+        expr = f"({nm} - {b})" if b else nm
+        shifted.append(expr)
+        if b:
+            checks.append(f"{expr} >= 0")
+        checks.append(f"{expr} < {pd.in_shape[k]}")
+    L = []
+    for nm, extent in zip(names, pd.out_shape):
+        L.append(f"        do {nm} = 0, {extent - 1}")
+    out_idx = _flat_index_f(names, pd.out_shape)
+    in_idx = _flat_index_f(shifted, pd.in_shape)
+    if checks:
+        L.append(f"            if ({' .and. '.join(checks)}) then")
+        L.append(f"                {dst}({out_idx}) = {src}({in_idx})")
+        L.append("            else")
+        L.append(f"                {dst}({out_idx}) = {pd.value!r}_wp")
+        L.append("            end if")
+    else:
+        L.append(f"            {dst}({out_idx}) = {src}({in_idx})")
+    L += ["        end do"] * len(names)
+    return L
 
 
 def _emit_softmax_f(op, dst: str, src: str) -> list:
@@ -599,8 +632,10 @@ def _flat_index_f(names, shape):
 
 def _max_counter_rank(plan) -> int:
     """How many c-counters the widest Add or Transpose nest in this model needs."""
-    return max((len(op.bcast.out_shape) if op.kind == "add" else len(op.out_shape)
-                for op in plan.ops if op.kind in ("add", "transpose")), default=0)
+    return max((len(op.bcast.out_shape) if op.kind == "add"
+                else len(op.pad.out_shape) if op.kind == "pad"
+                else len(op.out_shape)
+                for op in plan.ops if op.kind in ("add", "transpose", "pad")), default=0)
 
 
 def _emit_concat_f(op, dst, runtime_names):
