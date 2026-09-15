@@ -981,13 +981,14 @@ def _emit_lstm_c(op, ctype, act, dst, src, h0, c0, wsym, rsym, bsym, outs, zero)
           f"            const {ctype} cn = gf * {c}[b * {H} + j] + gi * gc;",
           f"            {c}[b * {H} + j] = cn;",
           f"            {h}[b * {H} + j] = go * {act['tanh'].format(v='cn')};",
-          f"            {dst}[(t * {B} + b) * {H} + j] = {h}[b * {H} + j];",
+          *([f"            {dst}[(t * {B} + b) * {H} + j] = {h}[b * {H} + j];"]
+            if sp.emit_y else []),
           "        }",
           "    }"]
-    if len(outs) >= 1:
-        L.append(f"    for (int i = 0; i < {B * H}; ++i) {outs[0]}[i] = {h}[i];")
-    if len(outs) >= 2:
-        L.append(f"    for (int i = 0; i < {B * H}; ++i) {outs[1]}[i] = {c}[i];")
+    # outs is positional: [0] is Y_h and [1] is Y_c, "" for one nothing reads.
+    for sym, state in zip(outs, (h, c)):
+        if sym:
+            L.append(f"    for (int i = 0; i < {B * H}; ++i) {sym}[i] = {state}[i];")
     return L
 
 
@@ -1197,14 +1198,14 @@ def _emit_op_sequence(plan: Plan, ctype: str) -> list:
     for op in plan.ops:
         if op.kind == "alias":
             continue
-        dst, src = plan.assignment[op.out], plan.assignment[op.inp]
+        dst, src = plan.assignment.get(op.out), plan.assignment[op.inp]
         if op.kind == "lstm":
             h0, c0 = lstm_initial_state(op, lambda sym: _weight_ref(plan, m, sym), plan.assignment)
             lines += _emit_lstm_c(
                 op, ctype, act, dst, src, h0, c0,
                 _weight_ref(plan, m, op.weight), _weight_ref(plan, m, op.weight2),
                 _weight_ref(plan, m, op.bias) if op.bias else None,
-                [plan.assignment[o] for o in op.outs], _ZERO[plan.dtype])
+                [plan.assignment[o] if o else "" for o in op.outs], _ZERO[plan.dtype])
             continue
         if op.kind == "gemm":
             weight_by_symbol = {w.symbol: w for w in plan.weights}

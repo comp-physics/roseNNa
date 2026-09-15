@@ -27,6 +27,7 @@ from tests.test_emit_fortran import _build_and_run as _f_build_and_run
 from tests.test_emit_fortran import _live_reference
 
 DENSE = ["gemm_small", "gemm_big", "gemm_nobias", "droplet", "batchnet"]
+from tests.test_golden_suite import GOLDEN as GOLDEN_NAMES
 
 # A PyTorch export names its initializers after the dotted module path, which
 # routinely runs past the 128-character buffer both emitters used to declare.
@@ -297,7 +298,7 @@ def test_truncated_weights_file_returns_a_status(tmp_path, golden_model, lang):
 
 
 def _compile_warnings(tmp_path, onnx_path, name, dtype="f64"):
-    plan = build_plan(load_graph(onnx_path), dtype=dtype)
+    plan = build_plan(load_graph(onnx_path, name), dtype=dtype)
     work = tmp_path / f"{name}_{dtype}"
     work.mkdir(exist_ok=True)
     (work / f"{name}_model.F90").write_text(emit_fortran(plan))
@@ -325,6 +326,19 @@ def test_weight_free_model_compiles_without_warnings(tmp_path):
 @pytest.mark.parametrize("dtype", ["f32", "f64"])
 def test_dense_models_compile_without_warnings(tmp_path, golden_model, name, dtype):
     f_err, c_err = _compile_warnings(tmp_path, golden_model(name), name, dtype=dtype)
+    _assert_warning_free("gfortran", f_err)
+    _assert_warning_free("gcc", c_err)
+
+
+# Every golden model, not just the dense ones. The dense-only list above dated
+# from when dense was all the generator emitted, and it quietly stopped being
+# "the generated code" once Conv, pooling, LSTM and the shape ops landed: the
+# LSTM emitter was writing buffers for outputs the model never reads, and gcc
+# reported it in every CI run that never compiled an LSTM model.
+@pytest.mark.parametrize("name", GOLDEN_NAMES)
+def test_every_golden_model_compiles_without_warnings(tmp_path, golden_model, name):
+    safe = re.sub(r"[^0-9A-Za-z_]", "_", name)
+    f_err, c_err = _compile_warnings(tmp_path, golden_model(name), safe)
     _assert_warning_free("gfortran", f_err)
     _assert_warning_free("gcc", c_err)
 

@@ -523,15 +523,15 @@ def _emit_infer(plan: Plan) -> list:
         elif op.kind == "lstm":
             h0, c0 = lstm_initial_state(op, lambda sym: sym, plan.assignment)
             lines += _emit_lstm_f(
-                op, plan.assignment[op.out], plan.assignment[op.inp], h0, c0,
-                [plan.assignment[o] for o in op.outs])
+                op, plan.assignment.get(op.out), plan.assignment[op.inp], h0, c0,
+                [plan.assignment[o] if o else "" for o in op.outs])
         elif op.kind == "add":
             lines += _emit_add_f(op, plan.assignment[op.out], plan.assignment[op.inp])
         elif op.kind == "concat":
             lines += _emit_concat_f(op, plan.assignment[op.out],
                                     [plan.assignment[op.inp]] + [plan.assignment[n] for n in op.extra_in])
         elif op.kind == "copy":
-            dst, src = plan.assignment[op.out], plan.assignment[op.inp]
+            dst, src = plan.assignment.get(op.out), plan.assignment[op.inp]
             soff = f"{op.src_offset} + " if op.src_offset else ""
             doff = f"{op.dst_offset} + " if op.dst_offset else ""
             lines.append(f"        do i = 1, {op.n_out}")
@@ -629,14 +629,17 @@ def _emit_lstm_f(op, dst, src, h0, c0, outs):
           f"                lcn = lgf * {c}(lb * {H} + j + 1) + lgi * lgc",
           f"                {c}(lb * {H} + j + 1) = lcn",
           f"                {h}(lb * {H} + j + 1) = lgo * {_ACT['tanh'].format(v='lcn')}",
-          f"                {dst}((lt * {B} + lb) * {H} + j + 1) = {h}(lb * {H} + j + 1)",
+          *([f"                {dst}((lt * {B} + lb) * {H} + j + 1) = {h}(lb * {H} + j + 1)"]
+            if sp.emit_y else []),
           "            end do",
           "        end do",
           "        end do"]
-    for k, sym in enumerate(outs):
-        L += [f"        do i = 1, {B * H}",
-              f"            {sym}(i) = " + (h if k == 0 else c) + "(i)",
-              "        end do"]
+    # outs is positional: [0] is Y_h and [1] is Y_c, "" for one nothing reads.
+    for sym, state in zip(outs, (h, c)):
+        if sym:
+            L += [f"        do i = 1, {B * H}",
+                  f"            {sym}(i) = {state}(i)",
+                  "        end do"]
     return L
 
 

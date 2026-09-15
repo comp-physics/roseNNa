@@ -2,7 +2,7 @@
 import hashlib
 import json
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 
 import numpy as np
 
@@ -155,6 +155,9 @@ class Lstm:
     hidden: int
     has_bias: bool
     has_initial: bool
+    # False when nothing reads Y: the recurrence then keeps its state
+    # but never stores the per-timestep output, and Y gets no buffer.
+    emit_y: bool = True
     # Buffer symbols for the carried state and the per-step gate vector.
     h_sym: str = ""
     c_sym: str = ""
@@ -365,6 +368,7 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
     if dtype not in _ITEMSIZE:
         raise UnsupportedModel(f"dtype {dtype} is not supported")
 
+    consumed = {i for n in graph.nodes for i in n.inputs if i} | set(graph.outputs)
     ops, weights, offset, widx = [], [], 0, 0
     by_name = {}
 
@@ -440,7 +444,18 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
                 extra = ()
             else:
                 init_syms, extra = (), states
-            outs = tuple(o for o in node.outputs[1:] if o)
+            # Only the outputs something downstream reads. An LSTM always
+            # produces Y, Y_h and Y_c, and a model typically wants one of
+            # them; carrying the others cost a buffer and a dead copy per
+            # call -- per thread, on a device -- and left the generated code
+            # warning on any compiler asked to look.
+            #
+            # POSITIONAL: index 0 is always Y_h and index 1 always Y_c, and a
+            # dropped one is "" rather than absent. Compacting the tuple moves
+            # Y_c into Y_h's slot, and the emitters copy h into it.
+            tail = tuple(node.outputs[1:3]) + ("",) * (2 - len(node.outputs[1:3]))
+            outs = tuple(o if (o and o in consumed) else "" for o in tail)
+            spec = replace(spec, emit_y=node.outputs[0] in consumed)
             ops.append(Op("lstm", node.outputs[0], node.inputs[0],
                           syms.get("weight"), syms.get("bias"),
                           _length(graph.values[node.inputs[0]]),
@@ -570,6 +585,12 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
                 tuple(weights), embed, n_params)
 
 
+def op_outputs(op) -> tuple:
+    """The values this op actually writes: no dead LSTM Y, no dropped Y_h/Y_c."""
+    head = () if (op.kind == "lstm" and not op.lstm.emit_y) else (op.out,)
+    return head + tuple(o for o in op.outs if o)
+
+
 def _assign_buffers(graph: Graph, ops, flat_in: Tensor, flat_out: Tensor):
     """Give the input and output dedicated buffers; rotate intermediates through a pool.
 
@@ -619,7 +640,7 @@ def _assign_buffers(graph: Graph, ops, flat_in: Tensor, flat_out: Tensor):
             # A gather into y: its destination is y itself (assigned above), and
             # y's length is already the whole concatenated output.
             continue
-        for out in (op.out,) + tuple(op.outs):
+        for out in op_outputs(op):
             if out not in assignment:
                 sym = take(0)
                 assignment[out] = sym
