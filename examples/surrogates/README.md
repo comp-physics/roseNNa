@@ -9,7 +9,7 @@ code structure that forces:
 | [burgers_closure](burgers_closure/) | coarse-grid Burgers | per-cell closure in the flux loop | embedded model, header-inline `infer` from the solver's own offload loop |
 | [reaction_patch](reaction_patch/) | 2-D FitzHugh-Nagumo | the time step, on a 3×3 patch | batched: gather → one `infer_batch` → scatter; file-loaded weights, `init`, an archive for the native backend, `<name>_sync` |
 | [bubble_lstm](bubble_lstm/) | acoustics through bubbles | recurrent model per cell replacing a bubble population | stateful: an LSTM whose `(h, c)` stays on the device; several inputs and outputs concatenated in `x` and `y` |
-| [poisson_guess](poisson_guess/) | periodic Poisson | initial guess for the iterative solve | whole-field: the entire RHS as one input, one call per step; runs on the host, see its README |
+| [poisson_guess](poisson_guess/) | periodic Poisson | initial guess for the iterative solve | whole-field: the entire RHS as one input, one `infer_one` call per step, a launch per layer |
 
 Each runs its reference physics and its surrogate from the same held-out
 initial condition, prints an error and both timings, and exits 0 only if
@@ -35,8 +35,6 @@ explicit-shape dummies, since `amdflang` re-maps an allocatable's
 descriptor on every region entry; `burgers_closure` and `bubble_lstm` are ensembles of 1-D problems,
 because one is too small to occupy a GPU.
 
-Two generator limits show up here and are described where they do: the
-per-thread `infer_batch` kernel reads the whole weight matrix from every
-thread (`reaction_patch`), and a whole-field model's activations do not fit a
-device thread (`poisson_guess`). A batched GEMM kernel and a tiled conv kernel are on the
-TODO list.
+Two things in the generator came out of these examples: register-blocked
+dense layers (`reaction_patch`, 3.4×) and `infer_one`, a launch per layer
+for models whose activations do not fit a thread (`poisson_guess`).

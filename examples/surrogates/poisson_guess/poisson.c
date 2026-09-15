@@ -1,11 +1,11 @@
 /* Periodic Poisson solves with a conv-net initial guess. The whole right-hand
    side, with a 6-cell periodic halo the solver builds, is one model input
-   (NCHW 1 x 1 x 76 x 76); the guess (1 x 1 x 64 x 64) starts a Jacobi solve on
-   the device. Iterations are counted against a zero start and a warm start.
-   The guess runs on the host: the generated infer holds a whole-field model's
-   activations (660 KB here) as locals, more than a device thread's stack, so
-   the solver uploads the 32 KB guess each step. Exits 0 if the NN start takes
-   fewer iterations than the zero start. */
+   (NCHW 1 x 1 x 76 x 76); the guess (1 x 1 x 64 x 64) starts a Jacobi solve.
+   Everything stays on the device: poisson_guess_infer_one runs the model as
+   one launch per layer over device pointers, its activations in static device
+   buffers (the per-point infer would hold the field's 660 KB of activations
+   as locals). Iterations are counted against a zero start and a warm start.
+   Exits 0 if the NN start takes fewer iterations than the zero start. */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,7 +86,7 @@ int main(void) {
     long it_nn = 0, it_zero = 0, it_warm = 0;
     double t_guess = 0.0;
 
-#pragma omp target enter data map(alloc: f[0:N * N], tmp[0:N * N]) \
+#pragma omp target enter data map(alloc: f[0:N * N], tmp[0:N * N], fp[0:NP * NP]) \
                               map(to: phi_nn[0:N * N], phi_zero[0:N * N], phi_warm[0:N * N])
     for (int s = 0; s < NSTEPS; ++s) {
         rhs(f, s);
@@ -94,11 +94,15 @@ int main(void) {
 #pragma omp target update to(f[0:N * N])
 
         const double t0 = omp_get_wtime();
-        for (int i = 0; i < NP; ++i)                           /* periodic halo */
+#pragma omp target teams distribute parallel for collapse(2)  /* periodic halo */
+        for (int i = 0; i < NP; ++i)
             for (int j = 0; j < NP; ++j)
                 fp[i * NP + j] = f[wrap(i - HALO) * N + wrap(j - HALO)];
-        poisson_guess_infer(fp, phi_nn);                       /* the whole field, on the host */
-#pragma omp target update to(phi_nn[0:N * N])
+        int status;
+#pragma omp target data use_device_ptr(fp, phi_nn)
+        status = poisson_guess_infer_one(fp, phi_nn, 0);      /* the whole field, on the device */
+        if (status == 0) status = poisson_guess_sync(0);
+        if (status) { printf("infer_one failed with status %d\n", status); return 3; }
         zero_mean(phi_nn);
         t_guess += omp_get_wtime() - t0;
 
@@ -108,7 +112,7 @@ int main(void) {
         it_zero += jacobi(phi_zero, tmp, f, fnorm);
         it_warm += jacobi(phi_warm, tmp, f, fnorm);
     }
-#pragma omp target exit data map(delete: f[0:N * N], tmp[0:N * N], phi_nn[0:N * N], \
+#pragma omp target exit data map(delete: f[0:N * N], tmp[0:N * N], fp[0:NP * NP], phi_nn[0:N * N], \
                                         phi_zero[0:N * N], phi_warm[0:N * N])
 
     printf("%dx%d periodic Poisson, %d steps of a rotating right-hand side, Jacobi to %.0e:\n",

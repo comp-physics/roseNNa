@@ -193,6 +193,20 @@ just without the constant-cache broadcast -- and the header's own comment
 on `ROSENNA_CONST` states which one a given model got, so check it there if
 a per-grid-point call's throughput is on the critical path.
 
+### Whole-field models: infer_one
+
+`<name>_infer_one(x, y, stream)` runs one sample over device pointers as
+one launch per op, the thread index over the op's output elements, with
+the intermediate activations in static device buffers. It is for a model
+whose activations are too large for a thread's locals -- a conv net over
+a whole field: `infer` would hold 660 KB of locals for a 3-layer, 8-channel
+net on a 64x64 grid, more than a device thread's stack, and for such a
+plan `infer_batch` runs `infer_one` per point. The buffers are shared by
+every call, so calls on different streams must not overlap. Absent when
+the plan has an LSTM (a sequence, not a launch per op). The `omp` archive
+provides it as one target loop per op; Fortran reaches it through
+`<name>_infer_one_dev`. `examples/surrogates/poisson_guess` uses it.
+
 ### No transfers in the loop
 
 `<name>_init` is the plan step and the only routine that allocates or
@@ -520,8 +534,10 @@ a documented patch against a real solver.
   always compiles `<name>.c` and `<name>_kernel.cu` owns every CUDA/HIP
   symbol behind `-DROSENNA_NATIVE_KERNEL`, so one archive serves both paths.
 - The native batched kernel (`ROSENNA_BACKEND=cuda|hip`) launches one thread
-  per point in this release; a fused, tiled batched GEMM is planned once the
-  GPU gate has timed this one.
+  per point. Dense layers at least 96 wide compute 8 output columns per
+  pass over the input vector (`GEMM_BLOCK`), which is what made a
+  128-wide MLP 3.4x faster on an MI210; staging weights in shared memory
+  was measured slower. An LSTM's layers are not blocked.
 - There is no SYCL backend. An Intel GPU is reached through the `omp`
   fallback (`icx`/`ifx` with `-fopenmp -fopenmp-targets=spir64`), not a
   native kernel.

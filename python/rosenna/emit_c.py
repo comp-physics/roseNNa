@@ -1,5 +1,7 @@
 """Render a plan as a self-contained C source/header pair."""
 from .abi import name_capacity, rank_capacity, status_code_comment
+import re
+
 from .plan import Plan, lstm_initial_state
 
 _CTYPE = {"f32": "float", "f64": "double"}
@@ -58,6 +60,22 @@ _DEVICE_PASS_GUARD = (f"#if ({_IS_CUDA} && defined(__CUDA_ARCH__)) || "
 CONSTANT_MEMORY_LIMIT = 2 * 1024
 # The one-thread-per-point kernel's block size (emit_kernel).
 KERNEL_TILE = 128
+# Output columns a dense layer computes per pass over its input vector. Each
+# element of the input is loaded once per pass, so the loads of a per-thread
+# activation vector -- scratch memory on a GPU, and the bound on a kernel
+# with wide layers -- are amortised over GEMM_BLOCK dot products. On an
+# MI210 (reaction_patch, 18-128-128-2) this is 3.2x over one column per
+# pass; staging the weights in shared memory instead was slower than either.
+# A layer narrower than GEMM_BLOCK_MIN_IN keeps one column per pass: there
+# the extra accumulators cost registers and buy little or nothing (gemm_big,
+# 2-40 wide, ran 3x slower blocked at a million points; at 64 wide C gained
+# 10% and Fortran lost 20%; at 128 both gained 3.5x).
+GEMM_BLOCK = 8
+GEMM_BLOCK_MIN_IN = 96
+
+
+def gemm_block(op) -> int:
+    return GEMM_BLOCK if op.n_in >= GEMM_BLOCK_MIN_IN else 1
 # Embedding must be lossless: %.17g round-trips any f64, %.9g any f32
 # (Steele & White / Ryu-style shortest-exact-decimal bounds).
 _EMBED_FMT = {"f32": "%.9g", "f64": "%.17g"}
@@ -317,6 +335,14 @@ def _emit_header(plan: Plan, ctype: str) -> str:
         "   kernel surfaces here). */",
         f"int {m}_sync(void *stream);",
         "",
+        *([f"/* One sample, x and y device-resident as for infer_batch, one launch per op",
+           "   with the thread index over the op's output elements and the intermediate",
+           "   activations in static device buffers: the form for a model over a whole",
+           "   field, whose activations are too large for a thread's locals. The buffers",
+           "   are shared by every call, so calls on different streams must not overlap.",
+           "   Asynchronous like infer_batch; wait with " + m + "_sync. Same return codes. */",
+           f"int {m}_infer_one(const {ctype} *ROSENNA_RESTRICT x, {ctype} *ROSENNA_RESTRICT y, void *stream);",
+           ""] if has_infer_one(plan) else []),
         "#if defined(__cplusplus)",
         "}",
         "#endif",
@@ -384,6 +410,18 @@ def _emit_device_macros(plan: Plan) -> list:
         "#undef ROSENNA_CONST",
         "#undef ROSENNA_RESTRICT",
         "#undef ROSENNA_INFER_HOST_STUB",
+        "#undef ROSENNA_UNROLL",
+        "/* A dense layer's dot-product loop, unrolled where the compiler takes the",
+        "   hint: clang keeps the loop rolled otherwise and each weight load's",
+        "   latency is exposed before its FMA (3x on a small kernel, MI210). nvcc",
+        "   and nvc unroll on their own and get no hint. */",
+        "#if defined(__clang__)",
+        f'#define ROSENNA_UNROLL _Pragma("unroll {GEMM_BLOCK}")',
+        "#elif defined(__GNUC__) && !defined(__NVCOMPILER) && !defined(__NVCC__)",
+        f'#define ROSENNA_UNROLL _Pragma("GCC unroll {GEMM_BLOCK}")',
+        "#else",
+        "#define ROSENNA_UNROLL",
+        "#endif",
         _CUDA_GUARD,
         "#define ROSENNA_DEVICE_FN __host__ __device__",
         f"#define ROSENNA_CONST {const_qual}",
@@ -563,6 +601,7 @@ def _emit_device_region(plan: Plan, ctype: str) -> list:
         lines += _emit_embedded_weights(plan, ctype)
     lines += ["#ifdef _OPENACC", "#pragma acc routine seq", "#endif"]
     lines += _emit_infer(plan, ctype)
+    lines += _emit_elem_functions(plan, ctype)
     lines += ["#ifdef _OPENMP", "#pragma omp end declare target", "#endif", ""]
     return lines
 
@@ -702,23 +741,55 @@ def _emit_fallback_infer_batch(plan: Plan, ctype: str) -> list:
         f"int {m}_infer_batch(int n, const {ctype} *ROSENNA_RESTRICT x, {ctype} *ROSENNA_RESTRICT y, void *stream) {{",
         "    (void)stream;",
         "    if (n <= 0) return 0;",
-        "#if defined(_OPENMP)",
-        "#pragma omp target teams distribute parallel for is_device_ptr(x, y)",
-        "#elif defined(_OPENACC)",
-        "#pragma acc parallel loop deviceptr(x, y)",
-        "#endif",
-        f"    for (int p = 0; p < n; ++p) {m}_infer(x + (size_t)p * {n_in}, y + (size_t)p * {n_out});",
-        "    return 0;",
-        "}",
+        *([f"    /* {m}_infer's locals exceed a device thread's stack: one sample at a time,",
+           "       each a launch per op over the static buffers. */",
+           "    int status = 0;",
+           f"    for (int p = 0; p < n && status == 0; ++p)",
+           f"        status = {m}_infer_one(x + (size_t)p * {n_in}, y + (size_t)p * {n_out}, stream);",
+           "    return status;",
+           "}"] if large_locals(plan) else [
+           "#if defined(_OPENMP)",
+           "#pragma omp target teams distribute parallel for is_device_ptr(x, y)",
+           "#elif defined(_OPENACC)",
+           "#pragma acc parallel loop deviceptr(x, y)",
+           "#endif",
+           f"    for (int p = 0; p < n; ++p) {m}_infer(x + (size_t)p * {n_in}, y + (size_t)p * {n_out});",
+           "    return 0;",
+           "}"]),
         "",
         "/* The loop above is synchronous, so there is nothing to wait for. */",
         f"int {m}_sync(void *stream) {{",
         "    (void)stream;",
         "    return 0;",
         "}",
+        *_emit_fallback_infer_one(plan, ctype),
         "#endif",
         "",
     ]
+
+
+def _emit_fallback_infer_one(plan: Plan, ctype: str) -> list:
+    """infer_one for the omp backend: one target loop per op over static declare-target buffers."""
+    if not has_infer_one(plan):
+        return []
+    m = plan.model
+    lines = ["", "/* infer_one's activations: device-resident globals, not a thread's locals. */"]
+    lines += _omp_declare_target_begin()
+    lines += [f"static {ctype} {field_buffer(m, sym)}[{plan.buffers[sym]}];" for sym in scratch_symbols(plan)]
+    lines += _omp_declare_target_end()
+    lines += [f"int {m}_infer_one(const {ctype} *ROSENNA_RESTRICT x, {ctype} *ROSENNA_RESTRICT y, void *stream) {{",
+              "    (void)stream;"]
+    for k, op in enumerate(plan.ops):
+        if op.kind == "alias":
+            continue
+        lines += ["#if defined(_OPENMP)",
+                  "#pragma omp target teams distribute parallel for is_device_ptr(x, y)",
+                  "#elif defined(_OPENACC)",
+                  "#pragma acc parallel loop deviceptr(x, y)",
+                  "#endif",
+                  f"    for (int e = 0; e < {elem_length(op)}; ++e) {elem_call(plan, k, op)};"]
+    lines += ["    return 0;", "}"]
+    return lines
 
 
 def _emit_load(plan: Plan) -> list:
@@ -837,6 +908,27 @@ def _emit_init(plan: Plan) -> list:
     return lines
 
 
+def _nest(loops, body, indent="    "):
+    """Wrap body lines in for-loops over `loops`, a list of (counter, extent)."""
+    L = []
+    for k, (nm, ext) in enumerate(loops):
+        tail = " {" if k == len(loops) - 1 else ""
+        L.append(f"{indent}for (int {nm} = 0; {nm} < {ext}; ++{nm}){tail}")
+    L += [indent + "    " + b for b in body]
+    L.append(indent + "}")
+    return L
+
+
+def _decode(loops, body, indent="    "):
+    """Recover the counters of `loops` from the flat row-major element index e, then the body."""
+    L = [f"{indent}int rem = e;"]
+    for nm, ext in reversed(loops):
+        L.append(f"{indent}const int {nm} = rem % {ext}; rem /= {ext};")
+    L.append(f"{indent}(void)rem;")
+    L += [indent + b for b in body]
+    return L
+
+
 def _flat_index(names, shape, base=""):
     """Row-major flat index from per-axis counters, as a C/Fortran expression."""
     expr = names[0]
@@ -852,15 +944,9 @@ def _emit_transpose_c(op, dst, src):
     turns the rest into buffer aliases, since those move no bytes.
     """
     names = [f"c{k}" for k in range(len(op.out_shape))]
-    L = []
-    for k, (nm, ext) in enumerate(zip(names, op.out_shape)):
-        tail = " {" if k == len(names) - 1 else ""
-        L.append(f"    for (int {nm} = 0; {nm} < {ext}; ++{nm}){tail}")
     terms = [nm if st == 1 else f"{nm} * {st}" for nm, st in zip(names, op.perm_strides) if st]
-    L.append(f"        {dst}[{_flat_index(names, op.out_shape)}] = "
-             f"{src}[{' + '.join(terms) if terms else '0'}];")
-    L.append("    }")
-    return L
+    body = [f"{dst}[{_flat_index(names, op.out_shape)}] = {src}[{' + '.join(terms) if terms else '0'}];"]
+    return list(zip(names, op.out_shape)), body
 
 
 def _emit_lstm_c(op, ctype, act, dst, src, h0, c0, wsym, rsym, bsym, outs, zero):
@@ -914,18 +1000,16 @@ def _concat_sources(op, runtime_names, const_names) -> list:
 
 
 def _emit_concat_c(op, dst, runtime_names, const_names):
-    """Concat along an axis: for each outer index, the operands' blocks end to end."""
+    """Concat along an axis: output element (o, i) comes from the operand whose block holds i."""
     cc = op.concat
     srcs = _concat_sources(op, runtime_names, const_names)
     row = sum(cc.blocks)
-    L = [f"    for (int o = 0; o < {cc.outer}; ++o) {{"]
-    off = 0
-    for name, block in srcs:
-        L.append(f"        for (int i = 0; i < {block}; ++i) "
-                 f"{dst}[o * {row} + {off} + i] = {name}[o * {block} + i];")
+    body, off = [], 0
+    for k, (name, block) in enumerate(srcs):
+        cond = f"{'if' if k == 0 else 'else if'} (i < {off + block})" if k < len(srcs) - 1 else "else"
+        body.append(f"{cond} {dst}[o * {row} + i] = {name}[o * {block} + i - {off}];")
         off += block
-    L.append("    }")
-    return L
+    return [("o", cc.outer), ("i", row)], body
 
 
 def _emit_add_c(op, dst, src, wsym):
@@ -937,16 +1021,10 @@ def _emit_add_c(op, dst, src, wsym):
     """
     bc = op.bcast
     names = [f"c{k}" for k in range(len(bc.out_shape))]
-    L = []
-    for k, (nm, ext) in enumerate(zip(names, bc.out_shape)):
-        tail = " {" if k == len(names) - 1 else ""
-        L.append(f"    for (int {nm} = 0; {nm} < {ext}; ++{nm}){tail}")
     flat = _flat_index(names, bc.out_shape)
     terms = [nm if st == 1 else f"{nm} * {st}" for nm, st in zip(names, bc.strides) if st]
     widx = " + ".join(terms) if terms else "0"
-    L.append(f"        {dst}[{flat}] = {src}[{flat}] + {wsym}[{widx}];")
-    L.append("    }")
-    return L
+    return list(zip(names, bc.out_shape)), [f"{dst}[{flat}] = {src}[{flat}] + {wsym}[{widx}];"]
 
 
 def _emit_spatial_c(op, ctype, dst, src, weight_sym, bias_sym, zero):
@@ -966,63 +1044,249 @@ def _emit_spatial_c(op, ctype, dst, src, weight_sym, bias_sym, zero):
     L = []
     idx_in = f"((n * {sp.c_in} + ic) * {sp.h_in} + ih) * {sp.w_in} + iw"
     idx_out = f"((n * {sp.c_out} + oc) * {sp.h_out} + oh) * {sp.w_out} + ow"
-    L.append(f"    for (int n = 0; n < {sp.n}; ++n)")
-    L.append(f"    for (int oc = 0; oc < {sp.c_out}; ++oc)")
-    L.append(f"    for (int oh = 0; oh < {sp.h_out}; ++oh)")
-    L.append(f"    for (int ow = 0; ow < {sp.w_out}; ++ow) {{")
+    loops = [("n", sp.n), ("oc", sp.c_out), ("oh", sp.h_out), ("ow", sp.w_out)]
 
     if op.kind == "conv":
-        L.append(f"        {ctype} acc = {zero};")
-        L.append(f"        for (int ic = 0; ic < {sp.c_in}; ++ic)")
+        L.append(f"{ctype} acc = {zero};")
+        L.append(f"for (int ic = 0; ic < {sp.c_in}; ++ic)")
     elif op.kind == "maxpool":
         # The first in-range cell seeds the running maximum; `seen` makes that
         # independent of any sentinel value, so a window of all -inf inputs
         # still yields -inf rather than a made-up number.
-        L.append(f"        {ctype} best = {zero};")
-        L.append("        int seen = 0;")
-        L.append("        const int ic = oc;")
+        L.append(f"{ctype} best = {zero};")
+        L.append("int seen = 0;")
+        L.append("const int ic = oc;")
     else:
-        L.append(f"        {ctype} acc = {zero};")
-        L.append("        int cnt = 0;")
-        L.append("        const int ic = oc;")
+        L.append(f"{ctype} acc = {zero};")
+        L.append("int cnt = 0;")
+        L.append("const int ic = oc;")
 
-    L.append(f"        for (int kh = 0; kh < {sp.kh}; ++kh)")
-    L.append(f"        for (int kw = 0; kw < {sp.kw}; ++kw) {{")
-    L.append(f"            const int ih = oh * {sp.sh} - {sp.ph} + kh * {sp.dh};")
-    L.append(f"            const int iw = ow * {sp.sw} - {sp.pw} + kw * {sp.dw};")
-    L.append(f"            if (ih < 0 || ih >= {sp.h_in} || iw < 0 || iw >= {sp.w_in}) continue;")
+    L.append(f"for (int kh = 0; kh < {sp.kh}; ++kh)")
+    L.append(f"for (int kw = 0; kw < {sp.kw}; ++kw) {{")
+    L.append(f"    const int ih = oh * {sp.sh} - {sp.ph} + kh * {sp.dh};")
+    L.append(f"    const int iw = ow * {sp.sw} - {sp.pw} + kw * {sp.dw};")
+    L.append(f"    if (ih < 0 || ih >= {sp.h_in} || iw < 0 || iw >= {sp.w_in}) continue;")
     if op.kind == "conv":
         widx = f"((oc * {sp.c_in} + ic) * {sp.kh} + kh) * {sp.kw} + kw"
-        L.append(f"            acc += {src}[{idx_in}] * {weight_sym}[{widx}];")
-        L.append("        }")
+        L.append(f"    acc += {src}[{idx_in}] * {weight_sym}[{widx}];")
+        L.append("}")
     elif op.kind == "maxpool":
-        L.append(f"            const {ctype} v = {src}[{idx_in}];")
+        L.append(f"    const {ctype} v = {src}[{idx_in}];")
         # !(v <= best), not (v > best): a NaN loses every comparison, so the
         # naive form drops it. This library is linked into solvers where a NaN
         # out of a diverged run is the signal, so it has to survive a pool.
-        L.append("            if (!seen || !(v <= best)) { best = v; seen = 1; }")
-        L.append("        }")
+        L.append("    if (!seen || !(v <= best)) { best = v; seen = 1; }")
+        L.append("}")
     else:
-        L.append(f"            acc += {src}[{idx_in}];")
-        L.append("            ++cnt;")
-        L.append("        }")
+        L.append(f"    acc += {src}[{idx_in}];")
+        L.append("    ++cnt;")
+        L.append("}")
 
     if op.kind == "conv":
         if bias_sym:
-            L.append(f"        acc += {bias_sym}[oc];")
-        L.append(f"        {dst}[{idx_out}] = acc;")
+            L.append(f"acc += {bias_sym}[oc];")
+        L.append(f"{dst}[{idx_out}] = acc;")
     elif op.kind == "maxpool":
-        L.append(f"        {dst}[{idx_out}] = best;")
+        L.append(f"{dst}[{idx_out}] = best;")
     else:
         full = sp.kh * sp.kw
         if sp.every_window_is_inside or sp.count_include_pad:
             # No pad cell can fall in a window, or the caller asked for the
             # full-kernel divisor: a literal either way.
-            L.append(f"        {dst}[{idx_out}] = acc / ({ctype}){full};")
+            L.append(f"{dst}[{idx_out}] = acc / ({ctype}){full};")
         else:
-            L.append(f"        {dst}[{idx_out}] = cnt ? acc / ({ctype})cnt : {zero};")
-    L.append("    }")
+            L.append(f"{dst}[{idx_out}] = cnt ? acc / ({ctype})cnt : {zero};")
+    return loops, L
+
+
+def _emit_gemm_c(op, ctype, dst, src, weight_sym, idx_expr, bias_sym, zero):
+    """A dense layer: output (r, i) is the dot product of input row r with weight column i.
+
+    The bias is added AFTER the dot product, not used to seed the
+    accumulator. Seeding it from a declare-target array is what makes nvc
+    refuse to generate a `distribute parallel for` body (it emits a kernel
+    that traps); adding it afterwards compiles, and unlocks a ~19x faster
+    per-point offload loop. See examples/nvhpc_teams_mapping/. emit_fortran
+    does the same, so the two backends stay bit-comparable. `r` indexes
+    independent rows sharing one weight (1 for a dense per-point model); it
+    is only emitted when there is more than one.
+    """
+    ri, ro = (f"r * {op.n_in} + ", f"r * {op.n_out} + ") if op.rows > 1 else ("", "")
+    loops = ([("r", op.rows)] if op.rows > 1 else []) + [("i", op.n_out)]
+    body = [f"{ctype} acc = {zero};",
+            f"for (int j = 0; j < {op.n_in}; ++j) acc += {src}[{ri}j] * {weight_sym}[{idx_expr}];"]
+    if bias_sym:
+        body.append(f"acc += {bias_sym}[i];")
+    body.append(f"{dst}[{ro}i] = acc;")
+    return loops, body
+
+
+def _emit_gemm_blocked_c(op, ctype, dst, src, weight_sym, idx_expr, bias_sym, zero, block=None):
+    """The nested-loop form of a dense layer, `block` output columns per pass over the input."""
+    block = block or gemm_block(op)
+    ri, ro = (f"r * {op.n_in} + ", f"r * {op.n_out} + ") if op.rows > 1 else ("", "")
+    col = lambda k: re.sub(r"\bi\b", f"(i + {k})", idx_expr)
+    L = []
+    if op.rows > 1:
+        L.append(f"    for (int r = 0; r < {op.rows}; ++r) {{")
+    ind = "        " if op.rows > 1 else "    "
+    full = (op.n_out // block) * block if block > 1 else 0
+    if full:
+        L += [f"{ind}for (int i = 0; i < {full}; i += {block}) {{",
+              f"{ind}    {ctype} " + ", ".join(f"a{k} = {zero}" for k in range(block)) + ";",
+              f"{ind}    ROSENNA_UNROLL",
+              f"{ind}    for (int j = 0; j < {op.n_in}; ++j) {{",
+              f"{ind}        const {ctype} sj = {src}[{ri}j];",
+              *[f"{ind}        a{k} += sj * {weight_sym}[{col(k)}];" for k in range(block)],
+              f"{ind}    }}",
+              *[f"{ind}    {dst}[{ro}i + {k}] = a{k}" + (f" + {bias_sym}[i + {k}];" if bias_sym else ";")
+                for k in range(block)],
+              f"{ind}}}"]
+    if full < op.n_out:
+        L += [f"{ind}for (int i = {full}; i < {op.n_out}; ++i) {{",
+              f"{ind}    {ctype} acc = {zero};",
+              f"{ind}    for (int j = 0; j < {op.n_in}; ++j) acc += {src}[{ri}j] * {weight_sym}[{idx_expr}];",
+              f"{ind}    {dst}[{ro}i] = acc" + (f" + {bias_sym}[i];" if bias_sym else ";"),
+              f"{ind}}}"]
+    if op.rows > 1:
+        L.append("    }")
     return L
+
+
+def _op_pieces(plan: Plan, ctype: str, op, dst, src, extra_srcs=None):
+    """(loops, body) for one op, or None for an alias / an LSTM (which has no per-element form).
+
+    `dst`/`src` are the array names the body reads and writes; `extra_srcs`
+    names a Concat's further runtime operands.
+    """
+    m = plan.model
+    act = _ACT_C[plan.dtype]
+    zero = _ZERO[plan.dtype]
+    weight_by_symbol = {w.symbol: w for w in plan.weights}
+    if op.kind == "gemm":
+        return _emit_gemm_c(op, ctype, dst, src, _weight_ref(plan, m, op.weight),
+                            _weight_index_c(weight_by_symbol, op),
+                            _weight_ref(plan, m, op.bias) if op.bias else None, zero)
+    if op.kind == "transpose":
+        return _emit_transpose_c(op, dst, src)
+    if op.kind == "add":
+        return _emit_add_c(op, dst, src, _weight_ref(plan, m, op.weight))
+    if op.kind == "concat":
+        return _emit_concat_c(op, dst, [src] + list(extra_srcs or []),
+                              [_weight_ref(plan, m, sym) for sym in op.concat_syms])
+    if op.kind == "copy":
+        soff = f"{op.src_offset} + " if op.src_offset else ""
+        doff = f"{op.dst_offset} + " if op.dst_offset else ""
+        return [("i", op.n_out)], [f"{dst}[{doff}i] = {src}[{soff}i];"]
+    if op.kind in ("conv", "maxpool", "avgpool"):
+        return _emit_spatial_c(op, ctype, dst, src,
+                               _weight_ref(plan, m, op.weight) if op.weight else None,
+                               _weight_ref(plan, m, op.bias) if op.bias else None, zero)
+    if op.kind in act:
+        return [("i", op.n_out)], [f"{dst}[i] = {act[op.kind].format(v=f'{src}[i]')};"]
+    if op.kind in ("alias", "lstm"):
+        return None
+    raise AssertionError(f"unhandled op kind {op.kind!r}")
+
+
+def _emit_op_sequence(plan: Plan, ctype: str) -> list:
+    """The op sequence over plan.assignment's buffers, as infer runs it."""
+    m = plan.model
+    act = _ACT_C[plan.dtype]
+    lines = []
+    for op in plan.ops:
+        if op.kind == "alias":
+            continue
+        dst, src = plan.assignment[op.out], plan.assignment[op.inp]
+        if op.kind == "lstm":
+            h0, c0 = lstm_initial_state(op, lambda sym: _weight_ref(plan, m, sym), plan.assignment)
+            lines += _emit_lstm_c(
+                op, ctype, act, dst, src, h0, c0,
+                _weight_ref(plan, m, op.weight), _weight_ref(plan, m, op.weight2),
+                _weight_ref(plan, m, op.bias) if op.bias else None,
+                [plan.assignment[o] for o in op.outs], _ZERO[plan.dtype])
+            continue
+        if op.kind == "gemm":
+            weight_by_symbol = {w.symbol: w for w in plan.weights}
+            lines += _emit_gemm_blocked_c(op, ctype, dst, src, _weight_ref(plan, m, op.weight),
+                                          _weight_index_c(weight_by_symbol, op),
+                                          _weight_ref(plan, m, op.bias) if op.bias else None,
+                                          _ZERO[plan.dtype])
+            continue
+        loops, body = _op_pieces(plan, ctype, op, dst, src, [plan.assignment[n] for n in op.extra_in])
+        lines += _nest(loops, body)
+    return lines
+
+
+def has_infer_one(plan: Plan) -> bool:
+    """infer_one runs one op per launch; an LSTM is a sequence, so a plan with one has no infer_one."""
+    return not any(op.kind == "lstm" for op in plan.ops)
+
+
+def _elem_fn(model: str, k: int) -> str:
+    return f"{model}_op{k}"
+
+
+def _elem_params(op, ctype: str) -> str:
+    extra = "".join(f", const {ctype} *ROSENNA_RESTRICT s{j + 1}" for j in range(len(op.extra_in)))
+    return f"int e, const {ctype} *ROSENNA_RESTRICT src, {ctype} *ROSENNA_RESTRICT dst{extra}"
+
+
+def _emit_elem_functions(plan: Plan, ctype: str) -> list:
+    """One device-decorated function per op computing output element e: what infer_one launches over."""
+    if not has_infer_one(plan):
+        return []
+    m = plan.model
+    lines = [f"/* {m}_infer_one runs one op per launch, the thread index over the op's output",
+             "   elements, through these; the same op bodies infer runs in nested loops. */"]
+    for k, op in enumerate(plan.ops):
+        if op.kind == "alias":
+            continue
+        pieces = _op_pieces(plan, ctype, op, "dst", "src", [f"s{j + 1}" for j in range(len(op.extra_in))])
+        lines.append(f"static inline ROSENNA_DEVICE_FN void {_elem_fn(m, k)}({_elem_params(op, ctype)}) {{")
+        if plan.embed:
+            lines += ["#if ROSENNA_INFER_HOST_STUB", "    (void)e; (void)src; (void)dst;",
+                      *[f"    (void)s{j + 1};" for j in range(len(op.extra_in))],
+                      f'    assert(0 && "rosenna: {m}_infer_one is device-only in a CUDA/HIP build");',
+                      "#else"]
+        lines += _decode(*pieces)
+        if plan.embed:
+            lines.append("#endif")
+        lines += ["}", ""]
+    return lines
+
+
+def elem_length(op) -> int:
+    """How many output elements op has: the launch/loop extent of its per-element function."""
+    return op.n_out * op.rows if op.kind == "gemm" else op.n_out
+
+
+def elem_call(plan: Plan, k: int, op) -> str:
+    """`<name>_op<k>(e, src, dst, ...)` over infer_one's buffers (x and y are its arguments)."""
+    m = plan.model
+    args = [field_buffer(m, plan.assignment[op.inp]), field_buffer(m, plan.assignment[op.out])]
+    args += [field_buffer(m, plan.assignment[n]) for n in op.extra_in]
+    return f"{_elem_fn(m, k)}(e, {', '.join(args)})"
+
+
+def scratch_symbols(plan: Plan) -> list:
+    return sorted((s for s in plan.buffers if s not in ("x", "y")), key=lambda s: int(s[1:]))
+
+
+# Bytes of per-point locals above which infer must not be instantiated as a
+# device thread's body: a thread's stack is 128 KB on AMD (hipcc refuses the
+# kernel) and less on NVIDIA. A whole-field model (a conv net over a grid)
+# is the case; its infer_batch runs infer_one per point instead.
+LOCALS_LIMIT = 64 * 1024
+
+
+def large_locals(plan: Plan) -> bool:
+    return sum(plan.buffers[sym] for sym in scratch_symbols(plan)) * _ITEMSIZE[plan.dtype] > LOCALS_LIMIT
+
+
+def field_buffer(model: str, sym: str) -> str:
+    """The static device buffer infer_one uses for scratch symbol `sym` (x and y are its arguments)."""
+    return sym if sym in ("x", "y") else f"{model}_f_{sym}"
 
 
 def _emit_infer(plan: Plan, ctype: str) -> list:
@@ -1035,9 +1299,6 @@ def _emit_infer(plan: Plan, ctype: str) -> list:
     and the Fortran backend handles.
     """
     m = plan.model
-    n_in = plan.input.shape[0]
-    act = _ACT_C[plan.dtype]
-    weight_by_symbol = {w.symbol: w for w in plan.weights}
     scratch = sorted((s for s in plan.buffers if s not in ("x", "y")),
                      key=lambda s: int(s[1:]))
 
@@ -1060,67 +1321,7 @@ def _emit_infer(plan: Plan, ctype: str) -> list:
         ]
     for sym in scratch:
         lines.append(f"    {ctype} {sym}[{plan.buffers[sym]}];")
-
-    for op in plan.ops:
-        dst, src = plan.assignment[op.out], plan.assignment[op.inp]
-        if op.kind == "gemm":
-            idx_expr = _weight_index_c(weight_by_symbol, op)
-            weight_sym = _weight_ref(plan, m, op.weight)
-            # The bias is added AFTER the dot product, not used to seed the
-            # accumulator. Seeding it from a declare-target array is what makes
-            # nvc refuse to generate a `distribute parallel for` body (it emits
-            # a kernel that traps); adding it afterwards compiles, and unlocks a
-            # ~19x faster per-point offload loop. See
-            # examples/nvhpc_teams_mapping/. emit_fortran does the same, so the
-            # two backends stay bit-comparable.
-            # `r` indexes independent rows sharing one weight (1 for a dense
-            # per-point model); it is only emitted when there is more than one,
-            # so single-row models generate exactly the code they always did.
-            ri, ro = (f"r * {op.n_in} + ", f"r * {op.n_out} + ") if op.rows > 1 else ("", "")
-            if op.rows > 1:
-                lines.append(f"    for (int r = 0; r < {op.rows}; ++r)")
-            lines.append(f"    for (int i = 0; i < {op.n_out}; ++i) {{")
-            lines.append(f"        {ctype} acc = {_ZERO[plan.dtype]};")
-            lines.append(
-                f"        for (int j = 0; j < {op.n_in}; ++j) "
-                f"acc += {src}[{ri}j] * {weight_sym}[{idx_expr}];")
-            if op.bias:
-                lines.append(f"        acc += {_weight_ref(plan, m, op.bias)}[i];")
-            lines.append(f"        {dst}[{ro}i] = acc;")
-            lines.append("    }")
-        elif op.kind == "alias":
-            continue
-        elif op.kind == "transpose":
-            lines += _emit_transpose_c(op, dst, src)
-        elif op.kind == "lstm":
-            h0, c0 = lstm_initial_state(op, lambda sym: _weight_ref(plan, m, sym), plan.assignment)
-            lines += _emit_lstm_c(
-                op, ctype, act, dst, src, h0, c0,
-                _weight_ref(plan, m, op.weight), _weight_ref(plan, m, op.weight2),
-                _weight_ref(plan, m, op.bias) if op.bias else None,
-                [plan.assignment[o] for o in op.outs], _ZERO[plan.dtype])
-        elif op.kind == "add":
-            lines += _emit_add_c(op, dst, src, _weight_ref(plan, m, op.weight))
-        elif op.kind == "concat":
-            lines += _emit_concat_c(
-                op, dst, [src] + [plan.assignment[n] for n in op.extra_in],
-                [_weight_ref(plan, m, sym) for sym in op.concat_syms])
-        elif op.kind == "copy":
-            soff = f"{op.src_offset} + " if op.src_offset else ""
-            doff = f"{op.dst_offset} + " if op.dst_offset else ""
-            lines.append(
-                f"    for (int i = 0; i < {op.n_out}; ++i) {dst}[{doff}i] = {src}[{soff}i];")
-        elif op.kind in ("conv", "maxpool", "avgpool"):
-            lines += _emit_spatial_c(
-                op, ctype, dst, src,
-                _weight_ref(plan, m, op.weight) if op.weight else None,
-                _weight_ref(plan, m, op.bias) if op.bias else None,
-                _ZERO[plan.dtype])
-        elif op.kind in act:
-            expr = act[op.kind].format(v=f"{src}[i]")
-            lines.append(f"    for (int i = 0; i < {op.n_out}; ++i) {dst}[i] = {expr};")
-        else:
-            raise AssertionError(f"unhandled op kind {op.kind!r}")
+    lines += _emit_op_sequence(plan, ctype)
 
     if plan.embed:
         lines.append("#endif")

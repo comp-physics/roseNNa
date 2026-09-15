@@ -1,9 +1,12 @@
 ! Periodic Poisson solves with a conv-net initial guess; the twin of poisson.c.
-! fp is fp(np_, np_) indexed (j, i): the model's NCHW input is row-major with
-! the row index slowest, and Fortran is column-major.
+! The guess runs on the device through the archive's infer_one (bind(C)
+! route poisson_guess_infer_one_dev). fp is fp(np_, np_) indexed (j, i): the
+! model's NCHW input is row-major with the row index slowest, and Fortran is
+! column-major.
 program poisson
-    use poisson_guess_model, only: poisson_guess_infer
+    use poisson_guess_model, only: poisson_guess_infer_one_dev, poisson_guess_sync_dev
     use iso_fortran_env, only: real64
+    use iso_c_binding, only: c_loc, c_null_ptr
     use omp_lib, only: omp_get_wtime
     implicit none
     integer, parameter :: n = 64, halo = 6, np_ = n + 2 * halo, nsteps = 20
@@ -11,29 +14,31 @@ program poisson
     integer, parameter :: max_it = 20000, check_every = 20
     real(real64), parameter :: pi = 3.14159265358979323846_real64
 
-    real(real64), allocatable :: f(:,:), tmp(:,:), fp(:,:), phi_nn(:,:), phi_zero(:,:), phi_warm(:,:)
+    real(real64), allocatable, target :: f(:,:), tmp(:,:), fp(:,:), phi_nn(:,:), phi_zero(:,:), phi_warm(:,:)
     integer(8) :: it_nn, it_zero, it_warm
     real(real64) :: t0, t_guess, fnorm
-    integer :: s, i, j
+    integer :: s, status
 
     allocate(f(n, n), tmp(n, n), fp(np_, np_), phi_nn(n, n), phi_zero(n, n), phi_warm(n, n))
     phi_nn = 0.0_real64; phi_zero = 0.0_real64; phi_warm = 0.0_real64
     it_nn = 0; it_zero = 0; it_warm = 0; t_guess = 0.0_real64
     fnorm = sqrt(real(n * n, real64))
 
-    !$omp target enter data map(alloc: f, tmp) map(to: phi_nn, phi_zero, phi_warm)
+    !$omp target enter data map(alloc: f, tmp, fp) map(to: phi_nn, phi_zero, phi_warm)
     do s = 0, nsteps - 1
         call rhs(f, s)
         !$omp target update to(f)
 
         t0 = omp_get_wtime()
-        do i = 0, np_ - 1                                   ! periodic halo
-            do j = 0, np_ - 1
-                fp(j + 1, i + 1) = f(wrap(j - halo) + 1, wrap(i - halo) + 1)
-            end do
-        end do
-        call poisson_guess_infer(fp, phi_nn)                ! the whole field, on the host
-        !$omp target update to(phi_nn)
+        call wrap_halo(f, fp)
+        !$omp target data use_device_addr(fp, phi_nn)
+        status = poisson_guess_infer_one_dev(c_loc(fp), c_loc(phi_nn), c_null_ptr)   ! on the device
+        !$omp end target data
+        if (status == 0) status = poisson_guess_sync_dev(c_null_ptr)
+        if (status /= 0) then
+            print '(A,I0)', 'infer_one failed with status ', status
+            stop 3
+        end if
         call zero_mean(phi_nn)
         t_guess = t_guess + (omp_get_wtime() - t0)
 
@@ -42,7 +47,7 @@ program poisson
         it_zero = it_zero + jacobi(phi_zero, tmp, f, fnorm)
         it_warm = it_warm + jacobi(phi_warm, tmp, f, fnorm)
     end do
-    !$omp target exit data map(delete: f, tmp, phi_nn, phi_zero, phi_warm)
+    !$omp target exit data map(delete: f, tmp, fp, phi_nn, phi_zero, phi_warm)
 
     print '(I0,A,I0,A,I0,A,ES7.0,A)', n, 'x', n, ' periodic Poisson, ', nsteps, &
         ' steps of a rotating right-hand side, Jacobi to ', tol, ':'
@@ -83,6 +88,18 @@ contains
         end do
         f = f - sum(f) / (n * n)
         f = f / sqrt(sum(f**2) / (n * n))
+    end subroutine
+
+    subroutine wrap_halo(f, fp)                  ! periodic halo, on the device
+        real(real64), intent(in) :: f(n, n)
+        real(real64), intent(out) :: fp(np_, np_)
+        integer :: i, j
+        !$omp target teams distribute parallel do collapse(2)
+        do i = 0, np_ - 1
+            do j = 0, np_ - 1
+                fp(j + 1, i + 1) = f(wrap(j - halo) + 1, wrap(i - halo) + 1)
+            end do
+        end do
     end subroutine
 
     ! One Jacobi sweep; f(j, i) holds poisson.c's f[i*N + j].

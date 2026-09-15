@@ -18,13 +18,13 @@ field. Exits 0 if the final relative L2 error is under 5%. MI210:
 
 ```
 256x256 grid, 100 surrogate steps of 10 fine steps each:
-  fine reference     24.0 ms  (0.24 ms per big step)
-  surrogate         767.1 ms  (7.67 ms per big step)
+  fine reference     24.7 ms  (0.25 ms per big step)
+  surrogate         230.7 ms  (2.31 ms per big step)
   relative L2 error of the surrogate: 1.999e-03
 OK
 ```
 
-The surrogate is 30× slower than the physics it replaces here: an
+The surrogate is 9× slower than the physics it replaces here: an
 explicit FitzHugh-Nagumo step is a few flops per cell, the stepper 19k.
 The pattern pays when the fine step is expensive (stiff chemistry, an
 implicit solve).
@@ -63,6 +63,9 @@ inside `target data use_device_addr`, `stepper_sync_dev`.
   fallback used `target teams loop`, which `amdclang` maps one point per
   team (3.5 µs per point; `distribute parallel for` is 28× faster);
   `<name>_sync` and `<name>_init_dev` did not exist.
-- At this model size the per-thread kernel is bound by every thread
-  reading the whole 150 KB weight matrix, about 160 GMAC/s on the MI210.
-  A batched GEMM kernel would fix that; it is on the PR's TODO list.
+- This model's 128-wide layers are what the generator's register-blocked
+  dot products are for: 8 output columns per pass over the input vector,
+  so each activation load feeds 8 FMAs. That took the big step from 7.9 to
+  2.3 ms (3.4×, ~550 GMAC/s). Staging the weights in shared memory was
+  tried first and was slower; the bound was the per-thread activation
+  loads, not the weights.

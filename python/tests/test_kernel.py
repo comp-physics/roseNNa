@@ -430,13 +430,15 @@ static inline int rosenna_stub_sync(void *s) { (void)s; return 0; }
             (d / "builtins.h").write_text(
                 "struct rosenna_dim3 { unsigned int x, y, z; };\n"
                 "static struct rosenna_dim3 blockIdx = {0, 0, 0};\n"
-                "static const struct rosenna_dim3 blockDim = {1, 0, 0}, threadIdx = {0, 0, 0};\n")
+                "static const struct rosenna_dim3 blockDim = {1, 0, 0}, threadIdx = {0, 0, 0};\n"
+                "static inline void __syncthreads(void) {}\n")
             # -ffp-contract=off on every translation unit: the host may be built
             # by a different compiler than the library, and clang contracts
             # `acc += a * b` to an FMA by default where g++ in ISO mode does not,
             # which breaks the bit-for-bit comparison below for no real reason.
             common = [cxx, "-x", "c++", "-std=c++11", "-ffp-contract=off", "-Wall", "-Wextra", "-c",
                       "-D__CUDACC__=1", "-D__host__=", "-D__device__=", "-D__constant__=", "-D__global__=",
+                      "-D__shared__=",
                       "-include", "builtins.h"]
             r = subprocess.run(common + [f"{name}.c", "-o", f"{name}.o"], cwd=d, capture_output=True, text=True)
             assert r.returncode == 0, r.stderr
@@ -458,6 +460,8 @@ int main(void) {{ double x[4 * {n_in}], y[4 * {n_out}], yb[4 * {n_out}];
   for (int p = 0; p < 4; ++p) {name}_infer(x + p * {n_in}, y + p * {n_out});
   if ({name}_infer_batch(4, x, yb, 0)) return 4;
   for (int c = 0; c < 4 * {n_out}; ++c) if (y[c] != yb[c]) return 5;
+  if ({name}_infer_one(x + 2 * {n_in}, yb, 0)) return 7;
+  for (int c = 0; c < {n_out}; ++c) if (y[2 * {n_out} + c] != yb[c]) return 8;
   return {name}_infer_batch(0, x, yb, 0); }}
 """)
             cc = shutil.which("clang") or shutil.which("cc") or shutil.which("gcc")
