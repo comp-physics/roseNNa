@@ -28,7 +28,17 @@ def test_example_builds_and_runs_on_the_host(example, tmp_path):
     work = tmp_path / example
     shutil.copytree(ROOT / example, work, ignore=shutil.ignore_patterns("gen", "*.rwt"))
     shutil.copy(ROOT / "common.mk", tmp_path / "common.mk")
-    env = {**os.environ, "OMP_NUM_THREADS": "4"}
+    # One thread, deliberately. These examples step a small field, so each
+    # OpenMP region is tiny and thread coordination dominates: on this machine
+    # poisson_guess takes 406 ms on one thread and 6.4 s on four, and with
+    # OMP_NUM_THREADS unset (all cores) 145 s. macOS runners have the same
+    # shape of problem worse -- Homebrew libgomp wakes threads slowly -- and
+    # four different examples have timed out there in turn, each "fixed" by
+    # shrinking its step count, which was treating the symptom.
+    #
+    # The test asserts the surrogate computes what its README claims, not that
+    # it is fast, so the thread count is free to be whatever runs cleanest.
+    env = {**os.environ, "OMP_NUM_THREADS": "1"}
     # NSTEPS=3 for poisson_guess: 20 steps is ~100k OpenMP regions, which a
     # macOS runner's libgomp takes minutes to wake threads for.
     r = subprocess.run(["make", "-s", "TOOLCHAIN=gnu", "NB=4", "NX=64", "NSTEPS=3", f"CC={cc}",
