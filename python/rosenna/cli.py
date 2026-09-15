@@ -59,6 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     info = sub.add_parser("info", help="report ops, shapes and whether the model is supported")
     info.add_argument("model")
+    info.add_argument("--name", default=None,
+                      help="symbol prefix; default: the model file stem. `info` validates the "
+                           "name too, so a file whose stem is not an identifier needs this to "
+                           "be reportable at all")
 
     gate = sub.add_parser(
         "gpu-gate",
@@ -209,7 +213,7 @@ def _layout(graph, names) -> str:
 
 
 def _cmd_info(args) -> int:
-    graph = load_graph(args.model)
+    graph = load_graph(args.model, args.name)
     for line in _describe_ops(graph):
         print(line)
     # The flat layouts a caller programs against: several inputs arrive

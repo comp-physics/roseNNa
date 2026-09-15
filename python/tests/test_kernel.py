@@ -411,6 +411,15 @@ static inline int rosenna_stub_sync(void *s) { (void)s; return 0; }
 #define ROSENNA_LAUNCH(k, g, b, s, ...) \\
     do { for (blockIdx.x = 0; blockIdx.x < (unsigned)((g) * (b)); ++blockIdx.x) k(__VA_ARGS__); } while (0)
 #define ROSENNA_LAUNCH_STATUS() 0
+/* infer_one's cross-stream ordering: inert here, since the stub launcher runs
+   every kernel synchronously on the host. */
+typedef int ROSENNA_EVENT_T_;
+static inline int rosenna_stub_event(void *e) { (void)e; return 0; }
+static inline int rosenna_stub_wait(void *s, int e) { (void)s; (void)e; return 0; }
+#define ROSENNA_EVENT_T ROSENNA_EVENT_T_
+#define ROSENNA_EVENT_CREATE(e) rosenna_stub_event((void *)(e))
+#define ROSENNA_EVENT_RECORD(e, s) rosenna_stub_wait((void *)(s), (e))
+#define ROSENNA_STREAM_WAIT_EVENT(s, e) rosenna_stub_wait((void *)(s), (e))
 #endif
 """
     from rosenna.weights import write_weights

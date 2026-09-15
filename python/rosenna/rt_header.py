@@ -28,6 +28,12 @@ _RT_HEADER = """\
 #define ROSENNA_SYNC(s) hipStreamSynchronize(s)
 #define ROSENNA_LAUNCH(k, g, b, s, ...) k<<<(g), (b), 0, (s)>>>(__VA_ARGS__)
 #define ROSENNA_LAUNCH_STATUS() hipGetLastError()
+/* Events, for infer_one's cross-stream ordering. Creating one is a host call;
+   recording and waiting are asynchronous enqueues, not host synchronization. */
+#define ROSENNA_EVENT_T hipEvent_t
+#define ROSENNA_EVENT_CREATE(e) hipEventCreateWithFlags((e), hipEventDisableTiming)
+#define ROSENNA_EVENT_RECORD(e, s) hipEventRecord((e), (s))
+#define ROSENNA_STREAM_WAIT_EVENT(s, e) hipStreamWaitEvent((s), (e), 0)
 #elif defined(__CUDACC__)
 #include <cuda_runtime.h>
 #define ROSENNA_STREAM_T cudaStream_t
@@ -40,6 +46,10 @@ _RT_HEADER = """\
 #define ROSENNA_SYNC(s) cudaStreamSynchronize(s)
 #define ROSENNA_LAUNCH(k, g, b, s, ...) k<<<(g), (b), 0, (s)>>>(__VA_ARGS__)
 #define ROSENNA_LAUNCH_STATUS() cudaGetLastError()
+#define ROSENNA_EVENT_T cudaEvent_t
+#define ROSENNA_EVENT_CREATE(e) cudaEventCreateWithFlags((e), cudaEventDisableTiming)
+#define ROSENNA_EVENT_RECORD(e, s) cudaEventRecord((e), (s))
+#define ROSENNA_STREAM_WAIT_EVENT(s, e) cudaStreamWaitEvent((s), (e), 0)
 #else
 #error "rosenna_rt.h is for nvcc or hipcc only"
 #endif

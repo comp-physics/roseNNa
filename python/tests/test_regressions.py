@@ -406,3 +406,31 @@ def test_generated_fortran_fits_in_132_columns_with_a_long_tensor_name(tmp_path)
     assert "case ('" + _LONG_NAME[:20] in src
     assert _LONG_NAME[-12:] + "')" in src
     assert any(l.strip().startswith("&") for l in src.splitlines())
+
+
+def test_a_float64_model_built_single_is_held_to_the_single_tolerance(tmp_path):
+    # Tolerance used to follow the model's dtype alone, so a genuine float64
+    # model built --precision single was held to the f64 tolerance it had no
+    # way of meeting: a false FAIL, and that configuration could not be
+    # verified at all. It now follows whichever side rounds more coarsely.
+    rng = np.random.default_rng(5)
+    w = numpy_helper.from_array(rng.uniform(-1, 1, (4, 3)).astype(np.float64), "w")
+    b = numpy_helper.from_array(rng.uniform(-1, 1, (3,)).astype(np.float64), "b")
+    graph = helper.make_graph(
+        [helper.make_node("Gemm", ["x", "w", "b"], ["y"], name="g0")], "f64model",
+        [helper.make_tensor_value_info("x", TensorProto.DOUBLE, [1, 4])],
+        [helper.make_tensor_value_info("y", TensorProto.DOUBLE, [1, 3])], [w, b])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+    import onnx as _onnx
+    path = tmp_path / "f64model.onnx"
+    _onnx.save(model, str(path))
+    from rosenna.verify import verify_model
+    for precision in ("f64", "f32"):
+        r = verify_model(path, "c", precision, 8, tmp_path / precision)[0]
+        assert r.ok, f"--precision {precision}: max_abs={r.max_abs:.3e} max_rel={r.max_rel:.3e}"
+    # And the f64 build really is the more accurate one, so the looser bar for
+    # the single build is not hiding a wrong answer.
+    f64 = verify_model(path, "c", "f64", 8, tmp_path / "again64")[0]
+    f32 = verify_model(path, "c", "f32", 8, tmp_path / "again32")[0]
+    assert f64.max_abs < f32.max_abs

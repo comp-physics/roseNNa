@@ -11,7 +11,8 @@ per-thread activation loads, which the blocking amortises.
 infer_one: one sample, a launch per op with the thread index over the op's
 output elements and the intermediate activations in static __device__
 buffers. The form a model over a whole field needs; absent when the plan
-has an LSTM.
+has an LSTM. Those buffers are shared by every call, so infer_one orders
+itself across streams with an event (status 12 if the event API fails).
 
 Both are asynchronous on the caller's stream (ruling R5); the one transfer
 this file makes (<name>_device_bind, file-loaded plans) is the plan step,
@@ -69,9 +70,31 @@ def emit_kernel(plan: Plan) -> str:
             ]
         lines += [
             "",
+            "/* The activation buffers above are shared by every infer_one call, so two",
+            "   calls must not overlap. Calls on one stream are already ordered by the",
+            "   stream itself; a call on a different stream is made to wait on an event",
+            "   recorded after the previous call's last launch. Both the wait and the",
+            "   record are asynchronous enqueues -- the loop path still never",
+            "   synchronizes (ruling R5) -- and the event is created once, on the first",
+            "   call, never again.",
+            "",
+            "   This orders the device work. It does not make infer_one callable from",
+            "   several host threads at once: the two statics below are plain host",
+            "   state with no lock. */",
+            f"static ROSENNA_EVENT_T {m}_one_done;",
+            f"static int {m}_one_ready = 0;",
+            f"static ROSENNA_STREAM_T {m}_one_stream;",
+            "",
             f'extern "C" int {m}_infer_one(const {ctype} *__restrict__ x, {ctype} *__restrict__ y, void *stream) {{',
             "    const ROSENNA_STREAM_T s = (ROSENNA_STREAM_T)stream;",
             *dev_check,
+            f"    if (!{m}_one_ready) {{",
+            f"        if (ROSENNA_EVENT_CREATE(&{m}_one_done) != ROSENNA_OK) return 12;",
+            f"        {m}_one_ready = 1;",
+            f"    }} else if (s != {m}_one_stream) {{",
+            f"        if (ROSENNA_STREAM_WAIT_EVENT(s, {m}_one_done) != ROSENNA_OK) return 12;",
+            "    }",
+            f"    {m}_one_stream = s;",
         ]
         for k, op in enumerate(plan.ops):
             if op.kind == "alias":
@@ -79,7 +102,9 @@ def emit_kernel(plan: Plan) -> str:
             n = elem_length(op)
             lines += [f"    ROSENNA_LAUNCH({m}_k{k}, ({n} + ROSENNA_TILE - 1) / ROSENNA_TILE, ROSENNA_TILE, s, x, y);",
                       "    if (ROSENNA_LAUNCH_STATUS() != ROSENNA_OK) return 11;"]
-        lines += ["    return 0;", "}", ""]
+        lines += [
+            f"    if (ROSENNA_EVENT_RECORD({m}_one_done, s) != ROSENNA_OK) return 12;",
+            "    return 0;", "}", ""]
 
     # --- infer_batch ---
     if large_locals(plan):

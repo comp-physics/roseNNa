@@ -130,8 +130,16 @@ def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir,
     inputs, expected = _live_inputs(session, shapes, cases, model_path, _NUMPY[model_dtype])
 
     backends = ["fortran", "c"] if lang == "both" else [lang]
-    rtol, atol = _TOL[model_dtype]
-    atol = atol + _cancellation_atol(plan, model_dtype, expected)
+    # Tolerance follows the COARSER of the reference's precision and the build's.
+    # The reference is computed at the model's own dtype, so f64 code compared
+    # against an f32 reference is still held to the f32 tolerance (generating
+    # f64 cannot make onnxruntime's f32 answer more accurate). The converse was
+    # a false FAIL: a genuine float64 model built `--precision single` was held
+    # to the f64 tolerance it had no way of meeting, so that configuration could
+    # not be verified at all. Whichever side rounds more coarsely sets the bar.
+    compare_dtype = "f32" if "f32" in (model_dtype, plan.dtype) else "f64"
+    rtol, atol = _TOL[compare_dtype]
+    atol = atol + _cancellation_atol(plan, compare_dtype, expected)
     results = []
     for backend in backends:
         backend_dir = workdir / backend
