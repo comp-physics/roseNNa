@@ -52,21 +52,26 @@ endif
 # MODULE_OFFLOAD: flags for the Fortran module; empty builds it host-only.
 ARCHIVE        ?=
 MODULE_OFFLOAD ?= $(OFFLOAD)
+# Which drivers to build and run, and what to ask `generate` for. The four
+# surrogates are both languages; an example may be one (cns_closure is C).
+LANGS          ?= c f
+GENLANG        ?= both
 SIZES  := -DNB=$(NB) -DNX=$(NX) $(DEFS)
 LIB    := $(if $(ARCHIVE),gen/lib$(MODEL).a $(RTLIB),)
 RUNENV := OMP_TARGET_OFFLOAD=$(if $(filter gnu,$(TOOLCHAIN)),DEFAULT,MANDATORY)
 
 .PHONY: all run train clean distclean
 all: run
-run: $(PROG)_c $(PROG)_f
-	$(RUNENV) ./$(PROG)_c
-	$(RUNENV) ./$(PROG)_f
+run: $(foreach l,$(LANGS),$(PROG)_$(l))
+	# && , not `;`: make checks the exit status of the recipe line, so a
+	# semicolon-separated list would hide every failure but the last one.
+	$(foreach l,$(LANGS),$(RUNENV) ./$(PROG)_$(l) &&) true
 
 train:                                  # the .onnx is checked in; this rebuilds it
 	$(PYTHON) train.py
 
 gen/$(MODEL).h gen/$(MODEL)_model.F90 gen/$(MODEL).mk: $(MODEL).onnx
-	$(ROSENNA) generate $< --lang both --precision double $(GENFLAGS) --out gen
+	$(ROSENNA) generate $< --lang $(GENLANG) --precision double $(GENFLAGS) --out gen
 	@if [ -f gen/$(MODEL).rwt ]; then cp gen/$(MODEL).rwt .; fi
 
 gen/lib$(MODEL).a: gen/$(MODEL).mk
@@ -82,6 +87,6 @@ $(PROG)_f: $(PROG).F90 gen/$(MODEL)_model.o $(if $(ARCHIVE),gen/lib$(MODEL).a)
 	$(FC) $(FFLAGS) $(OFFLOAD) $(SIZES) -Igen $< gen/$(MODEL)_model.o $(LIB) -o $@
 
 clean:
-	rm -rf gen $(PROG)_c $(PROG)_f $(MODEL).rwt *.mod
+	rm -rf gen $(foreach l,$(LANGS),$(PROG)_$(l)) $(MODEL).rwt *.mod
 distclean: clean
 	rm -f $(MODEL).onnx

@@ -42,4 +42,5 @@ goldenFiles/*/*.txt
 examples/**/gen/
 examples/surrogates/*/*_c
 examples/surrogates/*/*_f
-examples/microfd_closure/closure.onnx
+examples/cns_closure/closure.onnx
+examples/cns_closure/cns_c

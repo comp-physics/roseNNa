@@ -493,8 +493,8 @@ driver, not yet for the per-point harnesses. A compile-only `nvcc` job
 exists in CI (`.github/workflows/CI.yml`, `nvcc_compile`).
 
 For runnable examples of a model inside a solver's time loop, C and
-Fortran, see `examples/surrogates/`; `examples/microfd_closure/` is
-a documented patch against a real solver.
+Fortran, see `examples/surrogates/`; `examples/cns_closure/` is a compressible
+Navier-Stokes solver with a learned per-cell closure.
 
 ## Limits
 

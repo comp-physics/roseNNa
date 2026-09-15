@@ -156,3 +156,54 @@ def test_the_basic_example_script_runs_both_callers():
                 for line in r.stdout.splitlines()
                 if line.split()[:1] in (["c"], ["fortran"])}
     assert verdicts == {"c": "ok", "fortran": "ok"}, r.stdout
+
+
+# --- the compressible-NS example ------------------------------------------
+#
+# cns_closure is not one of the four surrogates: it is C only and lives beside
+# them, so it needs its own parametrization rather than a fifth EXAMPLES entry.
+# It replaced a patch.md written against a solver this repository does not
+# contain, which could not be compiled or tested at all -- the whole point of
+# vendoring the solver is that this test can exist.
+#
+# BATCHED=1 is the variant that links lib<model>.a and calls the native
+# batched kernel; it asserts, inside the program, that the batched path and
+# the header-inline per-point path produce the same nut field.
+
+CNS = Path(__file__).resolve().parents[2] / "examples" / "cns_closure"
+
+
+def _run_cns(work, tmp_path, extra, timeout):
+    shutil.copytree(CNS, work, ignore=shutil.ignore_patterns("gen", "*.rwt", "cns_c"))
+    (tmp_path / "surrogates").mkdir(exist_ok=True)
+    shutil.copy(CNS.parent / "surrogates" / "common.mk", tmp_path / "surrogates" / "common.mk")
+    env = {**os.environ, "OMP_NUM_THREADS": "1"}
+    r = subprocess.run(["make", "-s", "NX=16", "NSTEPS=5",
+                        f"ROSENNA={sys.executable} -m rosenna"] + extra,
+                       cwd=work, env=env, capture_output=True, text=True, timeout=timeout)
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-3000:]
+    assert "OK" in r.stdout, r.stdout
+    return r.stdout
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_cns_closure_builds_and_runs_on_the_host(batched, tmp_path):
+    cc = _omp_cc()
+    if not shutil.which("make"):
+        pytest.skip("no make")
+    extra = ["TOOLCHAIN=gnu", f"CC={cc}"] + (["BATCHED=1"] if batched else [])
+    out = _run_cns(tmp_path / "cns_closure", tmp_path, extra, 900)
+    # The solver's own conservation and closure-agreement checks are what make
+    # `OK` mean something; assert the lines are actually there, so a future
+    # `OK` printed by a stripped-down main cannot pass silently.
+    assert "mass drift" in out and "closure nut vs host evaluation" in out, out
+    if batched:
+        assert "batched vs per-point" in out, out
+
+
+@pytest.mark.parametrize("toolchain,arch", GPU_TOOLCHAINS)
+def test_cns_closure_builds_and_runs_on_a_gpu(toolchain, arch, tmp_path):
+    if not shutil.which("make"):
+        pytest.skip("no make")
+    _run_cns(tmp_path / "cns_closure", tmp_path,
+             [f"TOOLCHAIN={toolchain}", f"ARCH={arch()}", "BATCHED=1"], 1800)

@@ -1,4 +1,4 @@
-"""Export closure.onnx: a per-cell turbulence-closure MLP for the microfd worked example.
+"""Export closure.onnx: the per-cell turbulence-closure MLP for cns.c.
 
 9 inputs -- the velocity-gradient tensor du_i/dx_j at one cell, flattened
 row-major (du/dx, du/dy, du/dz, dv/dx, dv/dy, dv/dz, dw/dx, dw/dy, dw/dz) --
@@ -13,9 +13,10 @@ script reproduces the same closure.onnx byte for byte (module weight order
 and Kaiming/uniform default init are themselves deterministic given the
 seed).
 
-This is documentation, not a validated closure model: see README.md in this
-directory for what "validated" means here, and patch.md for the exact edits
-to microfd.c. Nothing in this repository compiles microfd.c.
+This is not a trained closure model: the weights are whatever the seeded
+initialization produced, so the network is a fixed but arbitrary function of
+the gradients. cns.c floors and scales its output accordingly. See README.md
+in this directory for what the example does and does not demonstrate.
 """
 from pathlib import Path
 
