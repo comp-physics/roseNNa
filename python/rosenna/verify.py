@@ -1,4 +1,5 @@
 """Compile the generated code and compare its output against onnxruntime."""
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,25 @@ class VerifyResult:
     max_abs: float
     max_rel: float
     ok: bool
+
+
+# ROSENNA_CC / ROSENNA_FC point verify at a different compiler. The generated
+# code is plain C11 and Fortran 2008, so any conforming compiler should build
+# and run it and reach the same numbers; a CI job or a developer checking a new
+# toolchain needs a way to say so without editing this file.
+#
+# -Wall -Wextra -std= are added only for a compiler whose basename says it
+# takes them; flang, ifx and nvfortran get -O2 and nothing else.
+_GNU_STYLE = ("gcc", "gfortran", "cc", "clang")
+
+
+def _compiler(role: str) -> str:
+    return os.environ.get(f"ROSENNA_{role}", {"CC": "gcc", "FC": "gfortran"}[role])
+
+
+def _warn_flags(tool: str, std: str) -> list:
+    from pathlib import Path as _P
+    return ["-Wall", "-Wextra", std] if _P(tool).name.startswith(_GNU_STYLE) else []
 
 
 def verify_model(model_path, lang: str, dtype: str | None, cases: int, workdir,
@@ -254,8 +274,10 @@ def _run_backend(backend: str, plan, workdir: Path, inputs):
         # Compile the module to an object, archive it, and link the driver
         # against the archive -- the library form -- rather than compiling
         # both sources together, mirroring the C backend below.
+        fc = _compiler("FC")
+        fw = _warn_flags(fc, "-std=f2008")
         _run("compile", backend,
-             ["gfortran", "-O2", "-Wall", "-Wextra", "-c", f"{name}_model.F90"],
+             [fc, "-O2", *fw, "-c", f"{name}_model.F90"],
              cwd=workdir)
         # lib<name>_f.a, not lib<name>.a (ruling R13): the C backend's own
         # archive is lib<name>.a, and although verify's fortran/c backends
@@ -266,7 +288,7 @@ def _run_backend(backend: str, plan, workdir: Path, inputs):
              ["ar", "rcs", f"lib{name}_f.a", f"{name}_model.o"],
              cwd=workdir)
         _run("compile/link", backend,
-             ["gfortran", "-O2", "-Wall", "-Wextra", "-o", "verify_run",
+             [fc, "-O2", *fw, "-o", "verify_run",
               "verify_main.f90", f"lib{name}_f.a"],
              cwd=workdir)
     elif backend == "c":
@@ -278,14 +300,16 @@ def _run_backend(backend: str, plan, workdir: Path, inputs):
         # driver against the archive -- the library form -- rather than
         # compiling both sources together, so `verify` exercises the same
         # delivery shape a downstream host build uses.
+        cc = _compiler("CC")
+        cw = _warn_flags(cc, "-std=c11")
         _run("compile", backend,
-             ["gcc", "-O2", "-Wall", "-Wextra", "-std=c11", "-c", f"{name}.c", "-o", f"{name}.o"],
+             [cc, "-O2", *cw, "-c", f"{name}.c", "-o", f"{name}.o"],
              cwd=workdir)
         _run("archive", backend,
              ["ar", "rcs", f"lib{name}.a", f"{name}.o"],
              cwd=workdir)
         _run("compile/link", backend,
-             ["gcc", "-O2", "-Wall", "-Wextra", "-std=c11", "-o", "verify_run",
+             [cc, "-O2", *cw, "-o", "verify_run",
               "verify_main.c", f"lib{name}.a", "-lm"],
              cwd=workdir)
     else:

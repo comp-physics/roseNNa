@@ -205,3 +205,82 @@ jobs:
           set -o pipefail
           cd python && python3 -m pytest tests/test_regressions.py -v -rs -k warning 2>&1 | tee clang.log
           ! grep -q "SKIPPED" clang.log
+
+  # A second Fortran front end. Fortran is the backend with the least compiler
+  # diversity -- gfortran in CI, nvfortran only in the GPU gate -- and it is
+  # where the conformance risk sits: nvfortran is what found that
+  # `has_device_addr` is unimplemented there. flang and ifx each build every
+  # golden model and run it against onnxruntime, so this is a behaviour check
+  # and not only a compile.
+  #
+  # Both were verified on all 21 models before this job was written; what is
+  # unverified here is the install step, not the test.
+  flang_fortran:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Install flang
+        run: |
+          set -euo pipefail
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 20
+          sudo apt-get install -y flang-20
+          flang-20 --version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e python
+
+      - name: Every golden model builds with flang and matches onnxruntime
+        env:
+          ROSENNA_FC: flang-20
+        run: |
+          set -o pipefail
+          cd python && python3 -m pytest tests/test_golden_suite.py -v -rs 2>&1 | tee flang.log
+          ! grep -q "SKIPPED" flang.log
+
+  ifx_fortran:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Install ifx
+        run: |
+          set -euo pipefail
+          wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+            | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
+            | sudo tee /etc/apt/sources.list.d/oneAPI.list
+          sudo apt-get update
+          sudo apt-get install -y intel-oneapi-compiler-fortran
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e python
+
+      # setvars.sh is what puts ifx and its runtime on PATH/LD_LIBRARY_PATH;
+      # it has to be sourced in the same step that runs the tests.
+      - name: Every golden model builds with ifx and matches onnxruntime
+        run: |
+          set -o pipefail
+          source /opt/intel/oneapi/setvars.sh >/dev/null
+          cd python && ROSENNA_FC=ifx python3 -m pytest tests/test_golden_suite.py -v -rs 2>&1 | tee ifx.log
+          ! grep -q "SKIPPED" ifx.log
