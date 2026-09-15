@@ -38,6 +38,7 @@
  * is now its own implementation. No microfd source is used here.
  */
 #include <math.h>
+#include <omp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -60,6 +61,8 @@ static struct {
     int n[3];
     double h[3], L[3];
     double gamma, mu, pr, cfl, dt, t;
+    double t_closure;                  /* seconds spent in the closure */
+    long n_closure;                    /* closure kernel launches */
     double *q, *q1, *qs, *w, *F, *nut;
 } g;
 
@@ -205,6 +208,18 @@ static void closure_batched(void) {
     { status = closure_infer_batch((int)nc, feat, nut, 0); }
     if (status) {
         fprintf(stderr, "closure_infer_batch failed: %d\n", status);
+        exit(3);
+    }
+    /* closure.h: "the launch is asynchronous on it". Nothing may read nut
+     * until it has finished, and the rescale loop below does. Without this
+     * wait the example still printed the right answer, because nvc's OpenMP
+     * target regions happen to serialize against the CUDA default stream --
+     * an implementation accident, not a guarantee. closure_sync is the
+     * backend-agnostic wait: a stream synchronize in the cuda/hip archive,
+     * a no-op in the omp one, whose loop is already synchronous. */
+    status = closure_sync(0);
+    if (status) {
+        fprintf(stderr, "closure_sync failed: %d\n", status);
         exit(3);
     }
     /* Scale and floor to match the per-point path. */
@@ -387,11 +402,16 @@ static void advance(const double *src, double *out, double dt) {
 static void rhs_eval(double *q) {
     halo(q);
     prim(q);
+    /* Every target region in this file is synchronous -- none carries
+     * `nowait` -- so wall-clock around the call is the kernel's own cost. */
+    const double t0 = omp_get_wtime();
 #ifdef BATCHED
     closure_batched();
 #else
     closure();
 #endif
+    g.t_closure += omp_get_wtime() - t0;
+    g.n_closure++;
     for (int d = 0; d < 3; d++) face(d);
 }
 
@@ -551,7 +571,17 @@ int main(void) {
     #pragma omp target enter data map(to: feat[0:9*nc])
 #endif
 
+    /* One untimed rhs_eval first: the first launch of each kernel pays for
+     * module load and any JIT, which would otherwise land entirely in step 1
+     * and dominate a short run. rhs_eval writes only w, nut and F, never q,
+     * so this does not change the answer. */
+    rhs_eval(g.q);
+    g.t_closure = 0;
+    g.n_closure = 0;
+
+    const double t_loop0 = omp_get_wtime();
     for (int n = 0; n < NSTEPS; n++) step();
+    const double t_loop = omp_get_wtime() - t_loop0;
 
     #pragma omp target exit data map(from: q[0:NV*nc], w[0:NV*nc], nut[0:nc]) \
         map(release: q1[0:NV*nc], qs[0:NV*nc], F[0:3*NV*nc])
@@ -603,7 +633,18 @@ int main(void) {
     /* 3. the closure agrees with a host evaluation of the same model */
     const double nerr = nut_mismatch();
 
+    /* The closure runs over the padded block minus one layer on each side,
+     * which is the count to divide by -- not the interior cell count. */
+    const long ncl = (long)(nx + 2 * NG - 2) * (ny + 2 * NG - 2) * (nz + 2 * NG - 2);
+    const double per_cell_ns = 1e9 * g.t_closure / (double)(g.n_closure * ncl);
+
     printf("%dx%dx%d, %d steps, dt %.3e, t %.4f\n", NX, NX, NX, NSTEPS, g.dt, g.t);
+    printf("  loop            %8.2f ms total, %7.3f ms/step\n", 1e3 * t_loop,
+           1e3 * t_loop / NSTEPS);
+    printf("  closure         %8.2f ms total (%4.1f%% of the loop), %ld launches\n",
+           1e3 * g.t_closure, 100 * g.t_closure / t_loop, g.n_closure);
+    printf("                  %8.2f ns per cell per call, over %ld cells\n",
+           per_cell_ns, ncl);
     printf("  mass drift      %.3e (relative)\n", dm);
     printf("  energy drift    %.3e (relative)\n", de);
     printf("  min rho / p     %.6f / %.6f   non-finite cells %ld\n", rmin, pmin, bad);

@@ -84,8 +84,8 @@ succeeding is the assertion:
 
 ## Measured
 
-On an A100 80GB with NVIDIA HPC SDK 25.11, `NX=16 NSTEPS=5`, and on the same
-machine's host toolchain (gcc 13.3):
+Correctness, on an A100 80GB with NVIDIA HPC SDK 25.11 at `NX=16 NSTEPS=5`,
+and on the same machine's host toolchain (gcc 13.3):
 
 | | mass drift | energy drift | nut vs host | batched vs per-point |
 |---|---|---|---|---|
@@ -98,6 +98,39 @@ digit, and the native CUDA `infer_batch` kernel and the header-inline `infer`
 agree exactly. `TOOLCHAIN=amd` builds from the same source but has not been
 run here; the test suite runs it wherever an AMD GPU and `amdclang` are
 present.
+
+### Speed, A100 80GB, 20 steps
+
+The run prints this itself. Each step is SSP-RK3, so three closure calls;
+"per cell per call" divides by the range the closure covers.
+
+| | ns per cell per call | closure share of the step |
+|---|---|---|
+| per-point, 64^3 | 0.30 | 14.4% |
+| per-point, 128^3 | **0.28** | 21.7% |
+| batched, 64^3 | 0.56 | 23.9% |
+| batched, 128^3 | 0.43 | 29.4% |
+| host (gcc, 128 threads), 64^3 | 65 | 10.7% |
+| host (gcc, 1 thread), 64^3 | 305 | 51.6% |
+
+At 128^3 (2.2M cells) a closure call is 0.6 ms and the whole step 8.5 ms, so
+the learned closure costs about a fifth of a compressible Navier-Stokes step
+that is already doing MUSCL, HLLC and a full viscous stress. The A100
+per-point path is ~220x the host's 128 threads and ~1100x one thread.
+
+**The per-point path is faster than the batched one here, and the reason is
+worth knowing.** Splitting the batched path at 128^3 gives gather 42.7 ms,
+`infer_batch` plus its sync 13.4 ms, rescale 1.6 ms. So the native batched
+kernel is the cheapest part -- 0.097 ns per cell, about a third of A100 fp64
+peak for a network with 16 `tanh` -- and the gather that feeds it costs three
+times the inference, because it writes nine doubles per cell and reads them
+straight back. The fused per-point path never materialises the features: it
+reads the primitives it needs and keeps the nine gradients in registers.
+
+Batching wins when the network is large enough that per-call overhead
+dominates that extra traffic. For 177 parameters it does not, and this is the
+measurement to repeat before choosing the batched path for a bigger closure --
+not a reason to avoid it.
 
 ### One thing worth knowing about nvc -O2
 
@@ -118,6 +151,24 @@ costs nothing next to the flux arithmetic. This is the second nvc codegen
 bailout this branch has had to work around -- see
 [`doc/nvhpc_teams_mapping/`](../../doc/nvhpc_teams_mapping/) for the first,
 which was about where a dense layer adds its bias.
+
+### `infer_batch` is asynchronous
+
+`closure_batched()` calls `closure_sync(0)` after `closure_infer_batch`, before
+anything reads `nut`. `closure.h` says the launch "is asynchronous on it", and
+the rescale loop right after it reads what the kernel wrote.
+
+Without that wait the example still printed the right answer, every time,
+because nvc's OpenMP target regions happen to serialize against the CUDA
+default stream. That is an implementation accident, not a guarantee, and it is
+the kind of thing that works until it is someone else's compiler. `closure_sync`
+is the backend-agnostic wait: a stream synchronize in the cuda/hip archive, a
+no-op in the omp one, whose loop is already synchronous.
+
+It also made the timing lie. With no sync, `infer_batch` measured 0.65 ms for
+60 launches over 2.2M cells -- 68 TFLOP/s of fp64, seven times what the card
+can do -- because the cost was landing in the next synchronizing region and
+showing up as an absurdly slow rescale.
 
 ## Validating the device path more broadly
 
