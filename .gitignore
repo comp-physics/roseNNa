@@ -35,8 +35,11 @@ goldenFiles/*/*.onnx
 goldenFiles/*/*.txt
 !goldenFiles/mnist/mnist.onnx
 
-# Example builds: generated sources go to gen/, and each Makefile links a pair
-# of drivers named <model>_c and <model>_f.
-examples/surrogates/*/gen/
+# Example builds: generated sources go to gen/, and each surrogate's Makefile
+# links a pair of drivers named <model>_c and <model>_f. The surrogates' own
+# .onnx files ship (they are the example); microfd_closure's is exported by
+# closure.py on demand.
+examples/**/gen/
 examples/surrogates/*/*_c
 examples/surrogates/*/*_f
+examples/microfd_closure/closure.onnx

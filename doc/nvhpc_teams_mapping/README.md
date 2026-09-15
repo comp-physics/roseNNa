@@ -166,7 +166,8 @@ the reordering is a workaround that a fixed compiler would make unnecessary.
 
 Use `target teams distribute parallel for` (C) or `target teams distribute
 parallel do` (Fortran) around your per-point `infer` call, as
-`microfd_closure/patch.md` and the examples in `python/README.md` now do.
+`examples/microfd_closure/patch.md` and the examples in `python/README.md`
+now do.
 `target teams loop` still compiles and still gives correct answers -- it
 just runs about 30x slower, because it leaves 31 of every 32 lanes idle.
 

@@ -28,14 +28,13 @@ microfd itself, and no microfd source is vendored into this repository.
 
 ## Generating the code
 
+From the repository root (`closure.py` writes its ONNX beside itself, so the
+working directory does not matter to it):
+
 ```
-cd python
 python3 examples/microfd_closure/closure.py            # writes closure.onnx
-python3 -c "
-from rosenna.cli import main
-main(['generate', 'examples/microfd_closure/closure.onnx',
-      '--lang', 'c', '--precision', 'double', '--out', 'examples/microfd_closure/gen'])
-"
+rosenna generate examples/microfd_closure/closure.onnx \
+    --lang c --precision double --out examples/microfd_closure/gen
 ```
 
 `--precision double` matches microfd's own arithmetic, which is `double`

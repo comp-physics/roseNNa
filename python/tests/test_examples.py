@@ -107,3 +107,52 @@ def test_example_builds_and_runs_on_a_gpu(example, toolchain, arch, tmp_path):
                        cwd=work, env=os.environ, capture_output=True, text=True, timeout=1800)
     assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-3000:]
     assert "OK" in r.stdout, r.stdout
+
+
+# --- the hello-world path -------------------------------------------------
+#
+# `examples/run_basic.sh` is the shortest path through the whole tool and the
+# first thing a reader runs: export gemm_small, generate both backends, call
+# the result from C (`cAPI.c`) and from Fortran (`capiTester.f90`), then verify
+# against onnxruntime. Nothing ran it. Both callers are hand-written against
+# the generated API -- the header's signature, the module name, whether an
+# `_init` is needed -- so a change to what `generate` emits would leave them
+# stale with only a reader to notice.
+#
+# The test drives the script itself rather than a copy of its commands, which
+# is the point: a copy would keep passing after the script rotted.
+
+def test_the_basic_example_script_runs_both_callers():
+    cc = _omp_cc()
+    for tool in ("gfortran", "bash"):
+        if not shutil.which(tool):
+            pytest.skip(f"no {tool}")
+    script = ROOT.parent / "run_basic.sh"
+    env = {**os.environ, "PYTHON": sys.executable,
+           "ROSENNA": f"{sys.executable} -m rosenna", "CC": cc}
+    r = subprocess.run(["bash", str(script)], env=env,
+                       capture_output=True, text=True, timeout=900)
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-3000:]
+
+    # Both callers feed the same input to the same model, so their output is
+    # the same three numbers. The script's own `verify` step is what checks
+    # those numbers against onnxruntime; this checks that the two hand-written
+    # callers agree, which verify never sees.
+    printed = {}
+    for line in r.stdout.splitlines():
+        for label in ("C:", "Fortran:"):
+            if line.startswith(label):
+                printed[label] = [float(v) for v in line[len(label):].split()]
+    assert set(printed) == {"C:", "Fortran:"}, r.stdout
+    assert len(printed["C:"]) == 3, r.stdout
+    # Fortran's f0.6 drops the leading zero (".535685"); float() reads both.
+    assert printed["C:"] == printed["Fortran:"], r.stdout
+
+    # And the script's last step, which is the one that cannot come out
+    # vacuous: gemm_small is re-exported unseeded every run and sometimes
+    # returns all zeros, so "the two callers agree" can be 0 == 0. `verify`
+    # reports a line per language ending in `ok` or `FAIL`.
+    verdicts = {line.split()[0]: line.split()[-1]
+                for line in r.stdout.splitlines()
+                if line.split()[:1] in (["c"], ["fortran"])}
+    assert verdicts == {"c": "ok", "fortran": "ok"}, r.stdout

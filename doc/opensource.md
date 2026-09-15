@@ -88,7 +88,7 @@ Three rules the existing ops follow:
 - **Add a bias after the accumulation, never as the seed.** `acc = 0`, sum,
   then `acc += b[i]`. Seeding from a declare-target array makes nvc refuse to
   compile a `distribute parallel for` body at all. See
-  [`python/examples/nvhpc_teams_mapping/`](../python/examples/nvhpc_teams_mapping/).
+  [`doc/nvhpc_teams_mapping/`](nvhpc_teams_mapping/).
 - **Propagate NaN.** `max(v, 0)` returns 0 for a NaN, and `v > best` drops one.
   Write `merge(0, v, v < 0)` and `!(v <= best)`. This library is linked into
   solvers where a NaN out of a diverged run is the signal.

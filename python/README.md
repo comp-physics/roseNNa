@@ -457,7 +457,7 @@ that every read misses, and `ncu` showed embedded `infer_batch` spending
 go to `__constant__` only below 2 KB and to `__device__ const` above it,
 which took embedded `infer_batch` from 4.7 to 1.5 ns per point.
 
-See [`examples/nvhpc_teams_mapping/`](examples/nvhpc_teams_mapping/) for the
+See [`doc/nvhpc_teams_mapping/`](../doc/nvhpc_teams_mapping/) for the
 PTX, the `ncu` geometry and stall counters, and a self-contained
 reproducer.
 
@@ -493,7 +493,7 @@ driver, not yet for the per-point harnesses. A compile-only `nvcc` job
 exists in CI (`.github/workflows/CI.yml`, `nvcc_compile`).
 
 For runnable examples of a model inside a solver's time loop, C and
-Fortran, see `examples/surrogates/`; `python/examples/microfd_closure/` is
+Fortran, see `examples/surrogates/`; `examples/microfd_closure/` is
 a documented patch against a real solver.
 
 ## Limits

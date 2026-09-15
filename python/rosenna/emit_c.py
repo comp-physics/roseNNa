@@ -1117,7 +1117,7 @@ def _emit_gemm_c(op, ctype, dst, src, weight_sym, idx_expr, bias_sym, zero):
     accumulator. Seeding it from a declare-target array is what makes nvc
     refuse to generate a `distribute parallel for` body (it emits a kernel
     that traps); adding it afterwards compiles, and unlocks a ~19x faster
-    per-point offload loop. See examples/nvhpc_teams_mapping/. emit_fortran
+    per-point offload loop. See doc/nvhpc_teams_mapping/. emit_fortran
     does the same, so the two backends stay bit-comparable. `r` indexes
     independent rows sharing one weight (1 for a dense per-point model); it
     is only emitted when there is more than one.

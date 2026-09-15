@@ -73,7 +73,7 @@ product rather than seeding the accumulator with it. Seeding an accumulator
 from a declare-target array is what makes nvc refuse to generate a
 `distribute parallel for` body at all — it emits a kernel that traps — and the
 reordering unlocks a ~30x faster per-point offload loop. See
-[`python/examples/nvhpc_teams_mapping/`](../python/examples/nvhpc_teams_mapping/).
+[`doc/nvhpc_teams_mapping/`](nvhpc_teams_mapping/).
 
 ## 6. Verify — `verify.py`
 
