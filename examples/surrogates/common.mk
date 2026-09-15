@@ -1,6 +1,7 @@
 # Shared by the example Makefiles. Each one sets MODEL, PROG and GENFLAGS,
 # then includes this file. TOOLCHAIN=amd|nvidia|gnu; ARCH overrides the
-# GPU target; NB / NX shrink the problem for a host run.
+# GPU target; NB / NX shrink the problem for a host run. An example may add
+# its own -D flags in DEFS.
 TOOLCHAIN ?= gnu
 ROSENNA   ?= rosenna
 PYTHON    ?= python3
@@ -42,7 +43,7 @@ endif
 # MODULE_OFFLOAD: flags for the Fortran module; empty builds it host-only.
 ARCHIVE        ?=
 MODULE_OFFLOAD ?= $(OFFLOAD)
-SIZES  := -DNB=$(NB) -DNX=$(NX)
+SIZES  := -DNB=$(NB) -DNX=$(NX) $(DEFS)
 LIB    := $(if $(ARCHIVE),gen/lib$(MODEL).a $(RTLIB),)
 RUNENV := OMP_TARGET_OFFLOAD=$(if $(filter gnu,$(TOOLCHAIN)),DEFAULT,MANDATORY)
 

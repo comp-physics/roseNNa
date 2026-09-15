@@ -29,7 +29,9 @@ def test_example_builds_and_runs_on_the_host(example, tmp_path):
     shutil.copytree(ROOT / example, work, ignore=shutil.ignore_patterns("gen", "*.rwt"))
     shutil.copy(ROOT / "common.mk", tmp_path / "common.mk")
     env = {**os.environ, "OMP_NUM_THREADS": "4"}
-    r = subprocess.run(["make", "-s", "TOOLCHAIN=gnu", "NB=4", "NX=64", f"CC={cc}",
+    # NSTEPS=3 for poisson_guess: 20 steps is ~100k OpenMP regions, which a
+    # macOS runner's libgomp takes minutes to wake threads for.
+    r = subprocess.run(["make", "-s", "TOOLCHAIN=gnu", "NB=4", "NX=64", "NSTEPS=3", f"CC={cc}",
                         f"ROSENNA={sys.executable} -m rosenna"],
                        cwd=work, env=env, capture_output=True, text=True, timeout=900)
     assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-3000:]

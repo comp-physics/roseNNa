@@ -9,7 +9,10 @@ program poisson
     use iso_c_binding, only: c_loc, c_null_ptr
     use omp_lib, only: omp_get_wtime
     implicit none
-    integer, parameter :: n = 64, halo = 6, np_ = n + 2 * halo, nsteps = 20
+#ifndef NSTEPS
+#define NSTEPS 20
+#endif
+    integer, parameter :: n = 64, halo = 6, np_ = n + 2 * halo, nsteps = NSTEPS
     real(real64), parameter :: tol = 1.0e-3_real64
     integer, parameter :: max_it = 20000, check_every = 20
     real(real64), parameter :: pi = 3.14159265358979323846_real64

@@ -15,7 +15,9 @@
 #define N 64
 #define HALO 6
 #define NP (N + 2 * HALO)
+#ifndef NSTEPS
 #define NSTEPS 20
+#endif
 #define TOL 1e-3
 #define MAX_IT 20000
 #define CHECK_EVERY 20
