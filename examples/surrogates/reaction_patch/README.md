@@ -1,4 +1,4 @@
-# B. Reaction-diffusion with a learned time-stepper on patches
+# Reaction-diffusion with a learned time-stepper on patches
 
 Parabolic, reactive PDE (2-D FitzHugh-Nagumo); the network is the time
 step: from each cell's 3×3 patch of `(u, v)` it predicts that cell's
@@ -34,8 +34,8 @@ implicit solve).
 `train.py`: 18 → 128 → 128 → 2, `tanh`, fitted to the one-step map with 3%
 Gaussian noise on the input patches. Fitted on clean inputs the map is
 1% accurate per step and diverges after ~40 of its own steps; with the
-noise it tracks 1000 fine steps to 0.2%. Unrolled training (as in A) made
-it worse.
+noise it tracks 1000 fine steps to 0.2%. Unrolled training (as in `burgers_closure`)
+made it worse.
 
 ## Wiring
 

@@ -11,8 +11,8 @@ The fit is to the one-step map on every (patch, centre K steps later) pair,
 with Gaussian noise (NOISE) on the input patches. Without the noise the map
 is 1% accurate per step and blows up after about 40 of its own steps; with
 it the rollout tracks the fine solution for 100 steps to 0.2%, the largest
-error (about 8%) in the fast early transient. Unrolled training as in A was
-tried and made this map worse.
+error (about 8%) in the fast early transient. Unrolled training as in burgers_closure
+was tried and made this map worse.
 """
 import numpy as np
 import torch

@@ -1,4 +1,4 @@
-# A. Coarse-grid Burgers with a learned subgrid closure
+# Coarse-grid Burgers with a learned subgrid closure
 
 Hyperbolic PDE; the network is a per-cell closure called from the solver's
 own offload loop. Embedded model, header-inline `closure_infer`, no `init`,

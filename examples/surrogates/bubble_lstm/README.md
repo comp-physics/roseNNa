@@ -1,4 +1,4 @@
-# C. Bubbly acoustics with a recurrent per-cell surrogate
+# Bubbly acoustics with a recurrent per-cell surrogate
 
 Wave equation coupled to stiff per-cell ODEs (1-D acoustics through a
 region of dispersed bubbles). The network replaces the per-cell bubble

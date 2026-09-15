@@ -15,7 +15,7 @@ import pytest
 
 from tests.test_device_c import _omp_cc
 
-EXAMPLES = ["A_burgers_closure", "B_reaction_patch", "C_bubble_lstm", "D_poisson_guess"]
+EXAMPLES = ["burgers_closure", "reaction_patch", "bubble_lstm", "poisson_guess"]
 ROOT = Path(__file__).resolve().parents[2] / "examples" / "surrogates"
 
 

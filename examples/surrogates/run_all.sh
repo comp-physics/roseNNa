@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 tc=${1:-gnu}
 extra=()
 [ "$tc" = gnu ] && extra=(NB=4 NX=64)
-for d in A_burgers_closure B_reaction_patch C_bubble_lstm D_poisson_guess; do
+for d in burgers_closure reaction_patch bubble_lstm poisson_guess; do
     echo "== $d ($tc)"
     make -s -C "$d" TOOLCHAIN="$tc" "${extra[@]}"
 done

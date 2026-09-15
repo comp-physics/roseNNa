@@ -1,4 +1,4 @@
-# D. Poisson solves with a conv-net initial guess
+# Poisson solves with a conv-net initial guess
 
 Elliptic PDE (periodic Poisson, the pressure solve of a projection
 method). The network does not replace the solver; it starts it. A small
