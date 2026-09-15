@@ -464,7 +464,7 @@ reproducer.
 The HIP path was validated the same way: `gpu-gate --backend hip` on an
 AMD Instinct MI210 (gfx90a), under ROCm 7.2.0 (`amdclang` / `amdflang`
 `-fopenmp --offload-arch=gfx90a`, `hipcc`) and under the TheRock AFAR
-23.2.1 drop, `PASS` both times (`gate-reports/gate-report-hip-*.md`). Per
+23.2.1 drop, `PASS` both times. Per
 point: 2.0-3.1 ns for the C per-point host, 4.6-4.8 ns Fortran, 4.0 ns
 through the native HIP kernel embedded and 6.6-6.9 ns file-loaded. Three
 changes were needed, none in the generated arithmetic:

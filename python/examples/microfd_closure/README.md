@@ -2,10 +2,11 @@
 
 The device path this repository generates (OpenMP-target, OpenACC, CUDA and
 HIP hosts; a native batched kernel; the same contract from C and Fortran) is
-validated by running `rosenna gpu-gate` on a machine with a real accelerator
-and recording the report it writes. Those runs are on record in
-`gate-reports/`: CUDA on an A100 and HIP on an MI210, both `PASS`. This
-example itself has only been compiled and run on the host.
+validated by running `rosenna gpu-gate` on a machine with a real accelerator:
+CUDA on an A100 and HIP on an MI210, both `PASS`. The gate writes a report of
+every command and its output, so the claim is reproducible rather than
+recorded -- run it on your own machine. This example itself has only been
+compiled and run on the host.
 
 ## What this is
 

@@ -18,7 +18,6 @@
 !python/examples/**/*.cu
 !python/README.md
 !doc/*.md
-!gate-reports/*.md
 !*.F90
 !*.mk
 !examples/**/*.md
