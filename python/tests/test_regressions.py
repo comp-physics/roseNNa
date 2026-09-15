@@ -692,3 +692,47 @@ def test_softmax_refuses_what_its_loop_does_not_compute(tmp_path, shape, axis, f
     path = _softmax_model(tmp_path / "bad.onnx", shape, axis=axis, out_shape=shape)
     with pytest.raises(UnsupportedModel, match=fragment):
         validate(load_graph(path))
+
+
+# --- BatchNormalization ----------------------------------------------------
+
+def test_conv_batchnorm_folds_away_and_still_matches_onnxruntime(tmp_path):
+    """End to end: the fold is only correct if the generated code agrees with ORT.
+
+    The unit tests in test_fold.py check the arithmetic of the rewrite; this
+    checks that the rewritten graph, compiled, computes what the original
+    model means -- which is the claim that matters, and the one a sign error
+    in the broadcast axis would break.
+    """
+    # float32: onnxruntime has no float64 Conv kernel, so a f64 model cannot be
+    # given a reference at all.
+    rng = np.random.default_rng(21)
+    ini = [numpy_helper.from_array(a.astype(np.float32), n) for a, n in (
+        (rng.uniform(-1, 1, (4, 3, 3, 3)), "w"),
+        (rng.uniform(-1, 1, 4), "b"),
+        (rng.uniform(0.5, 2.0, 4), "scale"),
+        (rng.uniform(-1, 1, 4), "B"),
+        (rng.uniform(-1, 1, 4), "mean"),
+        (rng.uniform(0.5, 2.0, 4), "var"))]
+    graph = helper.make_graph(
+        [helper.make_node("Conv", ["x", "w", "b"], ["h"], name="c0",
+                          kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
+         helper.make_node("BatchNormalization", ["h", "scale", "B", "mean", "var"],
+                          ["bn"], name="n0", epsilon=1e-5),
+         helper.make_node("Relu", ["bn"], ["y"], name="r0")], "convbn",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 3, 6, 6])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 4, 6, 6])], ini)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+    import onnx as _onnx
+    path = tmp_path / "convbn.onnx"
+    _onnx.save(model, str(path))
+
+    # The op is gone by the time anything downstream sees the graph.
+    assert not any(n.op == "BatchNormalization" for n in load_graph(path).nodes)
+
+    x = rng.uniform(-2, 2, (1, 3, 6, 6)).astype(np.float32)
+    f, c = _both_backends(tmp_path, path, "convbn", x.reshape(1, -1), dtype="f32")
+    want = ort.InferenceSession(str(path)).run(None, {"x": x})[0].ravel()
+    assert np.allclose(c, want, rtol=1e-5, atol=1e-6), f"c: {np.max(np.abs(c - want)):.3e}"
+    assert np.allclose(f, want, rtol=1e-5, atol=1e-6), f"fortran: {np.max(np.abs(f - want)):.3e}"

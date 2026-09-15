@@ -21,6 +21,16 @@ MAX_RANK = 4
 
 def validate(graph: Graph) -> None:
     for node in graph.nodes:
+        if node.op == "BatchNormalization":
+            # It is supported, but only by disappearing: fold.fold_batchnorm
+            # multiplies it into the Conv/Gemm that feeds it. Reaching here
+            # means that did not apply, and the generic "not supported"
+            # message would be actively misleading about why.
+            raise UnsupportedModel(
+                f"node '{node.name}': BatchNormalization is supported only when it can "
+                f"be folded into the Conv or Gemm that produces its input -- which needs "
+                f"inference mode, constant scale/B/mean/var of the right length, and that "
+                f"intermediate value read by nothing else. This one could not be folded")
         if node.op not in SUPPORTED:
             raise UnsupportedModel(
                 f"node '{node.name}': {node.op} is not supported; "

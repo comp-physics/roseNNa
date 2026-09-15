@@ -6,7 +6,7 @@ import onnx
 from onnx import numpy_helper, shape_inference
 
 from .errors import UnsupportedModel
-from .fold import fold_constants, strip_shape_inputs
+from .fold import fold_batchnorm, fold_constants, strip_shape_inputs
 
 _DTYPES = {onnx.TensorProto.FLOAT: "f32", onnx.TensorProto.DOUBLE: "f64"}
 
@@ -111,8 +111,11 @@ def load_graph(path, name: str | None = None) -> Graph:
         ))
     inputs = tuple(vi.name for vi in g.input if vi.name not in initializers)
     outputs = tuple(vi.name for vi in g.output)
-    graph = strip_shape_inputs(fold_constants(
-        Graph(name or path.stem, tuple(nodes), values, initializers, inputs, outputs)))
+    # fold_constants first: a BatchNormalization's scale/B/mean/var reach the
+    # graph as Constant nodes in some exports, and fold_batchnorm needs them as
+    # initializers to multiply.
+    graph = strip_shape_inputs(fold_batchnorm(fold_constants(
+        Graph(name or path.stem, tuple(nodes), values, initializers, inputs, outputs))))
     for n in graph.nodes:
         for v in tuple(n.inputs) + tuple(n.outputs):
             if v in unsupported_dtype:

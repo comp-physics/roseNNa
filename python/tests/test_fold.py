@@ -138,3 +138,112 @@ def test_a_constant_node_folds_from_each_value_attribute():
         out = fold_constants(graph)
         assert out.nodes == (), f"{attr}: the Constant should be folded away"
         assert out.initializers["v"].shape == (2,)
+
+
+# --- BatchNormalization folding -------------------------------------------
+#
+# The fold is what makes BatchNormalization work at all: there is no loop nest
+# for it in either emitter, so if the pass stops firing the op does not get
+# slower, it stops being supported. These check both that it fires and that
+# the arithmetic it folds is right.
+
+def _bn(name, x, out, chan, dtype=np.float32, **attrs):
+    """A BatchNormalization node plus its four constant parameters."""
+    rng = np.random.default_rng(abs(hash(name)) % 2**32)
+    params = {
+        f"{name}_scale": rng.uniform(0.5, 2.0, chan).astype(dtype),
+        f"{name}_B": rng.uniform(-1, 1, chan).astype(dtype),
+        f"{name}_mean": rng.uniform(-1, 1, chan).astype(dtype),
+        f"{name}_var": rng.uniform(0.5, 2.0, chan).astype(dtype),
+    }
+    node = Node("BatchNormalization", name, (x,) + tuple(params), (out,), attrs)
+    return node, params
+
+
+def _conv_bn_graph(**bn_attrs):
+    """Conv(3->4, 3x3) -> BatchNormalization, as a Graph ready for the pass."""
+    rng = np.random.default_rng(1)
+    w = rng.uniform(-1, 1, (4, 3, 3, 3)).astype(np.float32)
+    b = rng.uniform(-1, 1, 4).astype(np.float32)
+    conv = Node("Conv", "c0", ("x", "w", "b"), ("h",),
+                {"kernel_shape": (3, 3), "pads": (1, 1, 1, 1)})
+    bn, params = _bn("bn0", "h", "y", 4, **bn_attrs)
+    return Graph("g", (conv, bn),
+                 {"x": Tensor("x", (1, 3, 8, 8), "f32"),
+                  "h": Tensor("h", (1, 4, 8, 8), "f32"), "y": Tensor("y", (1, 4, 8, 8), "f32")},
+                 {"w": w, "b": b, **params}, ("x",), ("y",))
+
+
+def test_batchnorm_folds_into_a_conv_and_matches_the_reference_arithmetic():
+    from rosenna.fold import fold_batchnorm
+    g = _conv_bn_graph()
+    w0, b0 = g.initializers["w"].copy(), g.initializers["b"].copy()
+    scale, shift = g.initializers["bn0_scale"], g.initializers["bn0_B"]
+    mean, var = g.initializers["bn0_mean"], g.initializers["bn0_var"]
+
+    out = fold_batchnorm(g)
+    assert [n.op for n in out.nodes] == ["Conv"], "the BatchNormalization should be gone"
+    assert out.nodes[0].outputs == ("y",), "the Conv takes over the BN's output"
+    assert "h" not in out.values, "the value between them stops existing"
+
+    s = scale / np.sqrt(var + 1e-5)
+    assert np.allclose(out.initializers["w"], w0 * s.reshape(-1, 1, 1, 1))
+    assert np.allclose(out.initializers[out.nodes[0].inputs[2]], (b0 - mean) * s + shift)
+    # The BN's own parameters are unreferenced now and must not ship.
+    assert not any(k.startswith("bn0_") for k in out.initializers), sorted(out.initializers)
+
+
+@pytest.mark.parametrize("trans_b", [0, 1])
+def test_batchnorm_folds_into_a_gemm_on_either_weight_layout(trans_b):
+    """transB decides which axis of the weight the channel scale broadcasts along."""
+    from rosenna.fold import fold_batchnorm
+    rng = np.random.default_rng(2)
+    shape = (5, 6) if trans_b else (6, 5)
+    w = rng.uniform(-1, 1, shape).astype(np.float32)
+    gemm = Node("Gemm", "g0", ("x", "w"), ("h",), {"transB": trans_b})
+    bn, params = _bn("bn1", "h", "y", 5)
+    g = Graph("g", (gemm, bn),
+              {"h": Tensor("h", (1, 5), "f32"), "y": Tensor("y", (1, 5), "f32")},
+              {"w": w, **params}, ("x",), ("y",))
+    out = fold_batchnorm(g)
+    assert [n.op for n in out.nodes] == ["Gemm"]
+    s = params["bn1_scale"] / np.sqrt(params["bn1_var"] + 1e-5)
+    want = w * (s.reshape(-1, 1) if trans_b else s.reshape(1, -1))
+    assert np.allclose(out.initializers["w"], want)
+    # The Gemm had no bias; the shift is not optional, so it gains one.
+    assert len(out.nodes[0].inputs) == 3
+    assert np.allclose(out.initializers[out.nodes[0].inputs[2]],
+                       (0 - params["bn1_mean"]) * s + params["bn1_B"])
+
+
+@pytest.mark.parametrize("why,mutate", [
+    ("training mode", lambda g: _retag(g, {"training_mode": 1})),
+    ("a second reader of the intermediate", lambda g: _add_consumer(g)),
+    ("the intermediate is a graph output", lambda g: g._replace(outputs=("y", "h"))
+     if hasattr(g, "_replace") else _also_output(g)),
+])
+def test_batchnorm_is_left_in_place_when_folding_would_change_the_model(why, mutate):
+    """Each of these makes the fold unsound, so the op survives and is refused."""
+    from rosenna.fold import fold_batchnorm
+    from rosenna.validate import validate
+    g = mutate(_conv_bn_graph())
+    out = fold_batchnorm(g)
+    assert any(n.op == "BatchNormalization" for n in out.nodes), why
+    with pytest.raises(UnsupportedModel, match="could not be folded"):
+        validate(out)
+
+
+def _retag(g, attrs):
+    nodes = tuple(Node(n.op, n.name, n.inputs, n.outputs, {**n.attrs, **attrs})
+                  if n.op == "BatchNormalization" else n for n in g.nodes)
+    return Graph(g.name, nodes, g.values, g.initializers, g.inputs, g.outputs)
+
+
+def _add_consumer(g):
+    extra = Node("Relu", "r0", ("h",), ("z",), {})
+    return Graph(g.name, g.nodes + (extra,), {**g.values, "z": Tensor("z", (1, 4, 8, 8), "f32")},
+                 g.initializers, g.inputs, g.outputs + ("z",))
+
+
+def _also_output(g):
+    return Graph(g.name, g.nodes, g.values, g.initializers, g.inputs, ("y", "h"))
