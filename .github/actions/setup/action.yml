@@ -1,0 +1,28 @@
+name: Set up roseNNa
+description: Python with a cached pip, and the project's dependencies.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        # Every job installed the same ~500 MB of wheels from scratch:
+        # "Install dependencies" was 64-128s in each of the nine, the single
+        # largest repeated cost in the matrix.
+        cache: pip
+        cache-dependency-path: requirements.txt
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        # CPU torch on Linux: the default wheel is 529 MB against 188 MB, and
+        # nothing in CI runs torch on a GPU -- it only exports the golden
+        # models. requirements.txt then finds torch already satisfied.
+        # macOS wheels are CPU-only anyway and are not on that index.
+        if [ "${{ runner.os }}" = "Linux" ]; then
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+        fi
+        pip install -r requirements.txt
+        pip install -e python

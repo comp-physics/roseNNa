@@ -28,18 +28,11 @@ jobs:
       - name: Check gfortran version
         run: gfortran --version
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
 
       - name: Python package tests
-        run: |
-          pip install -e python
-          cd python && python3 -m pytest tests -v
+        run: cd python && python3 -m pytest tests -v
 
       # A dead-model skip (the golden models are regenerated unseeded each run
       # and can come out all-zero) is legitimate; a skip for a missing compiler
@@ -75,15 +68,8 @@ jobs:
       - name: Check nvcc
         run: nvcc --version && gcc --version
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -e python
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
 
       - name: CUDA backend compiles under nvcc (not skipped)
         run: |
@@ -120,15 +106,8 @@ jobs:
       - name: Check hipcc
         run: hipcc --version
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -e python
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
 
       - name: HIP backend compiles under hipcc (not skipped)
         run: |
@@ -157,15 +136,8 @@ jobs:
           compiler: gcc
           version: 13
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -e python
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
 
       # -rs and the SKIPPED check together: a sanitizer job that skips every
       # case because a compiler is missing would otherwise report success.
@@ -185,15 +157,8 @@ jobs:
       - name: Clone roseNNa
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -e python
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
 
       - name: Check clang
         run: clang --version
@@ -231,15 +196,8 @@ jobs:
           sudo apt-get install -y flang-20
           flang-20 --version
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -e python
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
 
       - name: Every golden model builds with flang and matches onnxruntime
         env:
@@ -266,15 +224,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y intel-oneapi-compiler-fortran
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -e python
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
 
       # setvars.sh is what puts ifx and its runtime on PATH/LD_LIBRARY_PATH;
       # it has to be sourced in the same step that runs the tests.
@@ -306,15 +257,8 @@ jobs:
           compiler: gcc
           version: 13
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -e python pytest-cov
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
 
       - name: Coverage is above the floor
         run: cd python && python3 -m pytest tests --cov -q
