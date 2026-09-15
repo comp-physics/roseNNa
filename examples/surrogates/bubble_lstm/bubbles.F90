@@ -13,7 +13,10 @@ program bubbles
 #endif
     integer, parameter :: nb_ = NB, nx = 512, ncell = nb_ * nx
     real(real64), parameter :: dx = 0.05_real64, dt = 0.05_real64
-    integer, parameter :: nsteps = 400
+#ifndef NSTEPS
+#define NSTEPS 400
+#endif
+    integer, parameter :: nsteps = NSTEPS
     real(real64), parameter :: beta0 = 0.1_real64                   ! unstable above ~0.2
     real(real64), parameter :: x_lo = 10.0_real64, x_hi = 20.0_real64, tol = 0.10_real64
     integer, parameter :: nbin = 8, n_sub = 10

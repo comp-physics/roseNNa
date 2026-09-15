@@ -4,3 +4,4 @@ numpy>=1.24
 fypp>=3.1
 onnxruntime>=1.15
 pytest>=8.0
+pytest-cov

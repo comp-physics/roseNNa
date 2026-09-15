@@ -284,3 +284,37 @@ jobs:
           source /opt/intel/oneapi/setvars.sh >/dev/null
           cd python && ROSENNA_FC=ifx python3 -m pytest tests/test_golden_suite.py -v -rs 2>&1 | tee ifx.log
           ! grep -q "SKIPPED" ifx.log
+
+  # Coverage of the generator, with a floor. The number is not the point: the
+  # floor is, because it turns "this change quietly stopped testing something"
+  # into a failure. validate.py sat at 75% until every uncovered line turned out
+  # to be a `raise` -- a refusal nobody had ever run, in the file whose whole
+  # job is refusing what it cannot compile correctly.
+  #
+  # gate.py is omitted (see pyproject.toml): it drives real compilers and a real
+  # GPU, so measuring it here would report the runner, not the tests.
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Set up gfortran
+        uses: fortran-lang/setup-fortran@v1
+        with:
+          compiler: gcc
+          version: 13
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e python pytest-cov
+
+      - name: Coverage is above the floor
+        run: cd python && python3 -m pytest tests --cov -q

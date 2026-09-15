@@ -17,7 +17,9 @@
 #define NCELL (NB * NXC)
 #define DX 0.05
 #define DT 0.05
+#ifndef NSTEPS
 #define NSTEPS 400
+#endif
 #define BETA 0.1            /* coupling in the bubbly region; unstable above ~0.2 */
 #define X_LO 10.0
 #define X_HI 20.0
