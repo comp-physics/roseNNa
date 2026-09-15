@@ -51,10 +51,13 @@ buffers, and a weight layout.
   sharing it.
 - **Buffers are recycled.** Input and output get dedicated buffers; every
   intermediate rotates through a free list.
-- **Several inputs, one buffer.** A model with more than one graph input takes
-  them concatenated in `x` in declaration order, and each secondary input is
-  copied out of its slice. That is what keeps `infer(x, y)` — and with it
-  `infer_batch`, the native kernel and the device contract — unchanged.
+- **Several inputs, one buffer; several outputs, one buffer.** A model with
+  more than one graph input takes them concatenated in `x` in declaration
+  order, and each secondary input is copied out of its slice; a model with
+  more than one graph output writes them concatenated in `y`, each secondary
+  output copied into its slice after the last op. That is what keeps
+  `infer(x, y)` — and with it `infer_batch`, the native kernel and the device
+  contract — unchanged.
 
 The plan carries a sha256 of itself, which the weights file records and the
 generated reader checks.

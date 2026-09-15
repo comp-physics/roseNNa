@@ -50,7 +50,10 @@ def test_nobias_gemm_from_matmul(golden_model):
     assert all(o.bias is None for o in p.ops)
 
 
-def test_multi_output_graph_raises_unsupported_model(tmp_path):
+def test_multi_output_graph_concatenates_its_outputs_in_y(tmp_path):
+    # Several graph outputs are the mirror of several inputs: y is the
+    # concatenation in declaration order, and each secondary output is a
+    # copy into its slice of y after the last op.
     import onnx
     from onnx import helper, TensorProto
     x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 2])
@@ -62,5 +65,8 @@ def test_multi_output_graph_raises_unsupported_model(tmp_path):
     m = helper.make_model(g, opset_imports=[helper.make_opsetid("", 13)])
     p = tmp_path / "multi_output.onnx"
     onnx.save(m, p)
-    with pytest.raises(UnsupportedModel, match="one output and at least one input"):
-        build_plan(load_graph(p))
+    plan = build_plan(load_graph(p))
+    assert plan.output.shape == (4,)
+    gather = [op for op in plan.ops if op.kind == "copy" and op.dst_offset]
+    assert [(op.inp, op.dst_offset, op.n_out) for op in gather] == [("z", 2, 2)]
+    assert plan.assignment[gather[0].out] == "y"

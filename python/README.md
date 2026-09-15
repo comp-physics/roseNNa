@@ -499,17 +499,23 @@ generated model into a solver.
 ## Limits
 
 - Supported ops: `Gemm`, `MatMul`, `Conv`, `MaxPool`, `AveragePool`, `LSTM`,
-  `Add`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`,
+  `Add`, `Concat`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`,
   `Identity`, `Relu`, `Tanh`, `Sigmoid`. Values may be rank 1 to 4; the
   spatial ops are 2-D (rank-4 NCHW) only, `Conv` must be ungrouped, and
   `LSTM` must be forward-direction with the default activations; its
   initial state may be a graph input (it arrives in `x`) or a constant (it
   becomes a weight). A `Gemm` bias must have one value per output, not a
-  broadcast `(1,)`. No batch norm, no `Concat`, no `Softmax`, no `Pad` node,
-  no GRU.
-- One output tensor. Several *inputs* are fine: they arrive concatenated in
-  `x` in declaration order, so `infer(x, y)` -- and with it `infer_batch`,
-  the native kernel and the whole device contract -- is unchanged.
+  broadcast `(1,)`. `Concat` joins runtime values and constants along one
+  axis. No batch norm, no `Softmax`, no `Pad` node, no GRU.
+- Several inputs and several outputs are fine. Inputs arrive concatenated
+  in `x` in declaration order; outputs leave concatenated in `y` the same
+  way, so `infer(x, y)` -- and with it `infer_batch`, the native kernel and
+  the whole device contract -- is unchanged. `rosenna info` prints both
+  layouts (`x: p[0:1] h[1:5] c[5:9]`, `y: Y[0:4] hn[4:8] cn[8:12]`). That
+  is what lets a solver keep a recurrent model's state resident: an LSTM
+  with `initial_h`/`initial_c` as graph inputs and `Y_h`/`Y_c` as graph
+  outputs is called once per cell per step, and `y`'s state slices go
+  straight back into `x`'s next step, with no copy off the device.
 - Everything constant is folded away at generation time, so a `Reshape` of a
   weight or an int64 shape tensor never reaches the generated code. A
   relabelling op on a runtime value (`Reshape`, `Squeeze`, `Flatten`, and any

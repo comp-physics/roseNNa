@@ -4,6 +4,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import numpy as np
+
 from google.protobuf.message import DecodeError
 
 from .emit_c import emit_c, emit_c_recipe
@@ -196,10 +198,25 @@ def _cmd_gate(args) -> int:
                     host_fallback=args.host_fallback)
 
 
+def _layout(graph, names) -> str:
+    """`name[start:stop]` per tensor: where each graph input sits in x, each output in y."""
+    parts, off = [], 0
+    for n in names:
+        length = int(np.prod(graph.values[n].shape))
+        parts.append(f"{n}[{off}:{off + length}]")
+        off += length
+    return " ".join(parts)
+
+
 def _cmd_info(args) -> int:
     graph = load_graph(args.model)
     for line in _describe_ops(graph):
         print(line)
+    # The flat layouts a caller programs against: several inputs arrive
+    # concatenated in x, several outputs leave concatenated in y, both in
+    # declaration order.
+    print(f"x: {_layout(graph, graph.inputs)}")
+    print(f"y: {_layout(graph, graph.outputs)}")
     try:
         build_plan(graph)
     except UnsupportedModel as e:

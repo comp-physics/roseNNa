@@ -393,7 +393,8 @@ def _emit_infer(plan: Plan) -> list:
     kinds = {op.kind for op in plan.ops}
     spatial = kinds & {"conv", "maxpool", "avgpool"}
     loop_vars = [v for v, used in (
-        ("i", any(k in ("gemm", "copy", "lstm") or k in _ACT for k in kinds)),
+        ("i", any(k in ("gemm", "copy", "lstm", "concat") or k in _ACT for k in kinds)),
+        ("o", "concat" in kinds),
         ("j", "lstm" in kinds and "gemm" not in kinds),
         ("j", "gemm" in kinds),
         ("r", any(op.kind == "gemm" and op.rows > 1 for op in plan.ops)),
@@ -463,11 +464,15 @@ def _emit_infer(plan: Plan) -> list:
                 [plan.assignment[o] for o in op.outs])
         elif op.kind == "add":
             lines += _emit_add_f(op, plan.assignment[op.out], plan.assignment[op.inp])
+        elif op.kind == "concat":
+            lines += _emit_concat_f(op, plan.assignment[op.out],
+                                    [plan.assignment[op.inp]] + [plan.assignment[n] for n in op.extra_in])
         elif op.kind == "copy":
             dst, src = plan.assignment[op.out], plan.assignment[op.inp]
-            off = f"{op.src_offset} + " if op.src_offset else ""
+            soff = f"{op.src_offset} + " if op.src_offset else ""
+            doff = f"{op.dst_offset} + " if op.dst_offset else ""
             lines.append(f"        do i = 1, {op.n_out}")
-            lines.append(f"            {dst}(i) = {src}({off}i)")
+            lines.append(f"            {dst}({doff}i) = {src}({soff}i)")
             lines.append("        end do")
         elif op.kind in ("conv", "maxpool", "avgpool"):
             lines += _emit_spatial_f(op, plan.assignment[op.out], plan.assignment[op.inp])
@@ -497,6 +502,23 @@ def _max_counter_rank(plan) -> int:
     """How many c-counters the widest Add or Transpose nest in this model needs."""
     return max((len(op.bcast.out_shape) if op.kind == "add" else len(op.out_shape)
                 for op in plan.ops if op.kind in ("add", "transpose")), default=0)
+
+
+def _emit_concat_f(op, dst, runtime_names):
+    """The Fortran twin of _emit_concat_c; weights are module arrays, named by symbol."""
+    from .emit_c import _concat_sources
+    cc = op.concat
+    srcs = _concat_sources(op, runtime_names, list(op.concat_syms))
+    row = sum(cc.blocks)
+    L = [f"        do o = 0, {cc.outer - 1}"]
+    off = 0
+    for name, block in srcs:
+        L.append(f"            do i = 1, {block}")
+        L.append(f"                {dst}(o * {row} + {off} + i) = {name}(o * {block} + i)")
+        L.append("            end do")
+        off += block
+    L.append("        end do")
+    return L
 
 
 def _emit_transpose_f(op, dst, src):

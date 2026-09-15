@@ -125,6 +125,22 @@ class Broadcast:
 
 
 @dataclass(frozen=True)
+class Concat:
+    """A Concat resolved to copy extents.
+
+    Row-major, concatenating along `axis` means: for each of `outer` index
+    tuples over the axes before it, the output row is the inputs' blocks laid
+    end to end, block j being input j's extent along the axis times the
+    inner size. `blocks` is one entry per operand, in order; `consts` marks
+    which operands are weights (read through their symbol) rather than
+    runtime buffers. The emitters write two loops and no shape arithmetic.
+    """
+    outer: int
+    blocks: tuple
+    consts: tuple
+
+
+@dataclass(frozen=True)
 class Lstm:
     """A forward LSTM with the ONNX default activations, resolved to extents.
 
@@ -163,6 +179,11 @@ class Op:
     spatial: Spatial | None = None
     # Set for kind == "add".
     bcast: Broadcast | None = None
+    # kind == "concat": the operands are inp (the first runtime one) plus
+    # extra_in (the remaining runtime ones) and the weight symbols in
+    # concat_syms, interleaved in ONNX input order as concat.consts says.
+    concat: "Concat | None" = None
+    concat_syms: tuple = ()
     # kind == "lstm": the recurrence weight R (weight/bias carry W and B).
     weight2: str | None = None
     # kind == "lstm": the recurrent shape, and the names of the extra operands
@@ -174,9 +195,12 @@ class Op:
     # hidden and cell state -- the case a folded `Constant` node leaves behind.
     # Exclusive with extra_in, which names them when they are graph values.
     init_syms: tuple = ()
-    # kind == "copy": read the source starting this far into its buffer. Used to
-    # hand each secondary graph input its slice of the concatenated x.
+    # kind == "copy": read the source starting this far into its buffer (a
+    # secondary graph input's slice of the concatenated x), or write the
+    # destination starting this far into its buffer (a secondary graph
+    # output's slice of the concatenated y).
     src_offset: int = 0
+    dst_offset: int = 0
     # kind == "transpose": per-output-axis stride into the source buffer.
     perm_strides: tuple = ()
     out_shape: tuple = ()
@@ -333,12 +357,9 @@ def _lstm_spec(graph: Graph, node) -> Lstm:
 
 def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None) -> Plan:
     validate(graph)
-    if len(graph.inputs) < 1 or len(graph.outputs) != 1:
-        # Several inputs are fine -- they arrive concatenated in x, see below --
-        # but a second output would need a second buffer in the signature, and
-        # with it a different entry point, batched form and device contract.
+    if len(graph.inputs) < 1 or len(graph.outputs) < 1:
         raise UnsupportedModel(
-            f"this generator handles one output and at least one input; "
+            f"this generator needs at least one input and one output; "
             f"got {len(graph.inputs)} inputs and {len(graph.outputs)} outputs")
     dtype = dtype or graph.values[graph.inputs[0]].dtype
     if dtype not in _ITEMSIZE:
@@ -428,6 +449,32 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
                           extra_in=extra, outs=outs, init_syms=init_syms))
             widx += 1
             continue
+        if node.op == "Concat":
+            shapes = [tuple(int(d) for d in (graph.initializers[i].shape if i in graph.initializers
+                                              else graph.values[i].shape)) for i in node.inputs]
+            rank = len(shapes[0])
+            axis = int(node.attrs.get("axis", 0))
+            axis = axis + rank if axis < 0 else axis
+            outer = int(np.prod(shapes[0][:axis])) if axis else 1
+            inner = int(np.prod(shapes[0][axis + 1:])) if axis + 1 < rank else 1
+            blocks = tuple(sh[axis] * inner for sh in shapes)
+            consts = tuple(i in graph.initializers for i in node.inputs)
+            syms = []
+            for i in node.inputs:
+                if i in graph.initializers:
+                    syms.append(weight(i, f"w{widx}_{len(syms)}", (int(graph.initializers[i].size),)))
+            runtime = [i for i in node.inputs if i not in graph.initializers]
+            if not runtime:
+                raise UnsupportedModel(f"node '{node.name}': all-constant Concat should have folded")
+            out_t = graph.values[node.outputs[0]]
+            ops.append(Op("concat", node.outputs[0], runtime[0], None, None,
+                          _length(graph.values[runtime[0]]), _length(out_t),
+                          extra_in=tuple(runtime[1:]),
+                          concat=Concat(outer=outer, blocks=blocks, consts=consts),
+                          concat_syms=tuple(syms)))
+            if syms:
+                widx += 1
+            continue
         if node.op == "Add":
             const_name = next(i for i in node.inputs if i in graph.initializers)
             src_name = next(i for i in node.inputs if i not in graph.initializers)
@@ -480,21 +527,31 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
                       int(n_in), int(n_out), bool(trans_b), rows=in_len // int(n_in)))
         widx += 1
 
-    # One entry point, one input buffer: a model with several graph inputs (an
-    # LSTM's initial hidden and cell state, say) takes them concatenated in
-    # declaration order, and each secondary input is copied out of its slice
-    # below. Keeping infer(x, y) intact is what keeps infer_batch, the native
-    # kernel, the weights ABI and the whole device contract unchanged.
+    # One entry point, one input buffer, one output buffer: a model with
+    # several graph inputs (an LSTM's initial hidden and cell state, say)
+    # takes them concatenated in declaration order, each secondary input
+    # copied out of its slice of x below; a model with several graph outputs
+    # (that LSTM's Y, Y_h and Y_c) writes them concatenated in declaration
+    # order, each secondary output copied into its slice of y after the last
+    # op. Keeping infer(x, y) intact is what keeps infer_batch, the native
+    # kernel, the weights ABI and the whole device contract unchanged, and
+    # is what lets a solver keep a recurrent model's state resident: y's
+    # h'/c' slices go straight back into x's h/c slices next step.
     in_lens = [_length(graph.values[n]) for n in graph.inputs]
+    out_lens = [_length(graph.values[n]) for n in graph.outputs]
     in_t = graph.values[graph.inputs[0]]
     out_t = graph.values[graph.outputs[0]]
     flat_in = Tensor(in_t.name, (sum(in_lens),), dtype)
-    flat_out = Tensor(out_t.name, (_length(out_t),), dtype)
+    flat_out = Tensor(out_t.name, (sum(out_lens),), dtype)
     slice_ops, off = [], in_lens[0]
     for name, n in zip(graph.inputs[1:], in_lens[1:]):
         slice_ops.append(Op("copy", name, graph.inputs[0], None, None, n, n, src_offset=off))
         off += n
-    ops = slice_ops + ops
+    gather_ops, off = [], out_lens[0]
+    for name, n in zip(graph.outputs[1:], out_lens[1:]):
+        gather_ops.append(Op("copy", f"{name}->y", name, None, None, n, n, dst_offset=off))
+        off += n
+    ops = slice_ops + ops + gather_ops
     buffers, assignment = _assign_buffers(graph, ops, flat_in, flat_out)
 
     n_params = sum(_weight_elems(w.shape) for w in weights)
@@ -536,6 +593,10 @@ def _assign_buffers(graph: Graph, ops, flat_in: Tensor, flat_out: Tensor):
 
     buffers = {"x": flat_in.shape[0], "y": flat_out.shape[0]}
     assignment = {flat_in.name: "x", flat_out.name: "y"}
+    # A secondary graph output's gather copy writes into y at its offset.
+    for op in ops:
+        if op.kind == "copy" and op.dst_offset:
+            assignment[op.out] = "y"
     last_use = {}
     for i, op in enumerate(ops):
         for src in (op.inp,) + tuple(op.extra_in):
@@ -553,6 +614,10 @@ def _assign_buffers(graph: Graph, ops, flat_in: Tensor, flat_out: Tensor):
     for i, op in enumerate(ops):
         if op.kind == "alias":
             assignment[op.out] = assignment[root(op.inp)]
+            continue
+        if op.kind == "copy" and op.dst_offset:
+            # A gather into y: its destination is y itself (assigned above), and
+            # y's length is already the whole concatenated output.
             continue
         for out in (op.out,) + tuple(op.outs):
             if out not in assignment:

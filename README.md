@@ -60,7 +60,7 @@ A model under a million parameters embeds its weights into the generated source 
 
 ## Supported ONNX operators and limits
 
-roseNNa generates code for: `Gemm`, `MatMul`, `Conv`, `MaxPool`, `AveragePool`, `LSTM`, `Add`,
+roseNNa generates code for: `Gemm`, `MatMul`, `Conv`, `MaxPool`, `AveragePool`, `LSTM`, `Add`, `Concat`,
 `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`, `Identity`, `Relu`, `Sigmoid`, `Tanh`.
 
 Everything statically knowable is resolved at generation time: shapes, buffer sizes, padding (including `auto_pad`), and every node whose inputs are all constants -- so a `Reshape` of a weight, or an int64 shape tensor, never reaches the emitted code.
@@ -71,7 +71,7 @@ A model using something the generator cannot lower is **refused by name at gener
 - `Conv` `group` must be 1 (no grouped or depthwise convolution)
 - `Gemm` `alpha` and `beta` must be 1, `transA` must be 0, and weights must be constant
 - `LSTM` must be forward-direction with the default activations, no `clip`, `input_forget`, `sequence_lens` or peepholes
-- one output; several inputs are fine and arrive concatenated (see below)
+- several inputs and several outputs are fine; they arrive concatenated in `x` and leave concatenated in `y` (see below)
 - every weight must be a constant initializer, not computed at runtime
 
 ## Verify it
@@ -84,7 +84,7 @@ compiles both backends and compares them against onnxruntime on random inputs. E
 
 ## Several inputs
 
-A model with more than one graph input -- an LSTM's initial hidden and cell state, say -- takes them **concatenated in declaration order** in the single `x` buffer. That keeps one entry point, one input buffer, and so one device contract, for every model.
+A model with more than one graph input -- an LSTM's initial hidden and cell state, say -- takes them **concatenated in declaration order** in the single `x` buffer, and a model with more than one graph output -- that LSTM's `Y`, `Y_h` and `Y_c` -- writes them concatenated the same way in `y`. That keeps one entry point, one input buffer, one output buffer, and so one device contract, for every model; `rosenna info` prints where each tensor sits. A solver that keeps a recurrent model's state per cell feeds `y`'s state slices straight back into `x` next step, on the device.
 
 ## GPU use
 

@@ -7,7 +7,7 @@ from .frontend import Graph, UnsupportedModel
 # lowered by plan.py into explicit loop nests over flat buffers; an op that is
 # not here is refused by name rather than silently mis-lowered.
 SUPPORTED = {"Gemm", "MatMul", "Relu", "Tanh", "Sigmoid",
-             "Conv", "MaxPool", "AveragePool", "Add", "Transpose", "LSTM",
+             "Conv", "MaxPool", "AveragePool", "Add", "Transpose", "LSTM", "Concat",
              # Relabelling ops: fold.resolve_shape_ops deletes these outright
              # unless one produces the graph output, where it becomes a copy.
              "Reshape", "Squeeze", "Unsqueeze", "Flatten", "Identity"}
@@ -42,6 +42,8 @@ def validate(graph: Graph) -> None:
                     f"{rhs.ndim}; only rank 2 is supported")
         if node.op == "Add":
             _validate_add(graph, node)
+        if node.op == "Concat":
+            _validate_concat(graph, node)
         if node.op == "LSTM":
             _validate_lstm(graph, node)
         if node.op in _SPATIAL:
@@ -170,6 +172,32 @@ def _validate_spatial(graph: Graph, node) -> None:
                 f"{where}: {node.op} with a second (indices) output is not supported")
         if int(node.attrs.get("storage_order", 0)) != 0:
             raise UnsupportedModel(f"{where}: MaxPool storage_order=1 (column major) is not supported")
+
+
+def _validate_concat(graph: Graph, node) -> None:
+    """Concat of runtime values and constants along one axis, shapes agreeing elsewhere."""
+    where = f"node '{node.name}'"
+    if not node.inputs:
+        raise UnsupportedModel(f"{where}: Concat needs at least one input")
+    shapes = []
+    for name in node.inputs:
+        if name in graph.initializers:
+            shapes.append(tuple(int(d) for d in graph.initializers[name].shape))
+        elif name in graph.values:
+            shapes.append(tuple(int(d) for d in graph.values[name].shape))
+        else:
+            raise UnsupportedModel(f"{where}: Concat input '{name}' has no known shape")
+    rank = len(shapes[0])
+    if any(len(sh) != rank for sh in shapes):
+        raise UnsupportedModel(f"{where}: Concat inputs must all have the same rank; got {shapes}")
+    axis = int(node.attrs.get("axis", 0))
+    axis = axis + rank if axis < 0 else axis
+    if not 0 <= axis < rank:
+        raise UnsupportedModel(f"{where}: Concat axis {node.attrs.get('axis')} is out of range for rank {rank}")
+    for sh in shapes[1:]:
+        if any(a != b for k, (a, b) in enumerate(zip(shapes[0], sh)) if k != axis):
+            raise UnsupportedModel(
+                f"{where}: Concat inputs differ off the concatenation axis {axis}: {shapes}")
 
 
 def _validate_add(graph: Graph, node) -> None:

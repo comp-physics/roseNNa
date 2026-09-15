@@ -51,8 +51,8 @@ def _live_reference(session, shape, dtype, seed=0, batch=8, max_attempts=10):
     for _ in range(max_attempts):
         inputs = rng.uniform(-2, 2, (batch, int(np.prod(shape)))).astype(dtype)
         expected = np.array([
-            session.run(None, {session.get_inputs()[0].name:
-                                row.reshape(shape).astype(np.float32)})[0].ravel()
+            np.concatenate([o.ravel() for o in session.run(
+                None, {session.get_inputs()[0].name: row.reshape(shape).astype(np.float32)})])
             for row in inputs
         ])
         if np.count_nonzero(expected) >= 2:
@@ -154,7 +154,8 @@ def _live_inputs(session, shapes, cases: int, model_path, np_dtype):
             for name, sh, ln in zip(names, shapes, lens):
                 feed[name] = row[off:off + ln].reshape(sh).astype(np_dtype)
                 off += ln
-            expected.append(session.run(None, feed)[0].ravel())
+            # Every graph output, flat, in declaration order: the y layout.
+            expected.append(np.concatenate([o.ravel() for o in session.run(None, feed)]))
         expected = np.array(expected)
         if np.count_nonzero(expected) >= 2:
             return inputs, expected

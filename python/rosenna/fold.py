@@ -18,7 +18,7 @@ from .errors import UnsupportedModel
 # Anything not listed is left for the emitters, even if its inputs happen to
 # all be constant: this list is "what fold knows how to compute", not "what is
 # foldable in principle".
-FOLDABLE = {"Reshape", "Transpose", "Squeeze", "Unsqueeze", "Flatten", "Identity"}
+FOLDABLE = {"Reshape", "Transpose", "Squeeze", "Unsqueeze", "Flatten", "Identity", "Concat"}
 
 
 def _resolve_shape(target, source_shape) -> tuple:
@@ -65,6 +65,9 @@ def _evaluate(node, inits):
     a = inits[node.inputs[0]]
     if node.op == "Identity":
         return a
+    if node.op == "Concat":
+        axis = int(node.attrs.get("axis", 0))
+        return np.concatenate([inits[i] for i in node.inputs], axis=axis)
     if node.op == "Reshape":
         if len(node.inputs) < 2 or node.inputs[1] not in inits:
             raise UnsupportedModel(f"node '{node.name}': Reshape needs a constant shape input")

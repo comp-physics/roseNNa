@@ -886,6 +886,29 @@ def _emit_lstm_c(op, ctype, act, dst, src, h0, c0, wsym, rsym, bsym, outs, zero)
     return L
 
 
+def _concat_sources(op, runtime_names, const_names) -> list:
+    """The operands in ONNX order, each as (array name, block length)."""
+    rt, ct, out = iter(runtime_names), iter(const_names), []
+    for is_const, block in zip(op.concat.consts, op.concat.blocks):
+        out.append((next(ct) if is_const else next(rt), block))
+    return out
+
+
+def _emit_concat_c(op, dst, runtime_names, const_names):
+    """Concat along an axis: for each outer index, the operands' blocks end to end."""
+    cc = op.concat
+    srcs = _concat_sources(op, runtime_names, const_names)
+    row = sum(cc.blocks)
+    L = [f"    for (int o = 0; o < {cc.outer}; ++o) {{"]
+    off = 0
+    for name, block in srcs:
+        L.append(f"        for (int i = 0; i < {block}; ++i) "
+                 f"{dst}[o * {row} + {off} + i] = {name}[o * {block} + i];")
+        off += block
+    L.append("    }")
+    return L
+
+
 def _emit_add_c(op, dst, src, wsym):
     """Elementwise add of a broadcast constant: one loop per output axis.
 
@@ -1059,10 +1082,15 @@ def _emit_infer(plan: Plan, ctype: str) -> list:
                 [plan.assignment[o] for o in op.outs], _ZERO[plan.dtype])
         elif op.kind == "add":
             lines += _emit_add_c(op, dst, src, _weight_ref(plan, m, op.weight))
+        elif op.kind == "concat":
+            lines += _emit_concat_c(
+                op, dst, [src] + [plan.assignment[n] for n in op.extra_in],
+                [_weight_ref(plan, m, sym) for sym in op.concat_syms])
         elif op.kind == "copy":
-            off = f"{op.src_offset} + " if op.src_offset else ""
+            soff = f"{op.src_offset} + " if op.src_offset else ""
+            doff = f"{op.dst_offset} + " if op.dst_offset else ""
             lines.append(
-                f"    for (int i = 0; i < {op.n_out}; ++i) {dst}[i] = {src}[{off}i];")
+                f"    for (int i = 0; i < {op.n_out}; ++i) {dst}[{doff}i] = {src}[{soff}i];")
         elif op.kind in ("conv", "maxpool", "avgpool"):
             lines += _emit_spatial_c(
                 op, ctype, dst, src,
