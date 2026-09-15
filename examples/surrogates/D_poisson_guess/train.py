@@ -1,29 +1,16 @@
-"""Train a conv net that guesses the solution of a periodic Poisson problem, and export it.
+"""Train a conv net that guesses the solution of a periodic Poisson problem; writes poisson_guess.onnx.
 
-The PDE is lap(phi) = f on an N x N periodic grid (dx = 1, mean-zero f, phi
-fixed to mean zero). The solver in poisson.c / poisson.F90 is a Jacobi
-iteration; the surrogate does not replace it, it *starts* it: phi0 = NN(f),
-and Jacobi runs from there to a residual tolerance. The check is the
-iteration count against two baselines a time-stepping code would use --
-a zero guess and the previous step's solution -- with the same tolerance.
+lap(phi) = f on an N x N periodic grid, dx = 1, mean-zero f and phi. The
+solvers run Jacobi; the network starts it: phi0 = NN(f).
 
-The model is three 5x5 convolutions, 1 -> 8 -> 8 -> 1 channels, tanh between,
-with NO padding: a 13-cell halo is what three 5x5 layers consume, and the
-SOLVER supplies it by wrapping f periodically into a (N + 12) x (N + 12)
-array before the call. ONNX Conv only zero-pads, so a periodic halo has to
-come from the caller either way, and putting it there keeps the exported
-graph plain. The whole field is one input (NCHW, 1 x 1 x 76 x 76) and one
-output (1 x 1 x 64 x 64): a single infer call per step, not one per cell.
+Three 5x5 convolutions, 1 -> 8 -> 8 -> 1, tanh between, no padding: the
+solver supplies the 6-cell periodic halo (ONNX Conv only zero-pads), so the
+input is the whole field as NCHW 1 x 1 x 76 x 76 and the output 1 x 1 x 64 x 64.
 
-Training data: random mean-zero f from a few Fourier modes. The loss is
-the RESIDUAL of the guess, |lap(NN(f)) - f|^2, not its distance to the
-exact phi: Jacobi stops on the residual, and a guess fitted to phi in L2
-carries high-mode error that the Laplacian amplifies by k^2 -- the first
-version of this model, trained that way, made Jacobi take twice as many
-iterations as a zero guess. Trained on the residual, the same 13-cell net
-leaves 8% of the zero guess's residual (and, as it happens, a better phi).
-
-Writes poisson_guess.onnx.
+The loss is the residual |lap(NN(f)) - f|^2, not the distance to phi. Jacobi
+stops on the residual, and a guess fitted to phi carries high-mode error
+that the Laplacian amplifies by k^2: fitted that way, this net doubled the
+iteration count. On the residual it leaves 8% of the zero guess's.
 """
 import numpy as np
 import torch
@@ -31,17 +18,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 N = 64
-HALO = 6                     # three 5x5 valid convolutions eat 2 cells each side, each
+HALO = 6                     # three 5x5 valid convolutions, 2 cells each
 N_TRAIN = 512
-PHI_SCALE = 10.0             # phi has rms ~14 for unit-rms f (low modes are amplified by 1/k^2);
-                             # the net is trained on phi / PHI_SCALE and the factor folded into
-                             # its last convolution before export
+PHI_SCALE = 10.0             # phi has rms ~14; trained at phi / PHI_SCALE, folded into the last conv
 ITERS = 3000
 SEED = 13
 
 
 def random_rhs(rng, n):
-    """Mean-zero right-hand sides: 6 random Fourier modes with wavenumbers up to 8, unit rms."""
+    """Mean-zero, unit-rms right-hand sides: six random Fourier modes, wavenumbers up to 8."""
     x = np.arange(N)
     kx, ky = np.meshgrid(x, x, indexing="ij")
     f = np.zeros((n, N, N))
@@ -56,7 +41,7 @@ def random_rhs(rng, n):
 
 
 def exact_solution(f):
-    """lap(phi) = f, periodic, dx = 1, mean(phi) = 0, by the FFT of the 5-point Laplacian."""
+    """lap(phi) = f by the FFT of the 5-point stencil, mean(phi) = 0."""
     k = np.fft.fftfreq(N) * N
     kx, ky = np.meshgrid(k, k, indexing="ij")
     eig = 2 * np.cos(2 * np.pi * kx / N) + 2 * np.cos(2 * np.pi * ky / N) - 4    # 5-point stencil symbol
@@ -67,7 +52,7 @@ def exact_solution(f):
 
 
 def wrap(f, halo=HALO):
-    """Periodic halo, the way the solvers build the model's input."""
+    """Periodic halo, as the solvers build the model's input."""
     return F.pad(f, (halo, halo, halo, halo), mode="circular")
 
 

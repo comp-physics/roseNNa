@@ -1,30 +1,11 @@
-/* Periodic Poisson solves with a conv-net initial guess, C.
- *
- * Pattern: a whole-field surrogate. The model takes the entire right-hand
- * side as ONE input (NCHW 1 x 1 x (N+12) x (N+12): f with a 6-cell periodic
- * halo the solver builds, since three 5x5 valid convolutions consume it)
- * and returns the whole guess (1 x 1 x N x N) -- one poisson_guess_infer
- * call per step, not one per cell. The solver then runs Jacobi from that
- * guess to a residual tolerance and counts iterations, against two
- * baselines a time-stepping code would use: a zero guess and the previous
- * step's solution (a warm start). The right-hand side changes every step
- * (a rotating pattern), as a pressure-projection RHS would.
- *
- * Structure to notice -- and the one place in these examples where a copy
- * sits inside the step loop. The generated infer is a per-point routine:
- * its intermediate activations are locals of the call, and for a
- * whole-field model those are the whole field's activations, 8 x 72 x 72
- * plus 8 x 68 x 68 doubles here, 660 KB. A device thread cannot hold that
- * (amdclang refuses: "stack frame size exceeds limit (131056)"), so the
- * guess runs on the HOST and the solver uploads it -- 32 KB, once per
- * step, an explicit `target update to` that is the solver's own choice.
- * The model's weights are still uploaded once, at init (here: never; they
- * are embedded). A whole-field model on the device wants a tiled kernel
- * with shared activations, which the generator does not yet have; until
- * it does, this is the pattern, and it is worth knowing the cost.
- *
- * Exits 0 if the NN-started solve converges and takes fewer iterations
- * than the zero-started one on average. */
+/* Periodic Poisson solves with a conv-net initial guess. The whole right-hand
+   side, with a 6-cell periodic halo the solver builds, is one model input
+   (NCHW 1 x 1 x 76 x 76); the guess (1 x 1 x 64 x 64) starts a Jacobi solve on
+   the device. Iterations are counted against a zero start and a warm start.
+   The guess runs on the host: the generated infer holds a whole-field model's
+   activations (660 KB here) as locals, more than a device thread's stack, so
+   the solver uploads the 32 KB guess each step. Exits 0 if the NN start takes
+   fewer iterations than the zero start. */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,13 +16,13 @@
 #define HALO 6
 #define NP (N + 2 * HALO)
 #define NSTEPS 20
-#define TOL 1e-3            /* |lap(phi) - f| / |f| */
+#define TOL 1e-3
 #define MAX_IT 20000
 #define CHECK_EVERY 20
 
 static inline int wrap(int i) { return (i + N) % N; }
 
-/* Right-hand side at step s: six Fourier modes whose phases rotate with s. */
+/* Six Fourier modes whose phases advance with the step; mean zero, unit rms. */
 static void rhs(double *f, int s) {
     static const int P[6] = {1, 2, -3, 4, 5, -7}, Q[6] = {2, -1, 3, 1, -5, 2};
     static const double A[6] = {0.9, -0.7, 0.5, 0.6, -0.4, 0.3};
@@ -59,7 +40,7 @@ static void rhs(double *f, int s) {
     for (int c = 0; c < N * N; ++c) f[c] /= rms;
 }
 
-/* Jacobi from phi (in place, with tmp) until |lap(phi) - f| / |f| < TOL; returns iterations. */
+/* Jacobi in place until |lap(phi) - f| / |f| < TOL; returns iterations. */
 static int jacobi(double *phi, double *tmp, const double *f, double fnorm) {
     int it;
     for (it = 0; it < MAX_IT; it += 2) {
@@ -105,26 +86,23 @@ int main(void) {
     long it_nn = 0, it_zero = 0, it_warm = 0;
     double t_guess = 0.0;
 
-    /* Everything the loop touches is mapped once. */
 #pragma omp target enter data map(alloc: f[0:N * N], tmp[0:N * N]) \
                               map(to: phi_nn[0:N * N], phi_zero[0:N * N], phi_warm[0:N * N])
     for (int s = 0; s < NSTEPS; ++s) {
         rhs(f, s);
-        const double fnorm = sqrt((double)(N * N));         /* unit rms */
-#pragma omp target update to(f[0:N * N])                       /* the step's new RHS: the solver's own I/O */
+        const double fnorm = sqrt((double)(N * N));
+#pragma omp target update to(f[0:N * N])
 
-        /* The NN guess, on the host: periodic halo, one whole-field infer, upload. */
         const double t0 = omp_get_wtime();
-        for (int i = 0; i < NP; ++i)
+        for (int i = 0; i < NP; ++i)                           /* periodic halo */
             for (int j = 0; j < NP; ++j)
                 fp[i * NP + j] = f[wrap(i - HALO) * N + wrap(j - HALO)];
-        poisson_guess_infer(fp, phi_nn);                       /* one call, the whole field */
-#pragma omp target update to(phi_nn[0:N * N])                  /* the guess: 32 KB, once per step */
+        poisson_guess_infer(fp, phi_nn);                       /* the whole field, on the host */
+#pragma omp target update to(phi_nn[0:N * N])
         zero_mean(phi_nn);
         t_guess += omp_get_wtime() - t0;
 
         it_nn += jacobi(phi_nn, tmp, f, fnorm);
-        /* Baselines: from zero, and from the previous step's solution. */
 #pragma omp target teams distribute parallel for
         for (int c = 0; c < N * N; ++c) phi_zero[c] = 0.0;
         it_zero += jacobi(phi_zero, tmp, f, fnorm);
@@ -135,15 +113,15 @@ int main(void) {
 
     printf("%dx%d periodic Poisson, %d steps of a rotating right-hand side, Jacobi to %.0e:\n",
            N, N, NSTEPS, TOL);
-    printf("  iterations per step, from a zero guess              %6.0f\n", (double)it_zero / NSTEPS);
-    printf("  iterations per step, from the previous solution     %6.0f\n", (double)it_warm / NSTEPS);
-    printf("  iterations per step, from the NN guess              %6.0f   (guess: %.1f ms per step)\n",
+    printf("  iterations per step from zero               %6.0f\n", (double)it_zero / NSTEPS);
+    printf("  iterations per step from the last solution  %6.0f\n", (double)it_warm / NSTEPS);
+    printf("  iterations per step from the NN guess       %6.0f   (guess: %.1f ms per step)\n",
            (double)it_nn / NSTEPS, 1e3 * t_guess / NSTEPS);
     free(f); free(tmp); free(fp); free(phi_nn); free(phi_zero); free(phi_warm);
     if (it_nn >= (long)MAX_IT * NSTEPS || it_nn >= it_zero) {
-        printf("FAIL: the NN guess did not reduce the iteration count\n");
+        printf("FAIL: NN guess did not help\n");
         return 1;
     }
-    printf("OK: the NN guess saves %.0f%% of the zero-start iterations\n", 100.0 * (1.0 - (double)it_nn / it_zero));
+    printf("OK: NN guess saves %.0f%% of the zero-start iterations\n", 100.0 * (1.0 - (double)it_nn / it_zero));
     return 0;
 }

@@ -1,33 +1,19 @@
-"""Train a recurrent surrogate for a polydisperse bubble population and export it.
+"""Train a recurrent surrogate for a polydisperse bubble population; writes bubbles.onnx.
 
-The resolved physics, per cell of the acoustic solver: NBIN bubble-size
-bins, each a Rayleigh-Plesset oscillator driven by the cell's acoustic
-pressure p'(t),
+Per cell of the acoustic solver, NBIN Rayleigh-Plesset bins driven by the
+cell's pressure p'(t),
 
     R R'' + 3/2 R'^2 = p_g(R) - 1 - p' - 4 mu R'/R,   p_g = (R0/R)^(3 gamma)
 
-(nondimensional: rho = c = p_ambient = 1), integrated with RK4 in N_SUB
-sub-steps per acoustic step DT. What the acoustics need back is the rate of
-change of the population's volume fraction,
+(rho = c = p_ambient = 1), RK4 in N_SUB sub-steps per acoustic step DT. The
+acoustics need s(t) = d/dt sum_k w_k (R_k/R0_k)^3 back, the source in
+p_t = -(u_x + beta s). The surrogate is an LSTM cell per grid cell: input
+p', state (h, c) carried by the solver, output s. Exported with the state
+as graph inputs and outputs; the generator concatenates them in x and y.
 
-    s(t) = d/dt sum_k w_k (R_k/R0_k)^3,
-
-the source in p_t = -(u_x + beta s). That is 8 bins x 10 RK4 sub-steps x
-~40 flops per cell per step, and it is the part the surrogate replaces.
-
-The surrogate is an LSTM cell per grid cell: input p'(t), hidden and cell
-state carried by the solver from step to step, output s(t). The exported
-graph has THREE inputs (p', h, c) and THREE outputs (s, h', c'), which the
-generator lays out concatenated in x and y (`rosenna info` prints where);
-the solver keeps h and c resident on the device and copies y's state
-slices straight back into x's next step.
-
-Training is teacher-forced on sequences: random pressure signals (pulses
-and tones, the shapes the acoustic solver produces), the population
-integrated exactly, and the LSTM fitted to s(t) with the state flowing
-through the whole sequence, which is exactly how it is used.
-
-Writes bubbles.onnx.
+Teacher-forced on random pressure sequences (pulses and weak tones), the
+state flowing through whole sequences, as it is used. The head is trained
+on s / S_SCALE and the factor folded into its weights before export.
 """
 import numpy as np
 import torch
@@ -39,9 +25,7 @@ W = np.ones(NBIN) / NBIN                         # bin weights (volume fraction 
 GAMMA, MU = 1.4, 0.05
 DT, N_SUB = 0.05, 10
 HIDDEN = 32
-S_SCALE = 10.0               # the head predicts s / S_SCALE: s has rms ~0.08, and a
-                             # unit-scale target trains far faster; folded into the head's
-                             # weights before export so the solver sees s itself
+S_SCALE = 10.0               # s has rms ~0.08
 N_SEQ, T_SEQ = 256, 400
 EPOCHS = 1500
 SEED = 5
@@ -68,7 +52,7 @@ def population_source(R, V, r0):
 
 
 def pressure_signals(rng, n, t):
-    """Random forcings: a few pulses of random width and sign plus a weak tone, |p'| <~ 0.4."""
+    """A few pulses of random width and sign plus a weak tone, |p'| below about 0.5."""
     p = np.zeros((n, len(t)))
     for i in range(n):
         for _ in range(rng.integers(1, 4)):
@@ -92,8 +76,6 @@ def make_sequences(rng):
 
 
 class Bubbles(nn.Module):
-    """One LSTM step: (p', h, c) -> (s, h', c'). Exported with the state as graph inputs and outputs."""
-
     def __init__(self):
         super().__init__()
         self.lstm = nn.LSTM(1, HIDDEN)
@@ -101,7 +83,7 @@ class Bubbles(nn.Module):
 
     def forward(self, p, h, c):
         out, (hn, cn) = self.lstm(p, (h, c))
-        # squeeze, not out[0]: indexing exports an int64 Gather the generator refuses
+        # squeeze, not out[0]: indexing exports an int64 Gather
         return self.head(torch.squeeze(out, 0)), hn, cn
 
 
@@ -116,7 +98,7 @@ def main():
     opt = torch.optim.Adam(model.parameters(), lr=3e-3)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, EPOCHS)
     for ep in range(EPOCHS):
-        out, _ = model.lstm(P)                                  # teacher forcing over the whole sequence
+        out, _ = model.lstm(P)
         pred = model.head(out)
         loss = ((pred - S) ** 2).mean()
         opt.zero_grad()
@@ -126,13 +108,11 @@ def main():
         sched.step()
         if ep % 250 == 0:
             print(f"epoch {ep:4d}  relative rms error {np.sqrt(loss.item()) / np.sqrt((S ** 2).mean().item()):.3f}")
-    # Fold the scale into the head: the exported model outputs s directly.
     with torch.no_grad():
         model.head.weight /= S_SCALE
         model.head.bias /= S_SCALE
     model.eval()
-    with torch.no_grad():
-        # Held-out sequences, run step by step with the state fed back, as the solver does.
+    with torch.no_grad():                                        # held-out, state fed back step by step
         p2, s2 = make_sequences(np.random.default_rng(SEED + 1))
         h = torch.zeros(1, N_SEQ, HIDDEN); c = torch.zeros(1, N_SEQ, HIDDEN)
         pred = np.zeros_like(s2)

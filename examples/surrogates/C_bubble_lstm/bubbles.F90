@@ -1,11 +1,8 @@
-! 1-D acoustics through a bubbly region, with a recurrent per-cell surrogate, Fortran.
-!
-! The twin of bubbles.c: every cell owns an LSTM state (h, c) resident on
-! the device for the whole run; each step the model gets x = [p', h, c] and
-! returns y = [s, h', c'] (`rosenna info bubbles.onnx`: x: p[0:1] h[1:33]
-! c[33:65], y: s[0:1] h_next[1:33] c_next[33:65]), the solver copies the
-! state slices back into its own arrays and uses s as the acoustic source.
-! Embedded model, no init. Explicit-shape dummies throughout (see A).
+! 1-D acoustics through a bubbly region with a recurrent per-cell surrogate;
+! the twin of bubbles.c. State arrays are hs/cs (Fortran is case-insensitive,
+! and C collided with the cell index c); the slice copies are element loops,
+! since a section assignment in a target region needs a runtime call the
+! device lacks under amdflang.
 program bubbles
     use bubbles_model, only: bubbles_infer
     use iso_fortran_env, only: real64
@@ -14,10 +11,10 @@ program bubbles
 #ifndef NB
 #define NB 64
 #endif
-    integer, parameter :: nb_ = NB, nx = 512, ncell = nb_ * nx      ! ensemble; -DNB=4 for a quick host run
-    real(real64), parameter :: dx = 0.05_real64, dt = 0.05_real64   ! CFL = 1
+    integer, parameter :: nb_ = NB, nx = 512, ncell = nb_ * nx
+    real(real64), parameter :: dx = 0.05_real64, dt = 0.05_real64
     integer, parameter :: nsteps = 400
-    real(real64), parameter :: beta0 = 0.1_real64                   ! coupling; unstable above ~0.2 at this dt
+    real(real64), parameter :: beta0 = 0.1_real64                   ! unstable above ~0.2
     real(real64), parameter :: x_lo = 10.0_real64, x_hi = 20.0_real64, tol = 0.10_real64
     integer, parameter :: nbin = 8, n_sub = 10
     real(real64), parameter :: gam = 1.4_real64, mu = 0.05_real64
@@ -43,7 +40,6 @@ program bubbles
     end do
     hs = 0.0_real64; cs = 0.0_real64
 
-    ! Reference: the polydisperse population per cell, RK4-substepped.
     !$omp target enter data map(to: wp, wm, beta, R, V) map(alloc: wp2, wm2, src)
     t0 = omp_get_wtime()
     call run(wp, wm, wp2, wm2, beta, R, V, hs, cs, src, .false.)
@@ -51,7 +47,6 @@ program bubbles
     !$omp target exit data map(from: wp, wm) map(delete: wp2, wm2, src, beta, R, V)
     pref = 0.5_real64 * (wp + wm)
 
-    ! Surrogate: same pulse, LSTM state per cell resident on the device.
     call set_pulse(wp, wm)
     !$omp target enter data map(to: wp, wm, beta, hs, cs) map(alloc: wp2, wm2, src)
     t0 = omp_get_wtime()
@@ -61,10 +56,10 @@ program bubbles
 
     err = sqrt(sum((0.5_real64 * (wp + wm) - pref)**2) / sum(pref**2))
     print '(I0,A,I0,A,I0,A,I0,A,I0,A)', nb_, ' lines x ', nx, ' cells, ', nsteps, &
-        ' steps through a bubbly region (', nbin, ' bins, ', n_sub, ' RK4 sub-steps per step):'
-    print '(A,F9.1,A,F6.1,A)', '  reference population   ', 1e3 * t_ref, ' ms  (', &
+        ' steps; ', nbin, ' bins x ', n_sub, ' RK4 sub-steps per cell-step in the reference:'
+    print '(A,F9.1,A,F6.1,A)', '  reference population  ', 1e3 * t_ref, ' ms  (', &
         1e9 * t_ref / (real(ncell, real64) * nsteps), ' ns per cell-step)'
-    print '(A,F9.1,A,F6.1,A)', '  LSTM surrogate         ', 1e3 * t_nn, ' ms  (', &
+    print '(A,F9.1,A,F6.1,A)', '  LSTM surrogate        ', 1e3 * t_nn, ' ms  (', &
         1e9 * t_nn / (real(ncell, real64) * nsteps), ' ns per cell-step)'
     print '(A,ES10.3)', '  relative L2 error of the surrogate''s pressure field: ', err
     if (.not. (err < tol)) then
@@ -89,8 +84,7 @@ contains
         dv = ((r0 / r)**(3.0_real64 * gam) - 1.0_real64 - p - 4.0_real64 * mu * v / r - 1.5_real64 * v * v) / r
     end subroutine
 
-    ! Advance one cell's nbin bins through n_sub RK4 sub-steps under pressure p;
-    ! return s = sum_k w_k 3 R_k^2 V_k / R0_k^3 afterwards.
+    ! One acoustic step of one cell's bins; returns s = sum_k w_k 3 R_k^2 V_k / R0_k^3.
     function population_step(rr, vv, p) result(s)
         !$omp declare target
         real(real64), intent(inout) :: rr(nbin), vv(nbin)
@@ -114,7 +108,6 @@ contains
         end do
     end function
 
-    ! One acoustic step: sources from the bubbles (reference or surrogate), then transport.
     subroutine step(wp, wm, wp_new, wm_new, beta, R, V, hs, cs, src, use_nn)
         real(real64), intent(in) :: wp(ncell), wm(ncell), beta(ncell)
         real(real64), intent(out) :: wp_new(ncell), wm_new(ncell), src(ncell)
@@ -122,9 +115,6 @@ contains
         logical, intent(in) :: use_nn
         real(real64) :: p, x(nin), y(nout)
         integer :: c, b, i, l, r_, j
-        ! Element loops, not array sections: a section assignment inside a
-        ! target region lowers to a Fortran runtime call the device lacks
-        ! (_FortranAAssign, amdflang).
         !$omp target teams distribute parallel do private(p, x, y, j)
         do c = 1, ncell
             p = 0.5_real64 * (wp(c) + wm(c))
@@ -133,7 +123,7 @@ contains
                 do j = 1, hid
                     x(1 + j) = hs(j, c); x(1 + hid + j) = cs(j, c)
                 end do
-                call bubbles_infer(x, y)                     ! the surrogate: one LSTM step
+                call bubbles_infer(x, y)
                 src(c) = y(1)
                 do j = 1, hid
                     hs(j, c) = y(1 + j); cs(j, c) = y(1 + hid + j)
@@ -171,7 +161,7 @@ contains
                  / 4294967296.0_real64
     end function
 
-    ! A right-going pulse per line, amplitude and width hashed as in bubbles.c.
+    ! A right-going pulse per line, hashed amplitude and width.
     subroutine set_pulse(wp, wm)
         real(real64), intent(out) :: wp(ncell), wm(ncell)
         real(real64) :: amp, sig, x

@@ -1,17 +1,6 @@
-! Periodic Poisson solves with a conv-net initial guess, Fortran.
-!
-! The twin of poisson.c: the whole right-hand side, with a 6-cell periodic
-! halo, is ONE model input (NCHW 1 x 1 x 76 x 76 -> 1 x 1 x 64 x 64), one
-! poisson_guess_infer call per step; Jacobi then runs from the guess on the
-! device to a residual tolerance, against a zero start and a warm start.
-!
-! As in poisson.c, the guess runs on the HOST and is uploaded (32 KB per
-! step): the generated infer holds a whole-field model's activations as
-! locals of the call, 660 KB here, beyond what a device thread can hold.
-!
-! Layout: the model's NCHW input is row-major with the halo'd row index
-! slowest; Fortran arrays are column-major, so fp is declared fp(np_, np_)
-! indexed (j, i) -- column j fastest -- to hand infer the same flat order.
+! Periodic Poisson solves with a conv-net initial guess; the twin of poisson.c.
+! fp is fp(np_, np_) indexed (j, i): the model's NCHW input is row-major with
+! the row index slowest, and Fortran is column-major.
 program poisson
     use poisson_guess_model, only: poisson_guess_infer
     use iso_fortran_env, only: real64
@@ -30,23 +19,21 @@ program poisson
     allocate(f(n, n), tmp(n, n), fp(np_, np_), phi_nn(n, n), phi_zero(n, n), phi_warm(n, n))
     phi_nn = 0.0_real64; phi_zero = 0.0_real64; phi_warm = 0.0_real64
     it_nn = 0; it_zero = 0; it_warm = 0; t_guess = 0.0_real64
-    fnorm = sqrt(real(n * n, real64))                       ! unit rms
+    fnorm = sqrt(real(n * n, real64))
 
-    ! Everything the loop touches is mapped once.
     !$omp target enter data map(alloc: f, tmp) map(to: phi_nn, phi_zero, phi_warm)
     do s = 0, nsteps - 1
         call rhs(f, s)
-        !$omp target update to(f)                           ! the step's new RHS: the solver's own I/O
+        !$omp target update to(f)
 
-        ! The NN guess, on the host: periodic halo, one whole-field infer, upload.
         t0 = omp_get_wtime()
-        do i = 0, np_ - 1
+        do i = 0, np_ - 1                                   ! periodic halo
             do j = 0, np_ - 1
                 fp(j + 1, i + 1) = f(wrap(j - halo) + 1, wrap(i - halo) + 1)
             end do
         end do
-        call poisson_guess_infer(fp, phi_nn)                ! one call, the whole field
-        !$omp target update to(phi_nn)                      ! the guess: 32 KB, once per step
+        call poisson_guess_infer(fp, phi_nn)                ! the whole field, on the host
+        !$omp target update to(phi_nn)
         call zero_mean(phi_nn)
         t_guess = t_guess + (omp_get_wtime() - t0)
 
@@ -59,15 +46,15 @@ program poisson
 
     print '(I0,A,I0,A,I0,A,ES7.0,A)', n, 'x', n, ' periodic Poisson, ', nsteps, &
         ' steps of a rotating right-hand side, Jacobi to ', tol, ':'
-    print '(A,F6.0)', '  iterations per step, from a zero guess              ', real(it_zero, real64) / nsteps
-    print '(A,F6.0)', '  iterations per step, from the previous solution     ', real(it_warm, real64) / nsteps
-    print '(A,F6.0,A,F5.1,A)', '  iterations per step, from the NN guess              ', real(it_nn, real64) / nsteps, &
+    print '(A,F6.0)', '  iterations per step from zero               ', real(it_zero, real64) / nsteps
+    print '(A,F6.0)', '  iterations per step from the last solution  ', real(it_warm, real64) / nsteps
+    print '(A,F6.0,A,F5.1,A)', '  iterations per step from the NN guess       ', real(it_nn, real64) / nsteps, &
         '   (guess: ', 1e3 * t_guess / nsteps, ' ms per step)'
     if (it_nn >= int(max_it, 8) * nsteps .or. it_nn >= it_zero) then
-        print '(A)', 'FAIL: the NN guess did not reduce the iteration count'
+        print '(A)', 'FAIL: NN guess did not help'
         stop 1
     end if
-    print '(A,F3.0,A)', 'OK: the NN guess saves ', 100.0_real64 * (1.0_real64 - real(it_nn, real64) / it_zero), &
+    print '(A,F3.0,A)', 'OK: NN guess saves ', 100.0_real64 * (1.0_real64 - real(it_nn, real64) / it_zero), &
         '% of the zero-start iterations'
 
 contains
@@ -78,7 +65,7 @@ contains
         wrap = modulo(i, n)
     end function
 
-    ! Right-hand side at step s: six Fourier modes whose phases rotate with s (as poisson.c).
+    ! Six Fourier modes whose phases advance with the step; mean zero, unit rms.
     subroutine rhs(f, s)
         real(real64), intent(out) :: f(n, n)
         integer, intent(in) :: s
@@ -98,7 +85,7 @@ contains
         f = f / sqrt(sum(f**2) / (n * n))
     end subroutine
 
-    ! One Jacobi sweep of phi into out. f(j, i) holds poisson.c's f[i*N + j].
+    ! One Jacobi sweep; f(j, i) holds poisson.c's f[i*N + j].
     subroutine sweep(phi, out, f)
         real(real64), intent(in) :: phi(n, n), f(n, n)
         real(real64), intent(out) :: out(n, n)
@@ -128,7 +115,7 @@ contains
         residual = sqrt(r2)
     end function
 
-    ! Jacobi from phi (in place, with tmp) until |lap(phi) - f| / |f| < tol; returns iterations.
+    ! Jacobi in place until |lap(phi) - f| / |f| < tol; returns iterations.
     integer function jacobi(phi, tmp, f, fnorm)
         real(real64), intent(inout) :: phi(n, n), tmp(n, n)
         real(real64), intent(in) :: f(n, n), fnorm

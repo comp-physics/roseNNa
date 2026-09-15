@@ -204,26 +204,21 @@ never even looks at it beyond passing it to the launch. An embedded model's
 instantiation asserts -- so on those compilers call it from a kernel, or use
 `infer_batch`.
 
-The point of that contract is a solver's time-step loop: the weights go to
-the device once, in `init` (or, embedded, as constants in the device
-image), and a loop that calls `infer` from its own target region or
-`infer_batch` once per step moves no model data at all -- the only copies
-in the loop are the solver's own, at I/O or halo exchange. `rosenna
-gpu-gate` measures exactly that: every harness runs a 4-step loop over the
-same resident points, with a profiler range around the whole loop, and
-the count of transfers inside it must be zero. That holds for all three
-harnesses (per-point C, per-point Fortran, native `infer_batch`), embedded
-and file-loaded, on the MI210 (`rocprofv3`; see [Verify](#verify)) and,
-for the `infer_batch` driver, on the A100 (`nsys`).
+A solver's time-step loop is what the contract is for: the weights go to
+the device once, in `init` or as constants in the device image, and a
+loop calling `infer` from its own target region or `infer_batch` once per
+step moves no model data. `rosenna gpu-gate` measures that: every harness
+runs a 4-step loop over resident data inside a profiler range, and the
+transfer count inside the range must be zero. It is, for all three
+harnesses, embedded and file-loaded, on the MI210 (`rocprofv3`) and, for
+the `infer_batch` driver, on the A100 (`nsys`).
 
-One thing the gate found on the way is worth knowing if your solver is
-Fortran: an `allocatable` array referenced inside a target region carries
-a descriptor, and `amdflang`'s OpenMP re-maps that descriptor on every
-region entry -- two small host-to-device copies per step for two arrays,
-in a loop whose data is fully resident. The gate's Fortran harness reaches
-its resident arrays through explicit-shape dummies instead (no descriptor,
-no per-step copy); a solver's step loop should do the same, or pass raw
-`c_ptr`s as the C path does.
+For Fortran solvers: an `allocatable` referenced inside a target region
+carries a descriptor, and `amdflang` re-maps that descriptor on every
+region entry, two small copies per step for two arrays whose data is
+resident. The gate's Fortran harness reaches its arrays through
+explicit-shape dummies instead; a solver's step loop should do the same,
+or pass `c_ptr`s as the C path does.
 
 Host offload flags, for the per-point path and the `omp` backend:
 
@@ -452,49 +447,40 @@ See [`examples/nvhpc_teams_mapping/`](examples/nvhpc_teams_mapping/) for the
 PTX, the `ncu` geometry and stall counters, and a self-contained
 reproducer.
 
-The HIP path has been validated the same way. `gpu-gate --backend hip` was
-run on an AMD Instinct MI210 (gfx90a) twice: under ROCm 7.2.0 (`amdclang`
-/ `amdflang` `-fopenmp --offload-arch=gfx90a` as the host compilers,
-`hipcc` as the device compiler) and under the TheRock AFAR 23.2.1 drop
-(`amdflang` 23.0), and reported `PASS: every configuration matched` both
-times (`gate-reports/gate-report-hip-*.md`). Per point: 2.0-3.1 ns for the
-C per-point host, 4.6-4.8 ns Fortran, 4.0 ns through the native HIP
-kernel embedded and 6.6-6.9 ns file-loaded. Three things had to change to
-get there, none of them in the generated arithmetic:
+The HIP path was validated the same way: `gpu-gate --backend hip` on an
+AMD Instinct MI210 (gfx90a), under ROCm 7.2.0 (`amdclang` / `amdflang`
+`-fopenmp --offload-arch=gfx90a`, `hipcc`) and under the TheRock AFAR
+23.2.1 drop, `PASS` both times (`gate-reports/gate-report-hip-*.md`). Per
+point: 2.0-3.1 ns for the C per-point host, 4.6-4.8 ns Fortran, 4.0 ns
+through the native HIP kernel embedded and 6.6-6.9 ns file-loaded. Three
+changes were needed, none in the generated arithmetic:
 
-- `__HIP__` is not a HIP-compilation signal. clang's OpenMP AMDGPU device
-  pass defines it from `openmp_wrappers/math.h` (to borrow HIP's device
-  math), so a header that accepted `__HIP__` next to `__HIPCC__` emitted
-  `static __device__ const` into a plain OpenMP host build. hip-clang
-  defines `__HIPCC__` itself for any HIP compilation, so that is the one
-  macro the guards test (the HIP twin of the nvptx `__CUDA_ARCH__` case).
-- `hipcc` does not include its runtime implicitly the way `nvcc` includes
-  `cuda_runtime.h`; the gate's device harness now includes `rosenna_rt.h`,
-  which already picks the right one.
-- `hipcc` injects `-x hip` ahead of a `.cu` input and that applies to every
-  later input, so a bare `libfoo.a` after the `.cu` is compiled as source.
-  The gate hands the archive to the linker as `-L`/`-l`, which both
-  compilers take.
+- `__HIP__` is defined by clang's OpenMP AMDGPU device pass (from
+  `openmp_wrappers/math.h`), so a header that accepted it took the
+  `__device__` branch inside a plain OpenMP host build. hip-clang defines
+  `__HIPCC__` for any HIP compilation; the guards test only that.
+- `hipcc` does not include its runtime implicitly as `nvcc` does; the
+  gate's device harness includes `rosenna_rt.h`.
+- `hipcc` puts `-x hip` ahead of a `.cu` input and it applies to every
+  later input, so a bare `lib.a` after the `.cu` was compiled as source.
+  The gate links the archive as `-L`/`-l`.
 
-The HIP run carries stronger transfer evidence than the CUDA one so far.
-`nsys` has no ROCm counterpart with a capture range, so the gate rebuilds
-each harness with a roctx range around its 4-step loop, runs it under
-`rocprofv3 --hip-trace --marker-trace --memory-copy-trace -f csv`, and cuts
-both the HIP API trace and the memory-copy trace to the range's timestamps
-(both are needed: a small `hipMemcpy` is staged by the host and never
-appears as a copy operation, and OpenMP offload's copies go over HSA and
-never appear as a HIP API call). Result: **zero transfers inside the
-4-step loop for all three harnesses**, per-point C, per-point Fortran and
-native `infer_batch`, embedded and file-loaded, while the drivers' own
-setup copies and `init`'s weight upload are visible in the same traces
-outside the range. On CUDA the same check brackets the same loops with
-nvtx and counts `cudaMemcpy*` and `cuMemcpy*` (the driver API nvc's
-offload uses) in `nsys`'s `cuda_api_sum`; it has been run on an A100 for
-the `infer_batch` driver, and the per-point harnesses go through the same
-path but have not yet been run there. A compile-only `nvcc` job also exists in CI
-(`.github/workflows/CI.yml`, `nvcc_compile`). See
-`python/examples/microfd_closure/` for a worked example of wiring a
-generated model into a solver.
+Transfer evidence on HIP: `rocprofv3` has no capture range, so the gate
+rebuilds each harness with a roctx range around its 4-step loop, runs it
+under `--hip-trace --marker-trace --memory-copy-trace`, and cuts both the
+HIP API trace and the memory-copy trace to the range (a small `hipMemcpy`
+is host-staged and never a copy operation; OpenMP offload's copies go over
+HSA and are never an API call). Zero transfers inside the loop for all
+three harnesses, embedded and file-loaded; the drivers' setup copies and
+`init`'s upload are in the same traces outside the range. On CUDA the
+same loops are bracketed with nvtx and `cudaMemcpy*` plus `cuMemcpy*`
+counted in `nsys`'s `cuda_api_sum`; run on an A100 for the `infer_batch`
+driver, not yet for the per-point harnesses. A compile-only `nvcc` job
+exists in CI (`.github/workflows/CI.yml`, `nvcc_compile`).
+
+For runnable examples of a model inside a solver's time loop, C and
+Fortran, see `examples/surrogates/`; `python/examples/microfd_closure/` is
+a documented patch against a real solver.
 
 ## Limits
 
@@ -508,14 +494,13 @@ generated model into a solver.
   broadcast `(1,)`. `Concat` joins runtime values and constants along one
   axis. No batch norm, no `Softmax`, no `Pad` node, no GRU.
 - Several inputs and several outputs are fine. Inputs arrive concatenated
-  in `x` in declaration order; outputs leave concatenated in `y` the same
-  way, so `infer(x, y)` -- and with it `infer_batch`, the native kernel and
-  the whole device contract -- is unchanged. `rosenna info` prints both
-  layouts (`x: p[0:1] h[1:5] c[5:9]`, `y: Y[0:4] hn[4:8] cn[8:12]`). That
-  is what lets a solver keep a recurrent model's state resident: an LSTM
-  with `initial_h`/`initial_c` as graph inputs and `Y_h`/`Y_c` as graph
-  outputs is called once per cell per step, and `y`'s state slices go
-  straight back into `x`'s next step, with no copy off the device.
+  in `x` in declaration order and outputs leave concatenated in `y`, so
+  `infer(x, y)`, `infer_batch`, the native kernel and the device contract
+  are unchanged. `rosenna info` prints both layouts (`x: p[0:1] h[1:5]
+  c[5:9]`, `y: Y[0:4] hn[4:8] cn[8:12]`). A recurrent model with
+  `initial_h`/`initial_c` as graph inputs and `Y_h`/`Y_c` as graph outputs
+  is called once per cell per step, and `y`'s state slices go back into
+  `x` for the next step on the device.
 - Everything constant is folded away at generation time, so a `Reshape` of a
   weight or an int64 shape tensor never reaches the generated code. A
   relabelling op on a runtime value (`Reshape`, `Squeeze`, `Flatten`, and any

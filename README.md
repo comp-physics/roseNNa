@@ -90,6 +90,10 @@ A model with more than one graph input -- an LSTM's initial hidden and cell stat
 
 The generated code is callable from a device loop, and `rosenna gpu-gate` validates that end to end on real hardware. See [python/README.md](python/README.md) for the full story: the batched entry point, the CUDA/HIP kernel, the build recipes, and the measured per-point cost.
 
+## Examples: surrogates inside PDE solvers
+
+[examples/surrogates/](examples/surrogates/) has four self-contained solvers, each in C and Fortran, with a network called inside the time-step loop -- a per-cell closure (coarse-grid Burgers), a batched learned time-stepper (reaction-diffusion), a recurrent per-cell model with resident state (bubbly acoustics), and a whole-field initial guess (Poisson). They are organised by where the network sits and what code structure that forces; `make TOOLCHAIN=amd|nvidia|gnu` in any of them generates, builds and runs.
+
 ## Further documentation
 
 - [python/README.md](python/README.md) -- install, generate, build, and call from C or Fortran

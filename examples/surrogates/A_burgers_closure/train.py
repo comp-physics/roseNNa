@@ -1,29 +1,19 @@
-"""Train the subgrid closure for coarse-grid Burgers and export it to ONNX.
+"""Train the subgrid closure for coarse-grid Burgers; writes closure.onnx.
 
-The resolved physics is viscous Burgers, u_t + (u^2/2)_x = nu u_xx, periodic
-on [0, 2 pi), solved with a Godunov flux for the convective term and central
-differences for the viscous one, forward Euler in time -- the same scheme
-burgers.c / burgers.F90 use. A fine grid (NF cells) resolves it; the coarse
-grid (NC cells, FACTOR times coarser) does not, and the closure is what the
-coarse scheme is missing. An MLP maps the 5-point stencil ubar_{i-2..i+2} to
-a per-cell correction R_i that the solver adds to its coarse right-hand
-side, inside its own offload loop.
+Viscous Burgers, periodic, Godunov flux + central viscous term + forward
+Euler (the scheme burgers.c / burgers.F90 use). NF cells resolve it; the
+NC-cell coarse grid does not. The closure is an MLP from the 7-point stencil
+of the coarse solution to a per-cell correction of the coarse right-hand
+side.
 
-How it is trained matters more than the network. Fitting the closure a
-priori -- on states taken from the box-filtered fine solution, to the
-residual [ubar(t+dt) - ubar(t)]/dt - rhs_coarse(ubar) -- explains most of
-that residual's variance and then makes the coarse run WORSE: at run time
-the closure sees its own drifting coarse state, not filtered-fine states.
-So it is trained a posteriori, with the coarse solver in the loop: the
-coarse scheme is written once more in torch (rhs_torch, the same arithmetic
-as rhs() above and as the C/Fortran solvers), a full NSTEPS-step rollout with
-the closure inside is unrolled from each training initial condition, and the
-loss is the relative error of that trajectory against the filtered-fine one.
-On 32 held-out realizations that cuts the mean 200-step error of the coarse
-scheme by about 1.3x and improves 94% of them; a local 7-point closure
-cannot recover sub-cell structure, so that is roughly the ceiling here.
-
-Writes closure.onnx (float32 weights; the solvers generate it at double).
+It is trained with the coarse solver in the loop: rhs_torch is the same
+scheme in torch, a full NSTEPS rollout with the closure inside is unrolled
+from each training initial condition, and the loss is the relative error of
+that trajectory against the box-filtered fine one. Fitting the closure a
+priori (to the residual on filtered-fine states) made the coarse run worse:
+at run time it sees its own drifting state. On held-out realizations this
+cuts the 200-step error by about 1.4x; a local closure cannot recover
+sub-cell structure, so that is about the ceiling here.
 """
 import numpy as np
 import torch
@@ -44,12 +34,11 @@ SEED = 7
 
 def rhs(u, dx, nu):
     """Godunov flux for u^2/2 plus central viscous term, periodic; vectorised over rows."""
-    ul, ur = u, np.roll(u, -1, axis=-1)            # left/right states at face i+1/2
+    ul, ur = u, np.roll(u, -1, axis=-1)
     fl, fr = 0.5 * ul * ul, 0.5 * ur * ur
-    # Godunov for a convex flux: min over the interval if ul <= ur, max if ul > ur.
     f_min = np.where((ul <= 0) & (ur >= 0), 0.0, np.minimum(fl, fr))
     f_max = np.maximum(fl, fr)
-    face = np.where(ul <= ur, f_min, f_max)         # F_{i+1/2}
+    face = np.where(ul <= ur, f_min, f_max)
     conv = -(face - np.roll(face, 1, axis=-1)) / dx
     visc = nu * (np.roll(u, -1, axis=-1) - 2 * u + np.roll(u, 1, axis=-1)) / (dx * dx)
     return conv + visc
@@ -92,7 +81,7 @@ def make_trajectories(rng):
 
 
 def rhs_torch(u, dx, nu):
-    """The coarse scheme in torch, differentiable, batched over rows: rhs() rewritten."""
+    """rhs() in torch, for the rollout loss."""
     ul, ur = u, torch.roll(u, -1, dims=-1)
     fl, fr = 0.5 * ul * ul, 0.5 * ur * ur
     f_min = torch.where((ul <= 0) & (ur >= 0), torch.zeros_like(u), torch.minimum(fl, fr))
@@ -108,7 +97,7 @@ def stencils_torch(u):
 
 
 def rollout(model, u0, k, dx):
-    """k coarse steps with the closure inside, exactly as the solvers step."""
+    """k coarse steps with the closure inside, as the solvers step."""
     u, out = u0, []
     for _ in range(k):
         corr = model(stencils_torch(u)).squeeze(-1)

@@ -255,3 +255,12 @@ def test_live_gemm_model_verifies_end_to_end(capsys, live_gemm_model):
     out = capsys.readouterr().out
     assert rc == 0, out
     assert "all-zero" not in out and "FAIL" not in out
+
+
+def test_python_dash_m_runs_the_cli(tmp_path):
+    # A Makefile or CI job without the console script on PATH runs
+    # `python -m rosenna`; `python -m rosenna.cli` used to exit 0 having done
+    # nothing, since cli.py has no __main__ guard.
+    import subprocess, sys
+    r = subprocess.run([sys.executable, "-m", "rosenna", "--help"], capture_output=True, text=True)
+    assert r.returncode == 0 and "generate" in r.stdout, r.stdout + r.stderr
