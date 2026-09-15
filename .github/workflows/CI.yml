@@ -136,3 +136,72 @@ jobs:
           cd python && python3 -m pytest tests/test_kernel.py -v -rs -s -k hip 2>&1 | tee hip.log
           ! grep -q "SKIPPED" hip.log
           grep -q "PASSED" hip.log
+
+  # ASan/UBSan over the generated code for every golden model, both backends.
+  # A compiler warning cannot see the bug class this is for: the generated code
+  # is loop nests over fixed-size locals whose bounds come from the plan, so it
+  # goes wrong by computing an index from the wrong extent -- which writes past
+  # a stack array and returns plausible numbers. That shipped once already (an
+  # activation bounded by the previous op's output length), and it matched
+  # onnxruntime on every model that did not branch.
+  sanitizers:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Set up gfortran
+        uses: fortran-lang/setup-fortran@v1
+        with:
+          compiler: gcc
+          version: 13
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e python
+
+      # -rs and the SKIPPED check together: a sanitizer job that skips every
+      # case because a compiler is missing would otherwise report success.
+      - name: Generated code is clean under ASan and UBSan
+        run: |
+          set -o pipefail
+          cd python && python3 -m pytest tests/test_sanitizers.py -v -rs 2>&1 | tee san.log
+          ! grep -q "SKIPPED" san.log
+
+  # The C backend under a second compiler. clang is preinstalled on the runner,
+  # so this costs nothing and reads the generated code with a different set of
+  # warnings from gcc's.
+  clang_c:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -e python
+
+      - name: Check clang
+        run: clang --version
+
+      - name: Every golden model compiles warning-free under clang
+        env:
+          ROSENNA_CC: clang
+        run: |
+          set -o pipefail
+          cd python && python3 -m pytest tests/test_regressions.py -v -rs -k warning 2>&1 | tee clang.log
+          ! grep -q "SKIPPED" clang.log

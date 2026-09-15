@@ -6,6 +6,7 @@ square MatMul weight, a graph whose first node is an activation, an
 initializer name longer than the emitters' old fixed buffer, a genuine
 float64 model, or a NaN travelling through a Relu.
 """
+import os
 import re
 import struct
 import subprocess
@@ -307,10 +308,15 @@ def _compile_warnings(tmp_path, onnx_path, name, dtype="f64"):
     (work / f"{name}.h").write_text(header)
     # -std=f2008 makes every gfortran enforce the 132-column limit (ruling R20)
     # and anything else non-standard, rather than only the CI compiler.
-    f = subprocess.run(["gfortran", "-std=f2008", "-O2", "-Wall", "-Wextra", "-c",
+    # ROSENNA_CC / ROSENNA_FC let a CI job point this at a second compiler.
+    # Without them the clang job would re-run gcc and prove nothing, which is
+    # the failure mode the widened parametrization above already fell into.
+    cc = os.environ.get("ROSENNA_CC", "gcc")
+    fc = os.environ.get("ROSENNA_FC", "gfortran")
+    f = subprocess.run([fc, "-std=f2008", "-O2", "-Wall", "-Wextra", "-c",
                         f"{name}_model.F90"],
                        cwd=work, capture_output=True, text=True, check=True)
-    c = subprocess.run(["gcc", "-O2", "-Wall", "-Wextra", "-std=c11", "-c", f"{name}.c"],
+    c = subprocess.run([cc, "-O2", "-Wall", "-Wextra", "-std=c11", "-c", f"{name}.c"],
                        cwd=work, capture_output=True, text=True, check=True)
     return f.stderr, c.stderr
 
