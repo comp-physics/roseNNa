@@ -1047,9 +1047,15 @@ def _emit_pad_c(op, ctype: str, dst: str, src: str):
         if b == 0 and pd.in_shape[k] == pd.out_shape[k]:
             shifted.append(nm)
             continue
-        expr = f"({nm} - {b})" if b else nm
+        # A negative begin is a crop: the output reads FURTHER into the input,
+        # so it is spelled as an addition. `(c - -1)` is legal C and a syntax
+        # error in Fortran, which is what made this worth spelling out rather
+        # than letting the sign fall out of the arithmetic.
+        expr = f"({nm} - {b})" if b > 0 else f"({nm} + {-b})" if b < 0 else nm
         shifted.append(expr)
-        if b:
+        # Only a positive begin can put the read before the input; a crop
+        # cannot, so that half of the test would always pass.
+        if b > 0:
             checks.append(f"{expr} >= 0")
         checks.append(f"{expr} < {pd.in_shape[k]}")
     out_idx = _flat_index(names, pd.out_shape)

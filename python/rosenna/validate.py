@@ -173,11 +173,6 @@ def _validate_pad(graph: Graph, node) -> None:
     if len(pads) != 2 * rank:
         raise UnsupportedModel(
             f"{where}: pads has {len(pads)} entries for a rank-{rank} input; expected {2 * rank}")
-    if any(int(v) < 0 for v in pads):
-        # A negative pad is a crop. The loop nest below only ever writes the
-        # output and reads inside the input, so a crop would silently become a
-        # no-op on that axis rather than removing anything.
-        raise UnsupportedModel(f"{where}: negative pads (a crop) are not supported: {tuple(pads)}")
     for axis, (i, o) in enumerate(zip(x.shape, out.shape)):
         if int(i) + int(pads[axis]) + int(pads[axis + rank]) != int(o):
             raise UnsupportedModel(

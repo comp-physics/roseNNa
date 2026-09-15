@@ -834,9 +834,32 @@ def test_pad_feeding_a_conv_is_the_shape_that_turns_up(tmp_path):
     assert np.allclose(f, want, rtol=1e-5, atol=1e-6)
 
 
+def test_pad_with_negative_pads_crops(tmp_path):
+    """A negative pad removes elements, and the same nest already computes it.
+
+    The output reads FURTHER into the input, so the shift is an addition. It
+    was refused at first out of caution; the only thing actually wrong was the
+    spelling -- `(c - -1)` is legal C and a Fortran syntax error. The mixed
+    case is the one worth testing: cropping the front of an axis while padding
+    its back means the read can still run off the end, so the upper bounds
+    test has to survive.
+    """
+    path, out = _pad_model(tmp_path / "crop.onnx", (1, 2, 6, 6),
+                           [0, 0, -1, 2, 0, 0, -2, 1], value=7.0)
+    assert out == (1, 2, 3, 9), out
+    rng = np.random.default_rng(43)
+    x = rng.uniform(-2, 2, (1, 2, 6, 6))
+    f, c = _both_backends(tmp_path, path, "crop", x.reshape(1, -1))
+    want = ort.InferenceSession(str(path)).run(None, {"x": x})[0].ravel()
+    assert np.allclose(c, want) and np.allclose(f, want)
+    got = np.asarray(c).reshape(out)
+    # Cropped off the front of h, and the far end of w is past the input.
+    assert np.allclose(got[0, :, 0, 2:8], x[0, :, 1, 0:6])
+    assert got[0, 0, 0, 8] == 7.0
+
+
 @pytest.mark.parametrize("kwargs,fragment", [
     (dict(pads=[0, 0, 1, 1, 0, 0, 1, 1], mode="reflect"), "only 'constant'"),
-    (dict(pads=[0, 0, -1, 0, 0, 0, 0, 0]), "negative pads"),
     # A runtime `pads` is an int64 graph input, which the frontend refuses on
     # dtype before validate sees the node at all. Still named, still refused,
     # just earlier -- pinning the message that actually fires rather than the

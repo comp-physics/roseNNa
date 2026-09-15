@@ -70,7 +70,7 @@ A model using something the generator cannot lower is **refused by name at gener
 
 - 2-D spatial ops only (rank-4 NCHW); `ceil_mode` must be 0
 - `Conv` `group` must divide both channel counts, and the weight's channel axis must be `C_in / group`
-- `Softmax` normalises the last axis only; `Pad` is constant-mode with non-negative, constant pads
+- `Softmax` normalises the last axis only; `Pad` is constant-mode with constant pads (negative pads, i.e. crops, are fine)
 - a `BatchNormalization` that cannot be folded (training mode, non-constant parameters, or an intermediate read elsewhere) is refused
 - `Gemm` `alpha` and `beta` must be 1, `transA` must be 0, and weights must be constant
 - `LSTM` must be forward-direction with the default activations, no `clip`, `input_forget`, `sequence_lens` or peepholes
