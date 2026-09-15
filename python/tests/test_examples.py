@@ -186,18 +186,30 @@ def _run_cns(work, tmp_path, extra, timeout):
     return r.stdout
 
 
-@pytest.mark.parametrize("batched", [False, True])
-def test_cns_closure_builds_and_runs_on_the_host(batched, tmp_path):
+# "plain" is NO_CLOSURE=1: no network at all, the baseline the closure's cost
+# is measured against. It is a build variant nothing else compiles, so without
+# it here the #ifdefs would rot unnoticed.
+@pytest.mark.parametrize("variant", ["per_point", "batched", "plain"])
+def test_cns_closure_builds_and_runs_on_the_host(variant, tmp_path):
     cc = _omp_cc()
     if not shutil.which("make"):
         pytest.skip("no make")
-    extra = ["TOOLCHAIN=gnu", f"CC={cc}"] + (["BATCHED=1"] if batched else [])
+    extra = ["TOOLCHAIN=gnu", f"CC={cc}"]
+    if variant == "batched":
+        extra.append("BATCHED=1")
+    elif variant == "plain":
+        extra.append("NO_CLOSURE=1")
     out = _run_cns(tmp_path / "cns_closure", tmp_path, extra, 900)
     # The solver's own conservation and closure-agreement checks are what make
     # `OK` mean something; assert the lines are actually there, so a future
     # `OK` printed by a stripped-down main cannot pass silently.
-    assert "mass drift" in out and "closure nut vs host evaluation" in out, out
-    if batched:
+    assert "mass drift" in out and "kinetic energy" in out, out
+    if variant == "plain":
+        assert "closure         none" in out, out
+        assert "nut vs host" not in out, "no closure means no comparison to report"
+    else:
+        assert "closure nut vs host evaluation" in out, out
+    if variant == "batched":
         assert "batched vs per-point" in out, out
 
 

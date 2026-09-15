@@ -132,6 +132,7 @@ static void prim(const double *q) {
 
 /* --------------------------------------------------------------- closure */
 
+#ifndef NO_CLOSURE
 /* The per-cell closure: nine velocity gradients in, one turbulent viscosity
  * out, once per cell, inside the solver's own offload region. `closure_infer`
  * needs no pragma of its own -- closure.h wraps it in a guarded
@@ -164,6 +165,7 @@ static void closure(void) {
                 nut[c] = NUT_SCALE * (out > 0 ? out : 0);
             }
 }
+#endif /* NO_CLOSURE */
 
 #ifdef BATCHED
 /* The alternative for a larger network: gather every cell's nine features into
@@ -402,6 +404,7 @@ static void advance(const double *src, double *out, double dt) {
 static void rhs_eval(double *q) {
     halo(q);
     prim(q);
+#ifndef NO_CLOSURE
     /* Every target region in this file is synchronous -- none carries
      * `nowait` -- so wall-clock around the call is the kernel's own cost. */
     const double t0 = omp_get_wtime();
@@ -412,6 +415,7 @@ static void rhs_eval(double *q) {
 #endif
     g.t_closure += omp_get_wtime() - t0;
     g.n_closure++;
+#endif
     for (int d = 0; d < 3; d++) face(d);
 }
 
@@ -495,6 +499,7 @@ static void totals(const double *q, double *mass, double *energy, double *ke) {
     *ke = k2 * dv;
 }
 
+#ifndef NO_CLOSURE
 /* The host's own evaluation of the same model on the same primitives, for
  * comparison against what the offloaded closure() wrote. */
 static double nut_mismatch(void) {
@@ -520,6 +525,7 @@ static double nut_mismatch(void) {
             }
     return worst;
 }
+#endif /* NO_CLOSURE */
 
 int main(void) {
     g.n[0] = g.n[1] = g.n[2] = NX;
@@ -634,7 +640,11 @@ int main(void) {
                 if (p < pmin) pmin = p;
             }
     /* 3. the closure agrees with a host evaluation of the same model */
+#ifdef NO_CLOSURE
+    const double nerr = 0;              /* nothing to compare: nut stays zero */
+#else
     const double nerr = nut_mismatch();
+#endif
 
     /* How much viscosity the closure is actually contributing. */
     double nut_sum = 0, nut_max = 0;
@@ -651,23 +661,34 @@ int main(void) {
     /* The closure runs over the padded block minus one layer on each side,
      * which is the count to divide by -- not the interior cell count. */
     const long ncl = (long)(nx + 2 * NG - 2) * (ny + 2 * NG - 2) * (nz + 2 * NG - 2);
+    (void)ncl;
+#ifndef NO_CLOSURE
     const double per_cell_ns = 1e9 * g.t_closure / (double)(g.n_closure * ncl);
+#endif
 
     printf("%dx%dx%d, %d steps, dt %.3e, t %.4f\n", NX, NX, NX, NSTEPS, g.dt, g.t);
     printf("  loop            %8.2f ms total, %7.3f ms/step\n", 1e3 * t_loop,
            1e3 * t_loop / NSTEPS);
+#ifdef NO_CLOSURE
+    puts("  closure         none (NO_CLOSURE: nut = 0, mu_eff = mu)");
+#else
     printf("  closure         %8.2f ms total (%4.1f%% of the loop), %ld launches\n",
            1e3 * g.t_closure, 100 * g.t_closure / t_loop, g.n_closure);
     printf("                  %8.2f ns per cell per call, over %ld cells\n",
            per_cell_ns, ncl);
+#endif
     printf("  mass drift      %.3e (relative)\n", dm);
     printf("  energy drift    %.3e (relative)\n", de);
     printf("  min rho / p     %.6f / %.6f   non-finite cells %ld\n", rmin, pmin, bad);
     printf("  kinetic energy  %.6e -> %.6e  (%+.3f%%, dissipating)\n",
            ke0, ke1, 100 * (ke1 - ke0) / ke0);
+#ifndef NO_CLOSURE
     printf("  closure mu_t    mean %.3e, max %.3e   (molecular mu %.3e)\n",
            nut_sum / (double)nut_n, nut_max, g.mu);
+#endif
+#ifndef NO_CLOSURE
     printf("  closure nut vs host evaluation: worst |device-host| %.3e\n", nerr);
+#endif
 #ifdef BATCHED
     printf("  batched vs per-point: worst |infer_batch-infer| %.3e\n", nut_paths);
 #endif

@@ -18,6 +18,13 @@ DEFS    := -DNSTEPS=$(NSTEPS)
 
 # BATCHED=1 builds the gather + one-call-per-field path instead of the
 # per-point one, which links lib$(MODEL).a.
+# NO_CLOSURE=1 drops the network entirely: nut stays zero, mu_eff = mu, and
+# the program is a plain compressible Navier-Stokes solver. It is the baseline
+# the closure's cost is measured against.
+ifeq ($(NO_CLOSURE),1)
+DEFS    += -DNO_CLOSURE
+endif
+
 ifeq ($(BATCHED),1)
 DEFS    += -DBATCHED
 ARCHIVE := 1

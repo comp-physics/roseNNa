@@ -42,6 +42,7 @@ make                                  # host: gcc, -fopenmp
 make TOOLCHAIN=nvidia ARCH=cc80       # nvc, offloaded, OMP_TARGET_OFFLOAD=MANDATORY
 make TOOLCHAIN=amd    ARCH=gfx90a     # amdclang
 make TOOLCHAIN=nvidia BATCHED=1       # the batched path, linking libclosure.a
+make TOOLCHAIN=nvidia NO_CLOSURE=1    # no network at all: the plain NS solver
 make NX=16 NSTEPS=5                   # smaller: NX is cells per direction, so NX^3
 ```
 
@@ -132,7 +133,38 @@ timestep is twice as large, so the same 2000 steps reach t = 2.38 and lose
 16.6% of the kinetic energy: coarser grid, longer time, much more numerical
 dissipation. Not a resolution study.)
 
-### Speed, A100 80GB, 20 steps
+### Speed of the solver itself, and what the closure adds
+
+`NO_CLOSURE=1` drops the network entirely -- `nut` stays zero, `mu_eff = mu`,
+and the program is a plain compressible Navier-Stokes solver. That is the
+baseline the closure's cost is measured against, rather than inferred from its
+share of a run that always includes it.
+
+A100 80GB, 100 steps, fp64, on an otherwise idle card:
+
+| | plain solver | with the closure | | |
+|---|---|---|---|---|
+| | ms/step (Mcell-updates/s) | ms/step (Mcell-updates/s) | slowdown | closure cost |
+| 64^3 (0.26 M cells) | 1.565 (168) | 1.833 (143) | 1.17x | 1.02 ns/cell-step |
+| 128^3 (2.10 M) | 6.941 (302) | 8.680 (242) | 1.25x | 0.83 ns/cell-step |
+| 256^3 (16.8 M) | 54.50 (308) | 68.00 (247) | 1.25x | 0.81 ns/cell-step |
+
+The plain solver saturates at about **308 Mcell-updates per second**, 3.25 ns
+per cell per timestep -- where a step is SSP-RK3, so three full RHS
+evaluations, each with MUSCL reconstruction, HLLC, the full Newtonian stress
+and Fourier conduction. Adding the closure costs 25% of wall-clock and
+0.81 ns per cell-step, which is three `closure_infer` calls at the 0.28 ns
+measured below. 64^3 is too small to fill the card, which is why it is both
+slower per cell and cheaper in relative terms.
+
+For contrast, the same plain solver on this machine's host toolchain at 64^3:
+281 ms/step on one thread, and **411 ms/step on all 128** -- slower with more
+threads. These loops are written for offload, and gcc's host fallback
+oversubscribes them exactly as `test_examples.py` documents for the
+surrogates. Treat the host path as a correctness fallback, not a CPU baseline;
+a CPU-tuned version of this solver would look nothing like it.
+
+### Speed of the closure call, A100 80GB, 20 steps
 
 The run prints this itself. Each step is SSP-RK3, so three closure calls;
 "per cell per call" divides by the range the closure covers.
