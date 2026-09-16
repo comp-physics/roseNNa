@@ -5,11 +5,10 @@ from pathlib import Path
 import onnx
 from onnx import numpy_helper, shape_inference
 
+from .errors import UnsupportedModel
+from .fold import absorb_pad_inputs, fold_batchnorm, fold_constants, strip_shape_inputs
+
 _DTYPES = {onnx.TensorProto.FLOAT: "f32", onnx.TensorProto.DOUBLE: "f64"}
-
-
-class UnsupportedModel(ValueError):
-    """The model uses something roseNNa cannot generate code for."""
 
 
 @dataclass(frozen=True)
@@ -57,6 +56,10 @@ def _attr_value(a, node_name: str):
             return tuple(s.decode("ascii") for s in a.strings)
         except UnicodeDecodeError:
             raise UnsupportedModel(f"node '{node_name}' attribute '{a.name}': non-ASCII string")
+    if a.type == onnx.AttributeProto.TENSOR:
+        # A Constant node's payload. Kept as an array so fold.py can evaluate
+        # the node away; nothing downstream of folding ever sees one.
+        return numpy_helper.to_array(a.t)
     raise UnsupportedModel(f"node '{node_name}' attribute '{a.name}': unsupported attribute type {a.type}")
 
 
@@ -83,9 +86,17 @@ def load_graph(path, name: str | None = None) -> Graph:
     model = shape_inference.infer_shapes(onnx.load(path))
     g = model.graph
     initializers = {t.name: numpy_helper.to_array(t) for t in g.initializer}
-    values = {}
+    values, unsupported_dtype = {}, {}
     for vi in list(g.input) + list(g.output) + list(g.value_info):
         if vi.name in initializers:
+            continue
+        code = vi.type.tensor_type.elem_type
+        if code not in _DTYPES:
+            # Deferred, not refused: an int64 value is almost always a shape
+            # tensor that fold_constants is about to evaluate away. If one
+            # survives folding it is a real dtype the emitters cannot carry,
+            # and the check below says so then.
+            unsupported_dtype[vi.name] = code
             continue
         values[vi.name] = Tensor(vi.name, _shape(vi), _dtype(vi))
     nodes = []
@@ -100,8 +111,19 @@ def load_graph(path, name: str | None = None) -> Graph:
         ))
     inputs = tuple(vi.name for vi in g.input if vi.name not in initializers)
     outputs = tuple(vi.name for vi in g.output)
+    # fold_constants first: a BatchNormalization's scale/B/mean/var reach the
+    # graph as Constant nodes in some exports, and fold_batchnorm needs them as
+    # initializers to multiply.
+    graph = strip_shape_inputs(absorb_pad_inputs(fold_batchnorm(fold_constants(
+        Graph(name or path.stem, tuple(nodes), values, initializers, inputs, outputs)))))
+    for n in graph.nodes:
+        for v in tuple(n.inputs) + tuple(n.outputs):
+            if v in unsupported_dtype:
+                raise UnsupportedModel(
+                    f"value '{v}' has element type {unsupported_dtype[v]}; "
+                    f"only float32 and float64")
     # Defensive check: catch outputs whose names collide with initializers.
-    missing = [v for v in inputs + outputs if v not in values]
+    missing = [v for v in graph.inputs + graph.outputs if v not in graph.values]
     if missing:
         raise UnsupportedModel(f"shape inference produced no shape for {missing}")
-    return Graph(name or path.stem, tuple(nodes), values, initializers, inputs, outputs)
+    return graph

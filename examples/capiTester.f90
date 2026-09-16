@@ -1,19 +1,19 @@
-program name
-
-    USE rosenna
+! Calling a generated roseNNa model from Fortran.
+!
+! Built by run_basic.sh, which generates gemm_small first. gemm_small embeds its
+! weights, so there is no gemm_small_init to call; a larger model would call
+!     call gemm_small_init("gemm_small.rwt", status)
+! once before the first infer.
+program capiTester
+    use gemm_small_model
+    use iso_fortran_env, only: real32
     implicit none
-    REAL (c_double), DIMENSION(1,2) :: inputs
-    REAL (c_double), DIMENSION(    1, 3) :: output
 
-    inputs = RESHAPE(    (/1.0, 1.0/),    (/1, 2/), order =     [2 , 1 ])
+    ! One point: n_in = 2 values in, n_out = 3 values out.
+    real(real32) :: x(2), y(3)
 
-    CALL initialize()
+    x = 1.0_real32
+    call gemm_small_infer(x, y)
 
-    CALL use_model(inputs, output)
-
-    open(1, file = "test.txt")
-    WRITE(1, *) SHAPE(output)
-    WRITE(1, *) PACK(RESHAPE(output,(/SIZE(output, dim = 2), SIZE(output, dim = 1)/), order = [2, 1]),.true.)
-    print *, output
-
-end program name
+    print '(3(f0.6,1x))', y
+end program

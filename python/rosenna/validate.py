@@ -2,11 +2,35 @@
 import numpy as np
 from .frontend import Graph, UnsupportedModel
 
-SUPPORTED = {"Gemm", "MatMul", "Relu", "Tanh", "Sigmoid"}
+# Dense ops (rank 1-2), the 2-D spatial ops (rank 4), LSTM, and the
+# relabelling ops plan.py turns into buffer aliases. Everything here is
+# lowered by plan.py into explicit loop nests over flat buffers; an op that is
+# not here is refused by name rather than silently mis-lowered.
+SUPPORTED = {"Gemm", "MatMul", "Relu", "Tanh", "Sigmoid", "Softmax", "Pad", "GRU",
+             "Conv", "MaxPool", "AveragePool", "Add", "Transpose", "LSTM", "Concat",
+             # Relabelling ops: fold.resolve_shape_ops deletes these outright
+             # unless one produces the graph output, where it becomes a copy.
+             "Reshape", "Squeeze", "Unsqueeze", "Flatten", "Identity"}
+
+# The spatial ops are 2-D only: kernel_shape, strides, pads and dilations all
+# have to describe exactly two spatial axes, which is what a rank-4 NCHW value
+# carries. A 1-D or 3-D convolution would need a different loop nest.
+_SPATIAL = {"Conv", "MaxPool", "AveragePool"}
+MAX_RANK = 4
 
 
 def validate(graph: Graph) -> None:
     for node in graph.nodes:
+        if node.op == "BatchNormalization":
+            # It is supported, but only by disappearing: fold.fold_batchnorm
+            # multiplies it into the Conv/Gemm that feeds it. Reaching here
+            # means that did not apply, and the generic "not supported"
+            # message would be actively misleading about why.
+            raise UnsupportedModel(
+                f"node '{node.name}': BatchNormalization is supported only when it can "
+                f"be folded into the Conv or Gemm that produces its input -- which needs "
+                f"inference mode, constant scale/B/mean/var of the right length, and that "
+                f"intermediate value read by nothing else. This one could not be folded")
         if node.op not in SUPPORTED:
             raise UnsupportedModel(
                 f"node '{node.name}': {node.op} is not supported; "
@@ -21,18 +45,35 @@ def validate(graph: Graph) -> None:
                 raise UnsupportedModel(
                     f"node '{node.name}': MatMul needs a constant second input; "
                     f"'{node.inputs[1]}' is computed at runtime")
+            rhs = graph.initializers[node.inputs[1]]
+            if rhs.ndim != 2:
+                raise UnsupportedModel(
+                    f"node '{node.name}': MatMul weight '{node.inputs[1]}' has rank "
+                    f"{rhs.ndim}; only rank 2 is supported")
+        if node.op == "Softmax":
+            _validate_softmax(graph, node)
+        if node.op == "Pad":
+            _validate_pad(graph, node)
+        if node.op == "Add":
+            _validate_add(graph, node)
+        if node.op == "Concat":
+            _validate_concat(graph, node)
+        if node.op == "LSTM":
+            _validate_lstm(graph, node)
+        if node.op == "GRU":
+            _validate_gru(graph, node)
+        if node.op in _SPATIAL:
+            _validate_spatial(graph, node)
     for name, t in graph.values.items():
-        if len(t.shape) not in (1, 2):
+        if not 1 <= len(t.shape) <= MAX_RANK:
             raise UnsupportedModel(
-                f"value '{name}' has rank {len(t.shape)}; this generator handles rank 1 and 2")
-        if len(t.shape) == 2 and t.shape[0] != 1:
-            raise UnsupportedModel(
-                f"value '{name}' has leading dimension {t.shape[0]}; "
-                f"this generator infers one point per call")
+                f"value '{name}' has rank {len(t.shape)}; "
+                f"this generator handles rank 1 to {MAX_RANK}")
     for name, init in graph.initializers.items():
-        if init.ndim not in (1, 2):
+        if not 1 <= init.ndim <= MAX_RANK:
             raise UnsupportedModel(
-                f"initializer '{name}' has rank {init.ndim}; this generator handles rank 1 and 2")
+                f"initializer '{name}' has rank {init.ndim}; "
+                f"this generator handles rank 1 to {MAX_RANK}")
         if not np.issubdtype(init.dtype, np.floating):
             raise UnsupportedModel(
                 f"initializer '{name}' has dtype {init.dtype}; only floating-point types are supported")
@@ -51,6 +92,14 @@ def _validate_gemm(graph: Graph, node) -> None:
     if node.inputs[1] not in graph.initializers:
         raise UnsupportedModel(
             f"node '{node.name}': Gemm weight '{node.inputs[1]}' must be a constant")
+    # Rank is checked per op, not globally: the global initializer bound had to
+    # widen to 4 for Conv's OCxICxKHxKW kernels, and a rank-3 Gemm weight would
+    # otherwise slip through and be read as if it were a matrix.
+    gw = graph.initializers[node.inputs[1]]
+    if gw.ndim != 2:
+        raise UnsupportedModel(
+            f"node '{node.name}': Gemm weight '{node.inputs[1]}' has rank {gw.ndim}; "
+            f"only rank 2 is supported")
     if len(node.inputs) > 2:
         bias = graph.initializers.get(node.inputs[2])
         if bias is None:
@@ -58,3 +107,365 @@ def _validate_gemm(graph: Graph, node) -> None:
         if bias.ndim != 1:
             raise UnsupportedModel(
                 f"node '{node.name}': Gemm bias has rank {bias.ndim}; only rank 1 is supported")
+        # The emitters index b[i] for every output: a (1,) bias, though a
+        # legal ONNX broadcast, would be read past its end.
+        n_out = gw.shape[0] if int(node.attrs.get("transB", 0)) else gw.shape[1]
+        if bias.shape[0] != n_out:
+            raise UnsupportedModel(
+                f"node '{node.name}': Gemm bias has {bias.shape[0]} values for {n_out} outputs; "
+                f"a broadcast bias is not supported")
+
+
+def _validate_softmax(graph: Graph, node) -> None:
+    """Softmax along the last axis only.
+
+    ONNX changed this operator at opset 13. Before, `axis` coerced the input to
+    2-D and normalised every trailing axis together, with a default of 1;
+    after, it normalises along that one axis, with a default of -1. The two
+    readings agree exactly when the normalised axis is the last one, so
+    requiring that makes the emitted loop correct under either opset instead of
+    silently picking one. An absent `axis` is accepted only at rank 2, where
+    both defaults land on the last axis anyway.
+    """
+    where = f"node '{node.name}'"
+    x = graph.values.get(node.inputs[0])
+    if x is None:
+        raise UnsupportedModel(f"{where}: input '{node.inputs[0]}' has no inferred shape")
+    rank = len(x.shape)
+    if "axis" not in node.attrs:
+        if rank != 2:
+            raise UnsupportedModel(
+                f"{where}: Softmax without an explicit axis on a rank-{rank} input is "
+                f"ambiguous across opsets (the default is 1 before opset 13 and -1 from "
+                f"13); only rank 2, where both mean the last axis, is supported")
+        return
+    axis = int(node.attrs["axis"])
+    resolved = axis + rank if axis < 0 else axis
+    if resolved != rank - 1:
+        raise UnsupportedModel(
+            f"{where}: Softmax axis={axis} normalises axis {resolved} of a rank-{rank} "
+            f"input; only the last axis is supported")
+
+
+def _validate_pad(graph: Graph, node) -> None:
+    """Constant-mode Pad with non-negative, constant pads.
+
+    fold.absorb_pad_inputs has already moved the operand form into attributes,
+    so a Pad still carrying them is one whose pads are computed at runtime --
+    which this generator cannot turn into literal loop bounds.
+    """
+    where = f"node '{node.name}'"
+    x, out = graph.values.get(node.inputs[0]), graph.values.get(node.outputs[0])
+    if x is None or out is None:
+        raise UnsupportedModel(f"{where}: Pad operands must have inferred shapes")
+    if len(node.inputs) > 1:
+        raise UnsupportedModel(
+            f"{where}: Pad needs constant pads; '{node.inputs[1]}' is computed at runtime "
+            f"(or an `axes` operand is present, which is not supported)")
+    mode = node.attrs.get("mode", "constant")
+    if isinstance(mode, bytes):
+        mode = mode.decode()
+    if mode not in ("constant", "edge", "reflect"):
+        raise UnsupportedModel(
+            f"{where}: Pad mode='{mode}' is not supported; only 'constant', 'edge' "
+            f"and 'reflect'")
+    pads = node.attrs.get("pads")
+    if pads is None:
+        raise UnsupportedModel(f"{where}: Pad needs pads")
+    rank = len(x.shape)
+    if len(pads) != 2 * rank:
+        raise UnsupportedModel(
+            f"{where}: pads has {len(pads)} entries for a rank-{rank} input; expected {2 * rank}")
+    if mode == "reflect":
+        # One reflection only: the index map is (IN-1) - |(IN-1) - |e||, which
+        # covers e in [-(IN-1), 2*(IN-1)] and no further. A pad at least as
+        # wide as the axis would need repeated reflection, and the formula
+        # would quietly fold to the wrong element instead of failing.
+        for axis, extent in enumerate(x.shape):
+            reach = max(int(pads[axis]), int(pads[axis + rank]))
+            if reach > int(extent) - 1:
+                raise UnsupportedModel(
+                    f"{where}: reflect pad of {reach} on axis {axis} of extent {extent} "
+                    f"needs more than one reflection; only pads up to {int(extent) - 1} "
+                    f"are supported")
+    for axis, (i, o) in enumerate(zip(x.shape, out.shape)):
+        if int(i) + int(pads[axis]) + int(pads[axis + rank]) != int(o):
+            raise UnsupportedModel(
+                f"{where}: axis {axis} is {i} padded by ({pads[axis]}, {pads[axis + rank]}), "
+                f"which is {int(i) + int(pads[axis]) + int(pads[axis + rank])}, but the output "
+                f"says {o}")
+
+
+def _validate_spatial(graph: Graph, node) -> None:
+    """Conv, MaxPool and AveragePool: 2-D spatial, rank-4 NCHW, no exotic attributes.
+
+    Every attribute this refuses is one whose meaning the emitted loop nest
+    does not implement -- so a model using it would otherwise get plausible
+    numbers that are wrong, which is the failure mode this whole file exists
+    to prevent.
+    """
+    where = f"node '{node.name}'"
+    x = graph.values.get(node.inputs[0])
+    if x is None:
+        raise UnsupportedModel(f"{where}: input '{node.inputs[0]}' has no inferred shape")
+    rank = len(x.shape)
+    if rank not in (3, 4):
+        raise UnsupportedModel(
+            f"{where}: {node.op} input has rank {rank}; only rank-3 NCW (1-D) and "
+            f"rank-4 NCHW (2-D) are supported")
+    nd = rank - 2                                   # spatial axes: 1 or 2
+    out = graph.values.get(node.outputs[0])
+    if out is None or len(out.shape) != rank:
+        raise UnsupportedModel(
+            f"{where}: {node.op} output must be a rank-{rank} value with an inferred shape")
+
+    kernel = node.attrs.get("kernel_shape")
+    if node.op == "Conv" and kernel is None:
+        w = graph.initializers.get(node.inputs[1])
+        kernel = tuple(int(d) for d in w.shape[2:]) if w is not None else None
+    if kernel is None:
+        raise UnsupportedModel(f"{where}: {node.op} needs kernel_shape")
+    if len(kernel) != nd:
+        raise UnsupportedModel(
+            f"{where}: kernel_shape has {len(kernel)} spatial axes but the input has "
+            f"{nd}; they must agree")
+
+    for attr in ("strides", "dilations"):
+        v = node.attrs.get(attr)
+        if v is not None and len(v) != nd:
+            raise UnsupportedModel(
+                f"{where}: {attr} has {len(v)} entries; a {nd}-D op takes {nd}")
+    pads = node.attrs.get("pads")
+    if pads is not None and len(pads) != 2 * nd:
+        raise UnsupportedModel(
+            f"{where}: pads has {len(pads)} entries; a {nd}-D op takes {2 * nd} "
+            f"(every begin, then every end)")
+    auto_pad = node.attrs.get("auto_pad", "NOTSET")
+    if auto_pad not in ("NOTSET", "VALID", "SAME_UPPER", "SAME_LOWER"):
+        raise UnsupportedModel(f"{where}: auto_pad='{auto_pad}' is not supported")
+    if auto_pad != "NOTSET" and pads is not None and any(pads):
+        raise UnsupportedModel(
+            f"{where}: auto_pad='{auto_pad}' with an explicit non-zero pads is ambiguous")
+    if int(node.attrs.get("ceil_mode", 0)) != 0:
+        raise UnsupportedModel(f"{where}: ceil_mode=1 is not supported")
+
+    if node.op == "Conv":
+        if len(node.inputs) < 2 or node.inputs[1] not in graph.initializers:
+            raise UnsupportedModel(f"{where}: Conv weight must be a constant initializer")
+        w = graph.initializers[node.inputs[1]]
+        if w.ndim != rank:
+            raise UnsupportedModel(
+                f"{where}: Conv weight has rank {w.ndim}; a rank-{rank} input needs a "
+                f"rank-{rank} weight")
+        group = int(node.attrs.get("group", 1))
+        c_in, c_out = int(x.shape[1]), int(w.shape[0])
+        if group < 1:
+            raise UnsupportedModel(f"{where}: Conv group={group} must be at least 1")
+        # A group that does not divide either channel count leaves some
+        # channel in no group at all, and the emitted loop would read across a
+        # group boundary rather than refusing.
+        if c_in % group or c_out % group:
+            raise UnsupportedModel(
+                f"{where}: Conv group={group} divides neither {c_in} input channels "
+                f"nor {c_out} output channels evenly")
+        if w.shape[1] != c_in // group:
+            raise UnsupportedModel(
+                f"{where}: Conv input has {c_in} channels in {group} group(s), so the "
+                f"weight's channel axis should be {c_in // group}; it is {w.shape[1]}")
+        if len(node.inputs) > 2 and node.inputs[2]:
+            b = graph.initializers.get(node.inputs[2])
+            if b is None:
+                raise UnsupportedModel(f"{where}: Conv bias '{node.inputs[2]}' must be a constant")
+            if b.ndim != 1 or b.shape[0] != w.shape[0]:
+                raise UnsupportedModel(
+                    f"{where}: Conv bias must be rank 1 with one value per output channel")
+    else:
+        if len(node.outputs) > 1 and node.outputs[1]:
+            raise UnsupportedModel(
+                f"{where}: {node.op} with a second (indices) output is not supported")
+        if int(node.attrs.get("storage_order", 0)) != 0:
+            raise UnsupportedModel(f"{where}: MaxPool storage_order=1 (column major) is not supported")
+
+
+def _validate_concat(graph: Graph, node) -> None:
+    """Concat of runtime values and constants along one axis, shapes agreeing elsewhere."""
+    where = f"node '{node.name}'"
+    if not node.inputs:
+        raise UnsupportedModel(f"{where}: Concat needs at least one input")
+    shapes = []
+    for name in node.inputs:
+        if name in graph.initializers:
+            shapes.append(tuple(int(d) for d in graph.initializers[name].shape))
+        elif name in graph.values:
+            shapes.append(tuple(int(d) for d in graph.values[name].shape))
+        else:
+            raise UnsupportedModel(f"{where}: Concat input '{name}' has no known shape")
+    rank = len(shapes[0])
+    if any(len(sh) != rank for sh in shapes):
+        raise UnsupportedModel(f"{where}: Concat inputs must all have the same rank; got {shapes}")
+    axis = int(node.attrs.get("axis", 0))
+    axis = axis + rank if axis < 0 else axis
+    if not 0 <= axis < rank:
+        raise UnsupportedModel(f"{where}: Concat axis {node.attrs.get('axis')} is out of range for rank {rank}")
+    for sh in shapes[1:]:
+        if any(a != b for k, (a, b) in enumerate(zip(shapes[0], sh)) if k != axis):
+            raise UnsupportedModel(
+                f"{where}: Concat inputs differ off the concatenation axis {axis}: {shapes}")
+
+
+def _validate_add(graph: Graph, node) -> None:
+    """Add of a runtime value and a constant, broadcast right-aligned.
+
+    Two runtime operands would need two live buffers reaching one op, which the
+    single-input Op model does not carry; a constant operand is the shape that
+    actually turns up (a per-channel bias a Conv export did not fold in).
+    """
+    where = f"node '{node.name}'"
+    if len(node.inputs) != 2:
+        raise UnsupportedModel(f"{where}: Add takes exactly 2 inputs")
+    runtime = [i for i in node.inputs if i not in graph.initializers]
+    if len(runtime) != 1:
+        raise UnsupportedModel(
+            f"{where}: Add needs exactly one runtime operand and one constant; "
+            f"got {len(runtime)} runtime")
+    out = graph.values.get(node.outputs[0])
+    x = graph.values.get(runtime[0])
+    if out is None or x is None:
+        raise UnsupportedModel(f"{where}: Add operands must have inferred shapes")
+    if tuple(out.shape) != tuple(x.shape):
+        raise UnsupportedModel(
+            f"{where}: Add broadcasts its runtime operand from {tuple(x.shape)} to "
+            f"{tuple(out.shape)}; only the constant operand may broadcast")
+    const = graph.initializers[[i for i in node.inputs if i in graph.initializers][0]]
+    if const.ndim > len(out.shape):
+        raise UnsupportedModel(
+            f"{where}: Add constant has rank {const.ndim}, wider than the output's "
+            f"{len(out.shape)}")
+    for axis, (o, c) in enumerate(zip(out.shape[len(out.shape) - const.ndim:], const.shape)):
+        if c not in (1, o):
+            raise UnsupportedModel(
+                f"{where}: Add constant axis {axis} has extent {c}, which neither "
+                f"matches the output's {o} nor broadcasts")
+
+
+def _validate_gru(graph: Graph, node) -> None:
+    """Forward GRU, ONNX default activations, no clipping.
+
+    Everything refused here changes the recurrence itself, so a model using it
+    would run and return confident nonsense. `linear_before_reset` is NOT
+    refused: both readings are implemented, because PyTorch exports 1 and the
+    ONNX default is 0, and picking one would have been wrong half the time.
+    """
+    where = f"node '{node.name}'"
+    if not node.outputs or not node.outputs[0]:
+        raise UnsupportedModel(
+            f"{where}: GRU must produce its Y output (the sequence); a graph that asks "
+            f"only for Y_h is not supported")
+    direction = node.attrs.get("direction", "forward")
+    if direction != "forward":
+        raise UnsupportedModel(f"{where}: direction='{direction}'; only 'forward' is supported")
+    if "activations" in node.attrs:
+        raise UnsupportedModel(
+            f"{where}: custom activations are not supported; only the defaults "
+            f"(sigmoid on the gates, tanh on the new-state candidate)")
+    for attr in ("clip", "layout"):
+        if node.attrs.get(attr):
+            raise UnsupportedModel(f"{where}: {attr}={node.attrs[attr]} is not supported")
+    if len(node.inputs) > 4 and node.inputs[4]:
+        raise UnsupportedModel(f"{where}: a sequence_lens input is not supported")
+    x = graph.values.get(node.inputs[0])
+    if x is None or len(x.shape) != 3:
+        raise UnsupportedModel(
+            f"{where}: GRU input must be a rank-3 (seq, batch, input_size) value")
+    for idx, role, mult in ((1, "W", 3), (2, "R", 3)):
+        if idx >= len(node.inputs) or node.inputs[idx] not in graph.initializers:
+            raise UnsupportedModel(f"{where}: GRU {role} must be a constant initializer")
+        a = graph.initializers[node.inputs[idx]]
+        if a.ndim != 3 or a.shape[0] != 1:
+            raise UnsupportedModel(
+                f"{where}: GRU {role} must have shape (1, {mult}*hidden, k); got {tuple(a.shape)}")
+    hidden = int(graph.initializers[node.inputs[2]].shape[2])
+    if int(graph.initializers[node.inputs[1]].shape[1]) != 3 * hidden:
+        raise UnsupportedModel(
+            f"{where}: GRU W has {graph.initializers[node.inputs[1]].shape[1]} rows for "
+            f"hidden {hidden}; a GRU has three gates, so it needs {3 * hidden}")
+    if len(node.inputs) > 3 and node.inputs[3]:
+        b = graph.initializers.get(node.inputs[3])
+        if b is None or b.ndim != 2 or b.shape[0] != 1 or int(b.shape[1]) != 6 * hidden:
+            raise UnsupportedModel(
+                f"{where}: GRU B must be a constant of shape (1, 6*hidden) -- the three W "
+                f"biases then the three R biases")
+    if len(node.inputs) > 5 and node.inputs[5]:
+        name = node.inputs[5]
+        shape = (graph.initializers[name].shape if name in graph.initializers
+                 else (graph.values[name].shape if name in graph.values else ()))
+        if len(shape) != 3:
+            raise UnsupportedModel(
+                f"{where}: initial_h must be a rank-3 (num_directions, batch, hidden) "
+                f"value or initializer")
+
+
+def _validate_lstm(graph: Graph, node) -> None:
+    """Forward-direction LSTM with the ONNX default activations and no clipping.
+
+    Everything refused here changes the recurrence itself, so a model using it
+    would run and return confident nonsense.
+    """
+    where = f"node '{node.name}'"
+    if not node.outputs or not node.outputs[0]:
+        # The plan's op is keyed on Y (the full sequence); Y_h and Y_c are
+        # extra results copied out beside it, not stand-ins for it.
+        raise UnsupportedModel(
+            f"{where}: LSTM must produce its Y output (the sequence); a graph that asks "
+            f"only for Y_h or Y_c is not supported")
+    direction = node.attrs.get("direction", "forward")
+    if direction != "forward":
+        raise UnsupportedModel(f"{where}: direction='{direction}'; only 'forward' is supported")
+    if "activations" in node.attrs:
+        raise UnsupportedModel(
+            f"{where}: custom activations are not supported; only the defaults "
+            f"(sigmoid on the gates, tanh on the cell and the output)")
+    for attr in ("clip", "input_forget", "layout"):
+        if node.attrs.get(attr):
+            raise UnsupportedModel(f"{where}: {attr}={node.attrs[attr]} is not supported")
+    if len(node.inputs) > 4 and node.inputs[4]:
+        raise UnsupportedModel(f"{where}: a sequence_lens input is not supported")
+    if len(node.inputs) > 7 and node.inputs[7]:
+        raise UnsupportedModel(f"{where}: peephole weights (input P) are not supported")
+    x = graph.values.get(node.inputs[0])
+    if x is None or len(x.shape) != 3:
+        raise UnsupportedModel(
+            f"{where}: LSTM input must be a rank-3 (seq, batch, input_size) value")
+    for idx, role in ((1, "W"), (2, "R")):
+        if idx >= len(node.inputs) or node.inputs[idx] not in graph.initializers:
+            raise UnsupportedModel(f"{where}: LSTM {role} must be a constant initializer")
+        a = graph.initializers[node.inputs[idx]]
+        if a.ndim != 3 or a.shape[0] != 1:
+            raise UnsupportedModel(
+                f"{where}: LSTM {role} must have shape (1, 4*hidden, k); got {tuple(a.shape)}")
+    if len(node.inputs) > 3 and node.inputs[3]:
+        b = graph.initializers.get(node.inputs[3])
+        if b is None or b.ndim != 2 or b.shape[0] != 1:
+            raise UnsupportedModel(f"{where}: LSTM B must be a constant of shape (1, 8*hidden)")
+    # The initial state is either a graph value (the caller supplies it, in
+    # x) or an initializer (a folded Constant: it becomes a weight); either
+    # way rank 3, and both of the pair the same way.
+    kinds = set()
+    for idx, role in ((5, "initial_h"), (6, "initial_c")):
+        if len(node.inputs) > idx and node.inputs[idx]:
+            name = node.inputs[idx]
+            if name in graph.initializers:
+                shape, kinds = graph.initializers[name].shape, kinds | {"initializer"}
+            else:
+                v = graph.values.get(name)
+                shape, kinds = (v.shape if v is not None else ()), kinds | {"value"}
+            if len(shape) != 3:
+                raise UnsupportedModel(
+                    f"{where}: {role} must be a rank-3 (num_directions, batch, hidden) "
+                    f"value or initializer")
+    if (len(node.inputs) > 5 and bool(node.inputs[5])) != (len(node.inputs) > 6 and bool(node.inputs[6])):
+        raise UnsupportedModel(
+            f"{where}: initial_h and initial_c must be supplied together or not at all")
+    if len(kinds) > 1:
+        raise UnsupportedModel(
+            f"{where}: initial_h and initial_c must both be values or both be initializers")

@@ -2,7 +2,10 @@
 name = "rosenna"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["onnx>=1.14", "numpy>=1.24", "onnxruntime>=1.15"]
+# protobuf is listed because cli.py imports google.protobuf directly (to
+# catch a DecodeError on a corrupt model). It happens to arrive with onnx
+# today, but a direct import is a direct dependency.
+dependencies = ["onnx>=1.14", "numpy>=1.24", "onnxruntime>=1.15", "protobuf>=3.20"]
 
 [project.scripts]
 rosenna = "rosenna.cli:main"
@@ -10,3 +13,21 @@ rosenna = "rosenna.cli:main"
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.coverage.run]
+source = ["rosenna"]
+# gate.py drives real compilers and a real GPU: the test suite runs it once in
+# host-fallback mode, so most of its branches are reachable only from
+# `rosenna gpu-gate` on a machine with an accelerator. Measuring it here would
+# report a number that says more about the runner than about the tests.
+omit = ["*/gate.py", "*/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+# The floor is what the suite reaches today, so a change that removes coverage
+# has to say so. Raise it when it climbs; do not lower it to make CI pass.
+fail_under = 97
+exclude_also = [
+    "raise AssertionError",           # unreachable-by-construction guards
+    "if TYPE_CHECKING:",
+]

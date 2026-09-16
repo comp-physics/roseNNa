@@ -52,11 +52,12 @@ def test_unsupported_attribute_names_node(tmp_path):
     x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 3])
     y = helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 3])
     node = helper.make_node("Relu", ["x"], ["y"], name="test_relu")
-    # Add an unsupported TENSOR attribute
-    tensor_attr = AttributeProto()
-    tensor_attr.name = "bad_attr"
-    tensor_attr.type = AttributeProto.TENSOR
-    node.attribute.append(tensor_attr)
+    # A GRAPH attribute: still unsupported. (TENSOR is read now -- it is how a
+    # Constant node carries its payload for the folding pass.)
+    graph_attr = AttributeProto()
+    graph_attr.name = "bad_attr"
+    graph_attr.type = AttributeProto.GRAPH
+    node.attribute.append(graph_attr)
     m = helper.make_model(helper.make_graph([node], "test", [x], [y]))
     p = tmp_path / "bad_attr.onnx"
     onnx.save(m, p)

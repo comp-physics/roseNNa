@@ -12,8 +12,11 @@ DENSE = ["gemm_small", "gemm_big", "gemm_nobias", "droplet", "batchnet"]
 
 
 def _build_and_run(tmp_path, onnx_path, name, inputs, dtype="f64"):
+    # embed=False: this helper's driver always calls `<name>_init` against a
+    # written .rwt file, the file-loaded contract. The dedicated embed=True/
+    # False matrix lives in tests/test_device_c.py and tests/test_embed.py.
     graph = load_graph(onnx_path)
-    plan = build_plan(graph, dtype=dtype)
+    plan = build_plan(graph, dtype=dtype, embed=False)
     source, header = emit_c(plan)
     (tmp_path / f"{name}.c").write_text(source)
     (tmp_path / f"{name}.h").write_text(header)
@@ -83,22 +86,29 @@ def test_matches_onnxruntime_f32(tmp_path, golden_model):
 def test_infer_is_pure_and_has_literal_bounds(golden_model):
     plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64")
     source, header = emit_c(plan)
-    assert "void gemm_small_infer(const double *restrict x, double *restrict y) {" in source
+    # `infer` is now defined only in the header (a static inline callable
+    # from inside the host's own offload region); the source never defines
+    # it.
+    assert ("static inline ROSENNA_DEVICE_FN void gemm_small_infer("
+            "const double *ROSENNA_RESTRICT x, double *ROSENNA_RESTRICT y) {") in header
     # The scratch buffers come from plan.buffers now (ruling R13), not from a
     # second allocator private to this emitter: gemm_small's t0 is reused by
     # both gemms, so the plan sizes it at the larger of the two (3), and the
     # Fortran backend declares exactly the same set.
-    assert "double t0[3];" in source
-    assert "double t1[2];" in source
+    assert "double t0[3];" in header
+    assert "double t1[2];" in header
     assert "malloc" not in source
+    assert "malloc" not in header
     assert "restrict" in header
 
 
 def test_init_rejects_a_foreign_weights_file(tmp_path, golden_model):
+    # embed=False: this test is specifically about `_init`, which an
+    # embedded plan's header does not declare.
     graph = load_graph(golden_model("gemm_small"))
-    plan = build_plan(graph, dtype="f64")
+    plan = build_plan(graph, dtype="f64", embed=False)
     other_graph = load_graph(golden_model("gemm_big"))
-    other_plan = build_plan(other_graph, dtype="f64")
+    other_plan = build_plan(other_graph, dtype="f64", embed=False)
     source, header = emit_c(plan)
     (tmp_path / "gemm_small.c").write_text(source)
     (tmp_path / "gemm_small.h").write_text(header)
@@ -138,11 +148,11 @@ def test_both_backends_agree(tmp_path, golden_model):
 def test_f32_plan_uses_single_precision_math(golden_model):
     """An f32 build must call tanhf/expf, not promote every activation to double."""
     plan = build_plan(load_graph(golden_model("gemm_big")), dtype="f32")
-    source, _ = emit_c(plan)
-    assert "tanhf(" in source
-    assert "expf(" in source
-    assert "0.0f" in source
-    body = "\n".join(l for l in source.splitlines() if "_infer" not in l)
+    _, header = emit_c(plan)
+    assert "tanhf(" in header
+    assert "expf(" in header
+    assert "0.0f" in header
+    body = "\n".join(l for l in header.splitlines() if "_infer" not in l)
     assert " tanh(" not in body and "=tanh(" not in body
     assert " exp(" not in body and "(exp(" not in body
 

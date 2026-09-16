@@ -17,6 +17,8 @@ STATUS_CODES = [
     (7, "weights file holds a tensor this model does not declare"),
     (8, "a name or rank in the weights file exceeds this model's capacity"),
     (9, "a read failed: the weights file is truncated or inconsistent"),
+    (10, "device allocation or copy failed in init"),
+    (11, "kernel launch failed"),
 ]
 
 # Floors for the buffers `<model>_init` declares to parse the table of
@@ -38,8 +40,8 @@ def status_code_comment(prefix: str, model: str) -> list:
     this generator's Python to find out what it means, so the table is emitted
     next to the routine that returns it, in both languages.
     """
-    lines = [f"{prefix} Status codes returned by {model}_init:"]
-    lines += [f"{prefix}   {code}  {text}" for code, text in STATUS_CODES]
+    lines = [f"{prefix} Status codes ({model}_init; infer_batch returns 0, 10 or 11):"]
+    lines += [f"{prefix}  {code:>2}  {text}" for code, text in STATUS_CODES]
     return lines
 
 

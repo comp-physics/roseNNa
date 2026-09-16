@@ -28,21 +28,245 @@ jobs:
       - name: Check gfortran version
         run: gfortran --version
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
 
       - name: Python package tests
-        run: |
-          pip install -e python
-          cd python && python3 -m pytest tests -v
+        run: cd python && python3 -m pytest tests -v -n auto
 
-      - name: Run test cases
+      # A dead-model skip (the golden models are regenerated unseeded each run
+      # and can come out all-zero) is legitimate; a skip for a missing compiler
+      # is not. pipefail keeps pytest's own exit status through the tee.
+      - name: Device-path tests ran on the host (not skipped for a missing compiler)
         run: |
-          mkdir -p fLibrary/objFiles
-          chmod +x test/run.sh
-          cd test && ./run.sh
+          set -o pipefail
+          cd python && python3 -m pytest tests/test_device_c.py -v -rs 2>&1 | tee device.log
+          ! grep -E -q "SKIPPED.*(no C compiler|-fopenmp|no gfortran)" device.log
+
+  # Compile-only check of the generated CUDA sources. There is no GPU here and
+  # no driver is installed: nvcc builds the kernel and the .c-as-C++ library for
+  # sm_80 and the test asserts the archive exists. Running it is the GPU gate's
+  # job. This job is the first time the generated CUDA code meets a compiler.
+  # ubuntu-22.04 on purpose: NVIDIA's ubuntu2404 apt repository starts at CUDA
+  # 12.5, and 12.4 is the toolkit version this job pins.
+  nvcc_compile:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Install the CUDA 12.4 compiler and runtime headers (no driver)
+        run: |
+          set -euo pipefail
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cuda-nvcc-12-4 cuda-cudart-dev-12-4
+          echo "/usr/local/cuda-12.4/bin" >> "$GITHUB_PATH"
+
+      - name: Check nvcc
+        run: nvcc --version && gcc --version
+
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
+
+      # No -n here: this step uses -s (it prints the compiler's own output),
+      # and pytest-xdist cannot capture that.
+      - name: CUDA backend compiles under nvcc (not skipped)
+        run: |
+          set -o pipefail
+          cd python && python3 -m pytest tests/test_kernel.py -v -rs -s -k cuda 2>&1 | tee cuda.log
+          ! grep -q "SKIPPED" cuda.log
+          grep -q "PASSED" cuda.log
+
+  # The HIP twin of nvcc_compile: hipcc and the HIP headers from AMD's apt
+  # repository, no GPU and no driver. It compiles the kernel and the .c-as-HIP
+  # library for gfx90a and links a driver against the archive, which is where
+  # hipcc-specific issues surfaced on the MI210 (an archive named after the .cu
+  # is compiled as HIP source; __HIP__ is not a HIP-compilation signal).
+  # Running is the GPU gate's job.
+  hipcc_compile:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Install hipcc and the HIP headers (no driver)
+        run: |
+          set -euo pipefail
+          sudo mkdir -p --mode=0755 /etc/apt/keyrings
+          wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.4.1 noble main" \
+            | sudo tee /etc/apt/sources.list.d/rocm.list
+          printf 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600\n' | sudo tee /etc/apt/preferences.d/rocm-pin-600
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends hipcc hip-dev rocm-device-libs
+          echo "/opt/rocm/bin" >> "$GITHUB_PATH"
+
+      - name: Check hipcc
+        run: hipcc --version
+
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
+
+      - name: HIP backend compiles under hipcc (not skipped)
+        run: |
+          set -o pipefail
+          cd python && python3 -m pytest tests/test_kernel.py -v -rs -s -k hip 2>&1 | tee hip.log
+          ! grep -q "SKIPPED" hip.log
+          grep -q "PASSED" hip.log
+
+  # ASan/UBSan over the generated code for every golden model, both backends.
+  # A compiler warning cannot see the bug class this is for: the generated code
+  # is loop nests over fixed-size locals whose bounds come from the plan, so it
+  # goes wrong by computing an index from the wrong extent -- which writes past
+  # a stack array and returns plausible numbers. That shipped once already (an
+  # activation bounded by the previous op's output length), and it matched
+  # onnxruntime on every model that did not branch.
+  sanitizers:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Set up gfortran
+        uses: fortran-lang/setup-fortran@v1
+        with:
+          compiler: gcc
+          version: 13
+
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
+
+      # -rs and the SKIPPED check together: a sanitizer job that skips every
+      # case because a compiler is missing would otherwise report success.
+      - name: Generated code is clean under ASan and UBSan
+        run: |
+          set -o pipefail
+          cd python && python3 -m pytest tests/test_sanitizers.py -v -rs -n auto 2>&1 | tee san.log
+          ! grep -q "SKIPPED" san.log
+
+  # The C backend under a second compiler. clang is preinstalled on the runner,
+  # so this costs nothing and reads the generated code with a different set of
+  # warnings from gcc's.
+  clang_c:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
+
+      - name: Check clang
+        run: clang --version
+
+      - name: Every golden model compiles warning-free under clang
+        env:
+          ROSENNA_CC: clang
+        run: |
+          set -o pipefail
+          cd python && python3 -m pytest tests/test_regressions.py -v -rs -n auto -k warning 2>&1 | tee clang.log
+          ! grep -q "SKIPPED" clang.log
+
+  # A second Fortran front end. Fortran is the backend with the least compiler
+  # diversity -- gfortran in CI, nvfortran only in the GPU gate -- and it is
+  # where the conformance risk sits: nvfortran is what found that
+  # `has_device_addr` is unimplemented there. flang and ifx each build every
+  # golden model and run it against onnxruntime, so this is a behaviour check
+  # and not only a compile.
+  #
+  # Both were verified on all 21 models before this job was written; what is
+  # unverified here is the install step, not the test.
+  flang_fortran:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Install flang
+        run: |
+          set -euo pipefail
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 20
+          sudo apt-get install -y flang-20
+          flang-20 --version
+
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
+
+      - name: Every golden model builds with flang and matches onnxruntime
+        env:
+          ROSENNA_FC: flang-20
+        run: |
+          set -o pipefail
+          cd python && python3 -m pytest tests/test_golden_suite.py -v -rs -n auto 2>&1 | tee flang.log
+          ! grep -q "SKIPPED" flang.log
+
+  ifx_fortran:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Install ifx
+        run: |
+          set -euo pipefail
+          wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+            | gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
+            | sudo tee /etc/apt/sources.list.d/oneAPI.list
+          sudo apt-get update
+          sudo apt-get install -y intel-oneapi-compiler-fortran
+
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
+
+      # setvars.sh is what puts ifx and its runtime on PATH/LD_LIBRARY_PATH;
+      # it has to be sourced in the same step that runs the tests.
+      - name: Every golden model builds with ifx and matches onnxruntime
+        run: |
+          set -o pipefail
+          source /opt/intel/oneapi/setvars.sh >/dev/null
+          cd python && ROSENNA_FC=ifx python3 -m pytest tests/test_golden_suite.py -v -rs -n auto 2>&1 | tee ifx.log
+          ! grep -q "SKIPPED" ifx.log
+
+  # Coverage of the generator, with a floor. The number is not the point: the
+  # floor is, because it turns "this change quietly stopped testing something"
+  # into a failure. validate.py sat at 75% until every uncovered line turned out
+  # to be a `raise` -- a refusal nobody had ever run, in the file whose whole
+  # job is refusing what it cannot compile correctly.
+  #
+  # gate.py is omitted (see pyproject.toml): it drives real compilers and a real
+  # GPU, so measuring it here would report the runner, not the tests.
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone roseNNa
+        uses: actions/checkout@v4
+
+      - name: Set up gfortran
+        uses: fortran-lang/setup-fortran@v1
+        with:
+          compiler: gcc
+          version: 13
+
+      - name: Set up Python and dependencies
+        uses: ./.github/actions/setup
+
+      # The badge in the README states the floor, which is a guarantee CI
+      # enforces rather than a snapshot that rots. The exact number goes in
+      # this run's summary, where it costs no service and no write access.
+      - name: Coverage is above the floor
+        run: |
+          cd python && python3 -m pytest tests --cov -q -n auto
+          echo "## Coverage: $(python3 -m coverage report --format=total)% (floor: 97%)" \
+            >> "$GITHUB_STEP_SUMMARY"

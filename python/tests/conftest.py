@@ -1,12 +1,65 @@
 """Fixtures for golden file models and for inline models built with onnx.helper."""
+import os
+import platform
+import re
 import subprocess
-import sys
+import time
 from pathlib import Path
 
 import numpy as np
 import onnx
 import pytest
 from onnx import helper, numpy_helper, TensorProto
+
+from rosenna.golden import golden_generator_run, golden_model_path
+
+# A diagnostic about the generated source carries a <file>:<line>: location.
+# A driver-level notice instead names the tool as its "location" -- for
+# example Apple clang on the macOS CI runner prints, on every invocation and
+# whatever the source,
+#   clang: warning: overriding deployment version from '16.0' to '26.0' [-Woverriding-deployment-version]
+# which is about the SDK versus the deployment target and nothing to do with
+# our C (ruling R21). gfortran's own multi-line diagnostics keep their
+# `<file>:<line>:<col>:` header and a bare `Warning: ...` line, neither of
+# which this pattern matches, so they survive.
+_DRIVER_NOTICE = re.compile(r"^[^\s:]+: (warning|note): ")
+
+
+def _source_diagnostics(stderr: str):
+    """Split compiler stderr into (about the source, driver-level noise)."""
+    kept, dropped = [], []
+    for line in stderr.splitlines():
+        (dropped if _DRIVER_NOTICE.match(line) else kept).append(line)
+    return "\n".join(kept).strip(), "\n".join(dropped).strip()
+
+
+def skip_unless_libgomp_enforces_mandatory(cc: str, tmp_path: Path) -> None:
+    """Skip when this libgomp runs a target region to completion under MANDATORY.
+
+    A libgomp built with no offload plugins (a plain distro gcc < 13, say)
+    ignores OMP_TARGET_OFFLOAD=MANDATORY and falls back to the host, so a test
+    whose evidence is "the program was refused" cannot run there. Skip, naming
+    the toolchain, rather than fail; the caller keeps a platform-independent
+    assertion (the object references GOMP_target_ext) as its primary evidence.
+    """
+    probe = tmp_path / "mandatory_probe.c"
+    probe.write_text("int main(void) {\n    int v = 0;\n"
+                     "    #pragma omp target map(tofrom: v)\n    v = 1;\n    return v ? 0 : 3;\n}\n")
+    build = subprocess.run([cc, "-fopenmp", str(probe), "-o", str(tmp_path / "mandatory_probe")],
+                           capture_output=True, text=True)
+    assert build.returncode == 0, build.stderr
+    run = subprocess.run([str(tmp_path / "mandatory_probe")], capture_output=True, text=True,
+                         env={**os.environ, "OMP_TARGET_OFFLOAD": "MANDATORY"})
+    if run.returncode == 0:
+        version = subprocess.run([cc, "--version"], capture_output=True, text=True).stdout.splitlines()[0]
+        pytest.skip(f"libgomp did not enforce OMP_TARGET_OFFLOAD=MANDATORY for a C target region "
+                    f"on {platform.platform()} with {version}")
+
+
+def _assert_warning_free(lang: str, stderr: str) -> None:
+    kept, dropped = _source_diagnostics(stderr)
+    assert kept == "", (f"{lang}: diagnostics about the generated source:\n{kept}\n"
+                        f"(driver-level notices ignored: {dropped or 'none'})")
 
 
 def save_model(directory, name, nodes, inits, in_shape, out_shape, elem=TensorProto.FLOAT):
@@ -38,27 +91,71 @@ def live_gemm_model(tmp_path):
     return save_model(tmp_path, "livegemm", [node], [w, b], (1, 3), (1, 2))
 
 
+def _run_generator(root, name):
+    with golden_generator_run(root, name) as (argv, cwd, env):
+        subprocess.run(argv, cwd=cwd, check=True, env=env)
+
+
+def _generate_once(model_path, generate):
+    """Run `generate` once, even with several pytest-xdist workers running.
+
+    The generators write into the shared goldenFiles tree, so two workers that
+    both find a model missing would write the same file at the same time. Each
+    xdist worker is its own process with its own session fixtures, so the
+    session scope above is no protection. O_EXCL on a sidecar is the whole
+    lock: the loser waits for the winner's file rather than generating too.
+    """
+    lock = model_path.with_name(model_path.name + ".lock")
+    deadline = time.time() + 600
+    while True:
+        try:
+            os.close(os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        except FileExistsError:
+            while time.time() < deadline:
+                if model_path.exists():
+                    return
+                time.sleep(0.1)
+            # The holder died without cleaning up; take the lock over.
+            lock.unlink(missing_ok=True)
+            continue
+        try:
+            if not model_path.exists():
+                generate()
+        finally:
+            lock.unlink(missing_ok=True)
+        return
+
+
 @pytest.fixture(scope="session")
 def golden_model():
     """Return a helper that generates a golden ONNX model by running its generator script.
 
     The helper takes a model name (e.g. "gemm_small"), returns the path to the ONNX file
-    (../goldenFiles/<name>/<name>.onnx), and generates it if it does not exist.
-    Runs the generator script from test/ as the working directory so filePath resolution
-    and side effects (inputs.fpp) stay in a disposable directory.
+    (goldenFiles/<name>/<name>.onnx), and generates it if it does not exist. How the
+    generator is run is rosenna.golden's business, shared with the gpu-gate.
     """
+    root = Path(__file__).resolve().parents[2]
     generated = {}
 
     def _get_model_path(name: str) -> Path:
         if name not in generated:
-            model_path = Path(f"../goldenFiles/{name}/{name}.onnx")
+            model_path = golden_model_path(root, name)
             if not model_path.exists():
-                subprocess.run(
-                    [sys.executable, f"../goldenFiles/{name}/{name}.py"],
-                    cwd="../test",
-                    check=True,
-                )
+                _generate_once(model_path, lambda: _run_generator(root, name))
+            if not model_path.exists():
+                # goldenFiles/mnist/mnist.py reads its .onnx rather than
+                # writing one -- that model is checked in. Say so, instead of
+                # handing back a path that does not exist.
+                raise FileNotFoundError(
+                    f"{model_path} is missing and {name}.py did not create it; "
+                    f"if it is a checked-in model, restore it with git checkout")
             generated[name] = model_path
         return generated[name]
 
     return _get_model_path
+
+
+@pytest.fixture
+def repo_root():
+    """The repository root, from this file's location rather than the cwd."""
+    return Path(__file__).resolve().parents[2]
