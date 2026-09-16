@@ -3,7 +3,11 @@ import torch.nn as nn
 import sys
 import os
 import numpy as np
-sys.path.insert(1, "../test/")
+# nnLSTM.py sits beside this file's directory, in goldenFiles/. Taken
+# from __file__ rather than a path relative to the working directory:
+# these run from a scratch cwd, and "../test" named a directory that
+# no longer exists.
+sys.path.insert(1, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 from nnLSTM import LSTM
 import timeit
 class NN(nn.Module):

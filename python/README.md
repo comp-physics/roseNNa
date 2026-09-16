@@ -526,7 +526,9 @@ Navier-Stokes solver with a learned per-cell closure.
   initial state may be a graph input (it arrives in `x`) or a constant (it
   becomes a weight). A `Gemm` bias must have one value per output, not a
   broadcast `(1,)`. `Concat` joins runtime values and constants along one
-  axis. No batch norm, no `Softmax`, no `Pad` node, no GRU.
+  axis. `GRU` is forward-direction too, and implements both values of
+  `linear_before_reset`. An inference `BatchNormalization` is folded into the
+  `Conv`/`Gemm` that feeds it rather than emitted.
 - Several inputs and several outputs are fine. Inputs arrive concatenated
   in `x` in declaration order and outputs leave concatenated in `y`, so
   `infer(x, y)`, `infer_batch`, the native kernel and the device contract
