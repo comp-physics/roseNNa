@@ -8,5 +8,12 @@ authors:
     orcid: https://orcid.org/0000-0003-1750-7265
 title: "roseNNa"
 version: 1.0
-doi: 10.5281/zenodo.7334627
+# The DOI for THIS version, matching `version:` above. 10.5281/zenodo.7334627
+# was here until now, which is v0.1's version DOI -- so the file has been
+# claiming a version and citing a different one.
+doi: 10.5281/zenodo.22783324
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.7334626
+    description: Concept DOI, resolving to whichever version is latest
 date-released: 2026-09-16
