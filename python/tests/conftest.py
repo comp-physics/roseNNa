@@ -3,6 +3,7 @@ import os
 import platform
 import re
 import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
@@ -90,6 +91,41 @@ def live_gemm_model(tmp_path):
     return save_model(tmp_path, "livegemm", [node], [w, b], (1, 3), (1, 2))
 
 
+def _run_generator(root, name):
+    with golden_generator_run(root, name) as (argv, cwd, env):
+        subprocess.run(argv, cwd=cwd, check=True, env=env)
+
+
+def _generate_once(model_path, generate):
+    """Run `generate` once, even with several pytest-xdist workers running.
+
+    The generators write into the shared goldenFiles tree, so two workers that
+    both find a model missing would write the same file at the same time. Each
+    xdist worker is its own process with its own session fixtures, so the
+    session scope above is no protection. O_EXCL on a sidecar is the whole
+    lock: the loser waits for the winner's file rather than generating too.
+    """
+    lock = model_path.with_name(model_path.name + ".lock")
+    deadline = time.time() + 600
+    while True:
+        try:
+            os.close(os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        except FileExistsError:
+            while time.time() < deadline:
+                if model_path.exists():
+                    return
+                time.sleep(0.1)
+            # The holder died without cleaning up; take the lock over.
+            lock.unlink(missing_ok=True)
+            continue
+        try:
+            if not model_path.exists():
+                generate()
+        finally:
+            lock.unlink(missing_ok=True)
+        return
+
+
 @pytest.fixture(scope="session")
 def golden_model():
     """Return a helper that generates a golden ONNX model by running its generator script.
@@ -105,8 +141,7 @@ def golden_model():
         if name not in generated:
             model_path = golden_model_path(root, name)
             if not model_path.exists():
-                with golden_generator_run(root, name) as (argv, cwd, env):
-                    subprocess.run(argv, cwd=cwd, check=True, env=env)
+                _generate_once(model_path, lambda: _run_generator(root, name))
             if not model_path.exists():
                 # goldenFiles/mnist/mnist.py reads its .onnx rather than
                 # writing one -- that model is checked in. Say so, instead of

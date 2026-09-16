@@ -498,6 +498,11 @@ Navier-Stokes solver with a learned per-cell closure.
 
 ## Limits
 
+- The suite parallelises: `python3 -m pytest tests -n auto` runs it across
+  every core, which is a 5.5x cut here (264s -> 47s on 16 workers) and gives
+  byte-identical coverage. Most of it is compiling and running generated code,
+  so it scales with cores rather than having any one hot test. Golden-model
+  generation takes a lock, so a cold tree is safe too.
 - Supported ops: `Gemm`, `MatMul`, `Conv` (grouped/depthwise too), `Pad`, `Softmax`,
   `BatchNormalization` (folded into the preceding `Conv`/`Gemm`), `MaxPool`, `AveragePool`, `LSTM`,
   `Add`, `Concat`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`,

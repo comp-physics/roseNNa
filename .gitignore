@@ -43,3 +43,4 @@ examples/**/gen/
 examples/surrogates/*/*_c
 examples/surrogates/*/*_f
 examples/cns_closure/cns_c
+*.lock

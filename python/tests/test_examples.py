@@ -122,13 +122,19 @@ def test_example_builds_and_runs_on_a_gpu(example, toolchain, arch, tmp_path):
 # The test drives the script itself rather than a copy of its commands, which
 # is the point: a copy would keep passing after the script rotted.
 
-def test_the_basic_example_script_runs_both_callers():
+def test_the_basic_example_script_runs_both_callers(tmp_path):
     cc = _omp_cc()
     for tool in ("gfortran", "bash"):
         if not shutil.which(tool):
             pytest.skip(f"no {tool}")
     script = ROOT.parent / "run_basic.sh"
-    env = {**os.environ, "PYTHON": sys.executable,
+    # A private goldenFiles: the script regenerates gemm_small.onnx with an
+    # unseeded generator, so pointed at the repository's tree it rewrites a
+    # file the golden-suite tests read. Harmless in a serial run that happens
+    # to order them favourably, a flake under -n.
+    golden = tmp_path / "goldenFiles"
+    shutil.copytree(ROOT.parents[1] / "goldenFiles" / "gemm_small", golden / "gemm_small")
+    env = {**os.environ, "PYTHON": sys.executable, "GOLDEN_DIR": str(golden),
            "ROSENNA": f"{sys.executable} -m rosenna", "CC": cc}
     r = subprocess.run(["bash", str(script)], env=env,
                        capture_output=True, text=True, timeout=900)
