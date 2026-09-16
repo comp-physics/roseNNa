@@ -251,6 +251,13 @@ CC ?= gcc
 CFLAGS ?= -O2 -Wall -Wextra -std=c11
 ROSENNA_OFFLOAD_FLAGS ?=
 DEVFLAGS ?= -O2
+# Position-independent, and kept out of CFLAGS so overriding those does not
+# drop it. Objects in this archive get linked into executables the generator
+# knows nothing about, and nvcc links PIE by default: without -fPIC a host
+# compiler that does not default to it (nvc does not, where gcc on most
+# distributions does) yields "relocation R_X86_64_32 against `.rodata' can
+# not be used when making a PIE object".
+ROSENNA_PIC ?= -fPIC
 # cuda | hip | omp
 ROSENNA_BACKEND ?= omp
 
@@ -261,7 +268,7 @@ lib{n}.a: {n}.o {n}_kernel.o
 {n}_kernel.o: {n}_kernel.cu {n}.h rosenna_rt.h
 \t$(DEVCC) $(DEVFLAGS) -c $< -o $@
 {n}.o: {n}.c {n}.h
-\t$(CC) $(CFLAGS) $(ROSENNA_OFFLOAD_FLAGS) -DROSENNA_NATIVE_KERNEL -c $< -o $@
+\t$(CC) $(CFLAGS) $(ROSENNA_PIC) $(ROSENNA_OFFLOAD_FLAGS) -DROSENNA_NATIVE_KERNEL -c $< -o $@
 else ifeq ($(ROSENNA_BACKEND),hip)
 DEVCC ?= hipcc
 lib{n}.a: {n}.o {n}_kernel.o
@@ -269,12 +276,12 @@ lib{n}.a: {n}.o {n}_kernel.o
 {n}_kernel.o: {n}_kernel.cu {n}.h rosenna_rt.h
 \t$(DEVCC) $(DEVFLAGS) -x hip -c $< -o $@
 {n}.o: {n}.c {n}.h
-\t$(CC) $(CFLAGS) $(ROSENNA_OFFLOAD_FLAGS) -DROSENNA_NATIVE_KERNEL -c $< -o $@
+\t$(CC) $(CFLAGS) $(ROSENNA_PIC) $(ROSENNA_OFFLOAD_FLAGS) -DROSENNA_NATIVE_KERNEL -c $< -o $@
 else
 lib{n}.a: {n}.o
 \tar rcs $@ $^
 {n}.o: {n}.c {n}.h
-\t$(CC) $(CFLAGS) $(ROSENNA_OFFLOAD_FLAGS) -c $< -o $@
+\t$(CC) $(CFLAGS) $(ROSENNA_PIC) $(ROSENNA_OFFLOAD_FLAGS) -c $< -o $@
 endif
 clean:
 \trm -f {n}.o {n}_kernel.o lib{n}.a

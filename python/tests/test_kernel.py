@@ -9,7 +9,7 @@ from rosenna.frontend import load_graph
 from rosenna.plan import build_plan
 from rosenna.emit_kernel import emit_kernel
 from rosenna.rt_header import rt_header
-from rosenna.emit_c import emit_c, emit_c_recipe, CONSTANT_MEMORY_LIMIT
+from rosenna.emit_c import emit_c, emit_c_recipe, elem_length, CONSTANT_MEMORY_LIMIT
 from rosenna.emit_fortran import emit_fortran
 from tests.conftest import skip_unless_libgomp_enforces_mandatory
 from tests.conftest import _assert_warning_free, save_model
@@ -526,9 +526,14 @@ def test_recipe_selects_the_backend(golden_model):
     assert "-x hip -c $< -o $@" in mk, "the hip kernel is still compiled as HIP"
     assert "-x cu -c $< -o $@" not in mk, "nothing is handed to nvcc as CUDA source any more"
     assert "gemm_small_kernel.o: gemm_small_kernel.cu gemm_small.h rosenna_rt.h" in mk
-    assert mk.count("$(CC) $(CFLAGS) $(ROSENNA_OFFLOAD_FLAGS) -DROSENNA_NATIVE_KERNEL "
-                    "-c $< -o $@") == 2, "cuda and hip both build the .c with the host compiler"
-    assert "$(CC) $(CFLAGS) $(ROSENNA_OFFLOAD_FLAGS) -c $< -o $@" in mk   # the omp backend
+    assert mk.count("$(CC) $(CFLAGS) $(ROSENNA_PIC) $(ROSENNA_OFFLOAD_FLAGS) "
+                    "-DROSENNA_NATIVE_KERNEL -c $< -o $@") == 2, \
+        "cuda and hip both build the .c with the host compiler"
+    assert "$(CC) $(CFLAGS) $(ROSENNA_PIC) $(ROSENNA_OFFLOAD_FLAGS) -c $< -o $@" in mk  # omp
+    # -fPIC lives outside CFLAGS so overriding those cannot drop it; nvcc links
+    # PIE by default and nvc does not emit PIC by default, which is the pair
+    # that fails.
+    assert "ROSENNA_PIC ?= -fPIC" in mk
 
 
 def test_generate_writes_the_kernel_and_rt_header(tmp_path, golden_model):
@@ -664,3 +669,55 @@ def test_fortran_module_binds_the_archive_init_for_a_file_loaded_plan(golden_mod
     # An embedded plan has no init on either side.
     plan_e = build_plan(load_graph(golden_model(name)), dtype="f64", embed=True)
     assert "_init_dev" not in emit_fortran(plan_e)
+
+
+# --- infer_one launch fusion ----------------------------------------------
+
+def test_fusion_groups_runs_of_small_ops(golden_model):
+    """batchnet is all small ops, mnist is large ones with a small tail.
+
+    infer_one launched one kernel per op, which for batchnet measured 60.07 us
+    a call on an A100 -- 5.46 us per launch for eleven ops totalling ~200
+    elements, so almost pure launch overhead. One fused kernel took that to
+    13.44 us.
+    """
+    from rosenna.emit_kernel import FUSE_THREADS, _fusion_runs
+    plan = build_plan(load_graph(golden_model("batchnet")), dtype="f64", embed=True)
+    runs = _fusion_runs(plan)
+    assert len(runs) == 1 and runs[0][0], "every batchnet op fits in a block"
+    assert len(runs[0][1]) == 11
+
+    plan = build_plan(load_graph(golden_model("mnist")), dtype="f64", embed=True)
+    runs = _fusion_runs(plan)
+    fused = [members for fusedp, members in runs if fusedp]
+    assert len(fused) == 1, "only the small tail fuses"
+    assert [elem_length(op) for _, op in fused[0]] == [256, 10, 10]
+    # The big ops keep their own grid: one block could not give them the
+    # parallelism they need, so fusing them would trade 5 us for much more.
+    for fusedp, members in runs:
+        if not fusedp:
+            assert elem_length(members[0][1]) > FUSE_THREADS or len(members) == 1
+
+
+def test_a_fused_kernel_barriers_between_ops_and_launches_one_block(golden_model):
+    """The barrier count and the grid are what make the fusion sound.
+
+    __syncthreads() is a full barrier over a single BLOCK, so the launch has to
+    be one block; and the barrier must sit outside the `if (e < len)` guard,
+    because a __syncthreads() that only some threads reach is undefined.
+    """
+    plan = build_plan(load_graph(golden_model("batchnet")), dtype="f64", embed=True)
+    cu = emit_kernel(plan)
+    body = _function_body(cu, "static __global__ void batchnet_f0(")
+    assert body.count("__syncthreads();") == 10, "one barrier between each of 11 ops"
+    for line in body.splitlines():
+        s = line.strip()
+        if s.startswith("for (int e ="):
+            assert "__syncthreads" not in s, f"barrier inside a loop: {s}"
+    # Strided over the block, so a block of one still computes every element --
+    # which is what the stubbed host build in this file relies on.
+    assert "e += (int)blockDim.x)" in body
+    assert "ROSENNA_LAUNCH(batchnet_f0, 1, ROSENNA_FUSE, s, x, y);" in cu
+    # And infer_one is now one launch, not eleven.
+    one = _function_body(cu, 'extern "C" int batchnet_infer_one(')
+    assert one.count("ROSENNA_LAUNCH(") == 1, one

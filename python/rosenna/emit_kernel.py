@@ -23,6 +23,36 @@ from .emit_c import (KERNEL_TILE, _CTYPE, _c_weight_symbol, _device_bind, elem_c
                      field_buffer, has_infer_one, large_locals, scratch_symbols)
 from .plan import Plan
 
+# One block's threads for a fused run of small ops. An op whose output fits in
+# this many threads can share a kernel with its neighbours, because
+# __syncthreads() is a full barrier over a single block -- which is what makes
+# the fusion sound: after the barrier, every element the next op reads has been
+# written. An op larger than this keeps its own kernel and its own grid, where
+# it gets the parallelism it needs; squeezing it into one block to fuse it
+# would trade 5 us of launch for far more compute.
+FUSE_THREADS = 256
+
+
+def _fusion_runs(plan: Plan) -> list:
+    """The op sequence split into runs to fuse and ops to launch alone.
+
+    Returns [(fused, [(k, op), ...])]. A run of one is never worth fusing --
+    it is the same single launch either way -- so it comes back as solo.
+    """
+    live = [(k, op) for k, op in enumerate(plan.ops) if op.kind != "alias"]
+    runs, cur = [], []
+    for k, op in live:
+        if elem_length(op) <= FUSE_THREADS:
+            cur.append((k, op))
+            continue
+        if cur:
+            runs.append((len(cur) > 1, cur))
+            cur = []
+        runs.append((False, [(k, op)]))
+    if cur:
+        runs.append((len(cur) > 1, cur))
+    return runs
+
 
 def _emit_upload_device(plan: Plan, ctype: str) -> list:
     """The cuda/hip half of init: the device copies of a file-loaded model's weights.
@@ -85,6 +115,7 @@ def emit_kernel(plan: Plan) -> str:
         "#include <stddef.h>",
         "",
         f"#define ROSENNA_TILE {KERNEL_TILE}",
+        f"#define ROSENNA_FUSE {FUSE_THREADS}",
         "",
     ]
     if not plan.embed and plan.weights:
@@ -107,15 +138,40 @@ def emit_kernel(plan: Plan) -> str:
         lines += [f"static __device__ {ctype} {field_buffer(m, sym)}[{plan.buffers[sym]}];"
                   for sym in scratch_symbols(plan)]
         lines.append("")
-        for k, op in enumerate(plan.ops):
-            if op.kind == "alias":
+        runs = _fusion_runs(plan)
+        for r, (fused, members) in enumerate(runs):
+            if not fused:
+                k, op = members[0]
+                lines += [
+                    f"static __global__ void {m}_k{k}(const {ctype} *__restrict__ x, {ctype} *__restrict__ y) {{",
+                    "    const int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);",
+                    f"    if (e < {elem_length(op)}) {elem_call(plan, k, op)};",
+                    "}",
+                ]
                 continue
+            sizes = ", ".join(str(elem_length(op)) for _, op in members)
             lines += [
-                f"static __global__ void {m}_k{k}(const {ctype} *__restrict__ x, {ctype} *__restrict__ y) {{",
-                "    const int e = (int)(blockIdx.x * blockDim.x + threadIdx.x);",
-                f"    if (e < {elem_length(op)}) {elem_call(plan, k, op)};",
-                "}",
+                f"/* {len(members)} consecutive ops in one launch, output lengths {sizes}:",
+                "   each fits in a block, and __syncthreads() between them is a full",
+                "   barrier over that block, so every element the next op reads is",
+                "   written. One block, so the barrier covers every thread that runs.",
+                "   The barrier sits between the loops, never inside one -- a",
+                "   __syncthreads() some threads skip is undefined. */",
+                f"static __global__ void {m}_f{r}(const {ctype} *__restrict__ x, {ctype} *__restrict__ y) {{",
             ]
+            for i, (k, op) in enumerate(members):
+                # Strided over the block rather than one element per thread, so
+                # the kernel is correct for ANY block size -- including a block
+                # of one, which is how the stubbed host build in the tests
+                # emulates a launch. That keeps FUSE_THREADS a performance
+                # choice instead of a correctness precondition.
+                lines += [
+                    f"    for (int e = (int)threadIdx.x; e < {elem_length(op)}; e += (int)blockDim.x)",
+                    f"        {elem_call(plan, k, op)};",
+                ]
+                if i + 1 < len(members):
+                    lines.append("    __syncthreads();")
+            lines.append("}")
         lines += [
             "",
             "/* The activation buffers above are shared by every infer_one call, so two",
@@ -144,12 +200,15 @@ def emit_kernel(plan: Plan) -> str:
             "    }",
             f"    {m}_one_stream = s;",
         ]
-        for k, op in enumerate(plan.ops):
-            if op.kind == "alias":
-                continue
-            n = elem_length(op)
-            lines += [f"    ROSENNA_LAUNCH({m}_k{k}, ({n} + ROSENNA_TILE - 1) / ROSENNA_TILE, ROSENNA_TILE, s, x, y);",
-                      "    if (ROSENNA_LAUNCH_STATUS() != ROSENNA_OK) return 11;"]
+        for r, (fused, members) in enumerate(runs):
+            if fused:
+                lines.append(f"    ROSENNA_LAUNCH({m}_f{r}, 1, ROSENNA_FUSE, s, x, y);")
+            else:
+                k, op = members[0]
+                n = elem_length(op)
+                lines.append(f"    ROSENNA_LAUNCH({m}_k{k}, ({n} + ROSENNA_TILE - 1) / ROSENNA_TILE, "
+                             "ROSENNA_TILE, s, x, y);")
+            lines.append("    if (ROSENNA_LAUNCH_STATUS() != ROSENNA_OK) return 11;")
         lines += [
             f"    if (ROSENNA_EVENT_RECORD({m}_one_done, s) != ROSENNA_OK) return 12;",
             "    return 0;", "}", ""]
