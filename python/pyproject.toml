@@ -1,6 +1,6 @@
 [project]
 name = "rosenna"
-version = "0.1.0"
+version = "1.0.0"
 requires-python = ">=3.11"
 # protobuf is listed because cli.py imports google.protobuf directly (to
 # catch a DecodeError on a corrupt model). It happens to arrive with onnx
