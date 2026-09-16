@@ -69,6 +69,7 @@ Everything statically knowable is resolved at generation time: shapes, buffer si
 
 A model using something the generator cannot lower is **refused by name at generation time**, never silently mis-computed. `rosenna info model.onnx` reports what it found. The limits:
 
+- one archive serves both call paths: `<name>.c` is built by your host compiler with its offload flags, `<name>_kernel.cu` by `nvcc`/`hipcc`. Whoever's device code is in the archive does the final link -- built with offload flags it holds the host compiler's own fatbin, so link with that compiler (`nvc -cuda`); built without them, `nvcc` can link it directly
 - 2-D spatial ops only (rank-4 NCHW); `ceil_mode` must be 0
 - `Conv` `group` must divide both channel counts, and the weight's channel axis must be `C_in / group`
 - `Softmax` normalises the last axis only
