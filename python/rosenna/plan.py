@@ -325,15 +325,43 @@ def _begin_pads(node, in_hw, out_hw, k_hw, s_hw, d_hw):
     return begin[0], begin[1]
 
 
+def _lift_1d(node):
+    """A rank-3 spatial node's attributes, as the 2-D ones that mean the same.
+
+    A 1-D op is a 2-D op whose height is 1, and on a flat row-major buffer the
+    two are the SAME BYTES: (N,C,W) and (N,C,1,W) have identical indices, and
+    so do a weight's (OC,IC,KW) and (OC,IC,1,KW). So 1-D needs no loop nest of
+    its own -- it is the existing nest with h_in=h_out=kh=1, sh=1, ph=0, dh=1,
+    which the compiler folds away. Only the attributes have to be lifted.
+    """
+    from .frontend import Node
+    a = dict(node.attrs)
+    if "kernel_shape" in a:
+        a["kernel_shape"] = (1, int(a["kernel_shape"][0]))
+    for name in ("strides", "dilations"):
+        if name in a:
+            a[name] = (1, int(a[name][0]))
+    if "pads" in a:
+        begin, end = (int(v) for v in a["pads"])
+        a["pads"] = (0, begin, 0, end)
+    return Node(node.op, node.name, node.inputs, node.outputs, a)
+
+
 def _spatial(graph: Graph, node) -> Spatial:
     """Lower one Conv/MaxPool/AveragePool node to literal loop extents."""
     x = graph.values[node.inputs[0]]
     out = graph.values[node.outputs[0]]
-    n, c_in, h_in, w_in = (int(d) for d in x.shape)
-    _, c_out, h_out, w_out = (int(d) for d in out.shape)
+    if len(x.shape) == 3:
+        node = _lift_1d(node)
+        n, c_in, w_in = (int(d) for d in x.shape)
+        _, c_out, w_out = (int(d) for d in out.shape)
+        h_in = h_out = 1
+    else:
+        n, c_in, h_in, w_in = (int(d) for d in x.shape)
+        _, c_out, h_out, w_out = (int(d) for d in out.shape)
     if node.op == "Conv":
         w = graph.initializers[node.inputs[1]]
-        kh, kw = int(w.shape[2]), int(w.shape[3])
+        kh, kw = (1, int(w.shape[2])) if w.ndim == 3 else (int(w.shape[2]), int(w.shape[3]))
     else:
         kh, kw = _pair(node.attrs.get("kernel_shape"), 1)
     sh, sw = _pair(node.attrs.get("strides"), 1)
@@ -585,7 +613,13 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
         if node.op == "Conv":
             sp = _spatial(graph, node)
             w = graph.initializers[node.inputs[1]]
-            wsym = weight(node.inputs[1], f"w{widx}", tuple(int(d) for d in w.shape))
+            # Registered at the lifted rank for a 1-D conv: the flat bytes are
+            # the same either way, but emit_fortran DECLARES the weight with
+            # the ONNX shape reversed and the nest writes four subscripts, so a
+            # rank-3 declaration would not match w(kw, kh, ic, oc).
+            wshape = ((int(w.shape[0]), int(w.shape[1]), 1, int(w.shape[2]))
+                      if w.ndim == 3 else tuple(int(d) for d in w.shape))
+            wsym = weight(node.inputs[1], f"w{widx}", wshape)
             bsym = None
             if len(node.inputs) > 2 and node.inputs[2]:
                 b = graph.initializers[node.inputs[2]]

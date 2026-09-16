@@ -206,12 +206,16 @@ def _validate_spatial(graph: Graph, node) -> None:
     x = graph.values.get(node.inputs[0])
     if x is None:
         raise UnsupportedModel(f"{where}: input '{node.inputs[0]}' has no inferred shape")
-    if len(x.shape) != 4:
+    rank = len(x.shape)
+    if rank not in (3, 4):
         raise UnsupportedModel(
-            f"{where}: {node.op} input has rank {len(x.shape)}; only rank-4 NCHW is supported")
+            f"{where}: {node.op} input has rank {rank}; only rank-3 NCW (1-D) and "
+            f"rank-4 NCHW (2-D) are supported")
+    nd = rank - 2                                   # spatial axes: 1 or 2
     out = graph.values.get(node.outputs[0])
-    if out is None or len(out.shape) != 4:
-        raise UnsupportedModel(f"{where}: {node.op} output must be a rank-4 value with an inferred shape")
+    if out is None or len(out.shape) != rank:
+        raise UnsupportedModel(
+            f"{where}: {node.op} output must be a rank-{rank} value with an inferred shape")
 
     kernel = node.attrs.get("kernel_shape")
     if node.op == "Conv" and kernel is None:
@@ -219,19 +223,21 @@ def _validate_spatial(graph: Graph, node) -> None:
         kernel = tuple(int(d) for d in w.shape[2:]) if w is not None else None
     if kernel is None:
         raise UnsupportedModel(f"{where}: {node.op} needs kernel_shape")
-    if len(kernel) != 2:
+    if len(kernel) != nd:
         raise UnsupportedModel(
-            f"{where}: kernel_shape has {len(kernel)} spatial axes; only 2-D is supported")
+            f"{where}: kernel_shape has {len(kernel)} spatial axes but the input has "
+            f"{nd}; they must agree")
 
     for attr in ("strides", "dilations"):
         v = node.attrs.get(attr)
-        if v is not None and len(v) != 2:
-            raise UnsupportedModel(f"{where}: {attr} has {len(v)} entries; only 2-D is supported")
+        if v is not None and len(v) != nd:
+            raise UnsupportedModel(
+                f"{where}: {attr} has {len(v)} entries; a {nd}-D op takes {nd}")
     pads = node.attrs.get("pads")
-    if pads is not None and len(pads) != 4:
+    if pads is not None and len(pads) != 2 * nd:
         raise UnsupportedModel(
-            f"{where}: pads has {len(pads)} entries; a 2-D op takes 4 "
-            f"(begin_h, begin_w, end_h, end_w)")
+            f"{where}: pads has {len(pads)} entries; a {nd}-D op takes {2 * nd} "
+            f"(every begin, then every end)")
     auto_pad = node.attrs.get("auto_pad", "NOTSET")
     if auto_pad not in ("NOTSET", "VALID", "SAME_UPPER", "SAME_LOWER"):
         raise UnsupportedModel(f"{where}: auto_pad='{auto_pad}' is not supported")
@@ -245,8 +251,10 @@ def _validate_spatial(graph: Graph, node) -> None:
         if len(node.inputs) < 2 or node.inputs[1] not in graph.initializers:
             raise UnsupportedModel(f"{where}: Conv weight must be a constant initializer")
         w = graph.initializers[node.inputs[1]]
-        if w.ndim != 4:
-            raise UnsupportedModel(f"{where}: Conv weight has rank {w.ndim}; only rank 4 is supported")
+        if w.ndim != rank:
+            raise UnsupportedModel(
+                f"{where}: Conv weight has rank {w.ndim}; a rank-{rank} input needs a "
+                f"rank-{rank} weight")
         group = int(node.attrs.get("group", 1))
         c_in, c_out = int(x.shape[1]), int(w.shape[0])
         if group < 1:

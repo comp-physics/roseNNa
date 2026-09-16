@@ -930,3 +930,68 @@ def test_pad_axes_operand_expands_to_a_full_rank_pads(tmp_path):
     assert np.allclose(c, want) and np.allclose(f, want)
     # Axes 0 and 1 were not named, so they are unpadded.
     assert np.asarray(c).reshape(out).shape[:2] == (1, 2)
+
+
+# --- 1-D spatial ops -------------------------------------------------------
+
+@pytest.mark.parametrize("op,attrs,c_in,c_out,w_in,w_out", [
+    ("Conv", dict(kernel_shape=[3], pads=[1, 1]), 3, 5, 16, 16),
+    ("Conv", dict(kernel_shape=[3], pads=[2, 2], strides=[2], dilations=[2]), 3, 5, 16, 8),
+    ("Conv", dict(kernel_shape=[3], pads=[1, 1], group=2), 4, 6, 16, 16),
+    ("MaxPool", dict(kernel_shape=[3], strides=[2], pads=[1, 1]), 3, 3, 20, 10),
+    ("AveragePool", dict(kernel_shape=[2], strides=[2]), 3, 3, 20, 10),
+])
+def test_one_dimensional_spatial_ops_match_onnxruntime(tmp_path, op, attrs, c_in, c_out,
+                                                       w_in, w_out):
+    """A 1-D op is the 2-D nest with a height of 1.
+
+    On a flat row-major buffer (N,C,W) and (N,C,1,W) are the same bytes, so
+    this needs no loop nest of its own -- but that equivalence is exactly the
+    kind of claim that is either right or silently off by a stride, so each
+    variant is compared against onnxruntime.
+    """
+    rng = np.random.default_rng(61)
+    ini = []
+    inputs = ["x"]
+    if op == "Conv":
+        group = attrs.get("group", 1)
+        ini = [numpy_helper.from_array(
+            rng.uniform(-1, 1, (c_out, c_in // group, attrs["kernel_shape"][0])).astype(np.float32), "w"),
+            numpy_helper.from_array(rng.uniform(-1, 1, c_out).astype(np.float32), "b")]
+        inputs += ["w", "b"]
+    graph = helper.make_graph(
+        [helper.make_node(op, inputs, ["y"], name="s0", **attrs)], "d1",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, c_in, w_in])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, c_out, w_out])], ini)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+    import onnx as _onnx
+    path = tmp_path / "d1.onnx"
+    _onnx.save(model, str(path))
+
+    x = rng.uniform(-2, 2, (1, c_in, w_in)).astype(np.float32)
+    f, c = _both_backends(tmp_path, path, "d1", x.reshape(1, -1), dtype="f32")
+    want = ort.InferenceSession(str(path)).run(None, {"x": x})[0].ravel()
+    for got, lang in ((f, "fortran"), (c, "c")):
+        assert np.allclose(got, want, rtol=1e-5, atol=1e-6), \
+            f"{op} {lang}: max |diff| {np.max(np.abs(np.asarray(got).ravel() - want)):.3e}"
+
+
+@pytest.mark.parametrize("attrs,fragment", [
+    (dict(kernel_shape=[3, 3], pads=[1, 1]), "they must agree"),
+    (dict(kernel_shape=[3], strides=[1, 1], pads=[1, 1]), "a 1-D op takes 1"),
+    (dict(kernel_shape=[3], pads=[1, 1, 1, 1]), "a 1-D op takes 2"),
+])
+def test_a_1d_op_refuses_attributes_of_the_wrong_arity(tmp_path, attrs, fragment):
+    from rosenna.validate import validate
+    graph = helper.make_graph(
+        [helper.make_node("MaxPool", ["x"], ["y"], name="s0", **attrs)], "bad",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 3, 16])],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 3, 16])], [])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+    import onnx as _onnx
+    path = tmp_path / "bad.onnx"
+    _onnx.save(model, str(path))
+    with pytest.raises(UnsupportedModel, match=fragment):
+        validate(load_graph(path))

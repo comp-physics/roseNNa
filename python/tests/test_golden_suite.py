@@ -22,7 +22,7 @@ from rosenna.verify import verify_model
 # disappearing is a failure, not a silently smaller suite.
 GOLDEN = [
     "avgpool_basic", "batchnet", "conv_basic", "conv_grouped", "conv_padding",
-    "conv_padding-stride", "conv_strides", "droplet", "gemm_big",
+    "conv1d_stack", "conv_padding-stride", "conv_strides", "droplet", "gemm_big",
     "gemm_nobias", "gemm_small", "lstm_cell", "lstm_gemm", "lstm_gemm_hid",
     "lstm_nostate", "lstm_output", "maxpool_basic", "maxpool_nonsquare",
     "maxpool_padding", "maxpool_strides", "mnist", "pool_batch",
