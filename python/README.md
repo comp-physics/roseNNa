@@ -498,6 +498,20 @@ Navier-Stokes solver with a learned per-cell closure.
 
 ## Limits
 
+- **OpenACC per-point hosts want `gang vector`.** A plain `#pragma acc parallel
+  loop` over points lets nvc map ONE POINT PER GANG (measured: `num_gangs=4096,
+  vector_length=32`), and it then auto-vectorises `infer`'s own loops across the
+  32 lanes -- the OpenACC shape of the `teams loop` cliff in
+  [`doc/nvhpc_teams_mapping/`](../doc/nvhpc_teams_mapping/). Saying `gang
+  vector` puts one point per thread (`num_gangs=32, vector_length=128`) and was
+  1.9x faster. On an A100 over a million points, `gemm_big` per-point is
+  6.03 ns with OpenACC against 1.74 ns with OpenMP target, so the two families
+  are not equivalent in speed even when both are correct.
+- `rosenna gpu-gate` measures the OpenMP family only: its per-point harnesses
+  carry `omp target` pragmas, so running it with `--flags "-acc=gpu"` compiles
+  those away and times the HOST (743 ns per point, and the nsys check then has
+  no device activity to parse). OpenACC offload is covered by the tests and by
+  hand, not by the gate.
 - The suite parallelises: `python3 -m pytest tests -n auto` runs it across
   every core, which is a 5.5x cut here (264s -> 47s on 16 workers) and gives
   byte-identical coverage. Most of it is compiling and running generated code,

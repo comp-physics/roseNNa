@@ -14,6 +14,14 @@ _RT_HEADER = """\
    defines it without being a HIP compilation. */
 #ifndef ROSENNA_RT_H
 #define ROSENNA_RT_H
+/* How many devices one process may hold weights on. The device copies and the
+   per-translation-unit __constant__ table are per DEVICE, so a multi-GPU host
+   calls init (or upload_device) once per device with that device current, and
+   each device's table is filled with that device's pointers. Raise this if a
+   machine has more. */
+#ifndef ROSENNA_MAX_DEVICES
+#define ROSENNA_MAX_DEVICES 16
+#endif
 #if defined(__HIPCC__)
 #include <hip/hip_runtime.h>
 #define ROSENNA_STREAM_T hipStream_t
@@ -24,6 +32,7 @@ _RT_HEADER = """\
 #define ROSENNA_MEMCPY_TO_SYMBOL(sym, src, n) \\
     hipMemcpyToSymbol(HIP_SYMBOL(sym), (src), (n), 0, hipMemcpyHostToDevice)
 #define ROSENNA_FREE(p) hipFree(p)
+#define ROSENNA_GET_DEVICE(p) hipGetDevice(p)
 #define ROSENNA_OK hipSuccess
 #define ROSENNA_SYNC(s) hipStreamSynchronize(s)
 #define ROSENNA_LAUNCH(k, g, b, s, ...) k<<<(g), (b), 0, (s)>>>(__VA_ARGS__)
@@ -42,6 +51,7 @@ _RT_HEADER = """\
 #define ROSENNA_MEMCPY_TO_SYMBOL(sym, src, n) \\
     cudaMemcpyToSymbol((sym), (src), (n), 0, cudaMemcpyHostToDevice)
 #define ROSENNA_FREE(p) cudaFree(p)
+#define ROSENNA_GET_DEVICE(p) cudaGetDevice(p)
 #define ROSENNA_OK cudaSuccess
 #define ROSENNA_SYNC(s) cudaStreamSynchronize(s)
 #define ROSENNA_LAUNCH(k, g, b, s, ...) k<<<(g), (b), 0, (s)>>>(__VA_ARGS__)

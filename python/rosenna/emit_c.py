@@ -497,12 +497,16 @@ def _emit_weight_declarations(plan: Plan, ctype: str) -> list:
         "",
         "/* Device copies of the arrays above: allocated and filled by",
         f"   {m}_init on a cuda/hip build, read by the batched kernel; not",
-        "   referenced under a plain or OpenMP host build. */",
+        "   referenced under a plain or OpenMP host build. Indexed by device,",
+        "   so a multi-GPU host can hold weights on several at once -- one set",
+        "   of pointers would have meant the second init silently replaced the",
+        "   first device's, and the kernel on that device would then read an",
+        "   address belonging to another. */",
         _CUDA_GUARD,
     ]
     for w in plan.weights:
         sym = _c_weight_symbol(m, w.symbol)
-        lines.append(f"extern {ctype} *{sym}_dev;")
+        lines.append(f"extern {ctype} *{sym}_dev[ROSENNA_MAX_DEVICES];")
     lines += [
         f"/* Called by {m}_init once the copies above exist: publishes them to",
         f"   the kernel's translation unit ({m}_kernel.cu, where it is defined).",
@@ -602,10 +606,13 @@ def _emit_device_weight_table(plan: Plan, ctype: str) -> list:
         "   Returns 0, or 10 if init has not made the device copies. */",
         _CUDA_GUARD,
         f"static inline int {_device_bind(m)}_here(void) {{",
+        "    int rosenna_dev = 0;",
+        "    if (ROSENNA_GET_DEVICE(&rosenna_dev) != ROSENNA_OK) return 10;",
+        "    if (rosenna_dev < 0 || rosenna_dev >= ROSENNA_MAX_DEVICES) return 13;",
         f"    const {ctype} *table[{nw}] = {{",
     ]
     for w in plan.weights:
-        lines.append(f"        {_c_weight_symbol(m, w.symbol)}_dev,")
+        lines.append(f"        {_c_weight_symbol(m, w.symbol)}_dev[rosenna_dev],")
     lines += [
         "    };",
         f"    for (int k = 0; k < {nw}; ++k) if (table[k] == 0) return 10;",
@@ -711,6 +718,17 @@ def _emit_upload(plan: Plan) -> list:
 
 def _emit_fallback_infer_batch(plan: Plan, ctype: str) -> list:
     """The OpenMP-target infer_batch: the omp backend, over device pointers.
+
+    This returns 0 or nothing, where the cuda/hip form returns 11 on a failed
+    launch, and that asymmetry is not an omission. OpenMP has no launch-status
+    API: a target region either runs or the runtime terminates the program
+    (OMP_TARGET_OFFLOAD=MANDATORY makes the second explicit). Nor can the
+    contract be checked from here -- omp_target_is_present takes a HOST
+    pointer, and ruling R5 says x and y are already device pointers, so it
+    would answer about the wrong thing. And "no device is present" cannot be
+    an error either: --backend omp --host-fallback is a documented,
+    deviceless configuration of this same code. So there is nothing to
+    report, rather than something unreported.
 
     Controller ruling R5: x and y are already on the device (is_device_ptr
     / deviceptr), so the loop path maps, allocates and synchronizes nothing.

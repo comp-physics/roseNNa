@@ -147,28 +147,33 @@ def test_file_loaded_kernel_owns_the_device_copies(golden_model):
     plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64", embed=False)
     source, header = emit_c(plan)
     cu = emit_kernel(plan)
-    assert 'extern "C" double *gemm_small_w0_dev = 0;' in cu
-    assert "ROSENNA_MALLOC(&gemm_small_w0_dev, sizeof gemm_small_w0)" in cu
-    assert "ROSENNA_MEMCPY_H2D(gemm_small_w0_dev, gemm_small_w0, sizeof gemm_small_w0)" in cu
+    # Indexed by device: one set of pointers meant a second init silently
+    # replaced the first device's, and that device's kernel then read an
+    # address belonging to another.
+    assert 'extern "C" double *gemm_small_w0_dev[ROSENNA_MAX_DEVICES] = {0};' in cu
+    assert "ROSENNA_MALLOC(&gemm_small_w0_dev[d], sizeof gemm_small_w0)" in cu
+    assert "ROSENNA_MEMCPY_H2D(gemm_small_w0_dev[d], gemm_small_w0, sizeof gemm_small_w0)" in cu
+    assert "if (ROSENNA_GET_DEVICE(&d) != ROSENNA_OK) return 10;" in cu
     # And none of it is left in the .c, which no host compiler could build.
-    for token in ("ROSENNA_MALLOC", "ROSENNA_MEMCPY_H2D", "ROSENNA_FREE", "_dev = 0"):
+    for token in ("ROSENNA_MALLOC", "ROSENNA_MEMCPY_H2D", "ROSENNA_FREE"):
         assert token not in source, token
     assert '#include "rosenna_rt.h"' not in source   # the header includes it, guarded
     # init ends by publishing the copies to the kernel's translation unit,
     # through the header's per-translation-unit bind (ruling R8), which any
     # user kernel's translation unit must call as well.
     assert ("if (gemm_small_device_bind() != 0) "
-            "{ gemm_small_release_device(); return 10; }") in cu
+            "{ gemm_small_release_device_at(d); return 10; }") in cu
     # A failed bind (like a failed allocation or copy) frees and nulls every
     # copy -- the same release a repeated init starts with -- so infer_batch
     # then returns 10 instead of launching over a table that still holds the
     # previous addresses.
-    release = _function_body(cu, "static void gemm_small_release_device(void) {")
+    release = _function_body(cu, "static void gemm_small_release_device_at(int d) {")
     for sym in ("w0", "b0", "w1", "b1"):
-        assert f"(void)ROSENNA_FREE(gemm_small_{sym}_dev);\n    gemm_small_{sym}_dev = 0;" in release
+        assert (f"(void)ROSENNA_FREE(gemm_small_{sym}_dev[d]);\n"
+                f"    gemm_small_{sym}_dev[d] = 0;") in release
     upload = _function_body(cu, 'extern "C" int gemm_small_upload_device(void) {')
-    assert upload.count("{ gemm_small_release_device(); return 10; }") == 2 * 4 + 1
-    assert "    gemm_small_release_device();\n" in upload
+    assert upload.count("{ gemm_small_release_device_at(d); return 10; }") == 2 * 4 + 1
+    assert "    gemm_small_release_device_at(d);\n" in upload
     assert "int gemm_small_device_bind(void);" in header
     assert "static inline int gemm_small_device_bind_here(void) {" in header
     assert ("call gemm_small_device_bind_here() after EVERY call to gemm_small_init()\n"
@@ -429,6 +434,8 @@ static inline int rosenna_stub_sync(void *s) { (void)s; return 0; }
 #define ROSENNA_LAUNCH(k, g, b, s, ...) \\
     do { for (blockIdx.x = 0; blockIdx.x < (unsigned)((g) * (b)); ++blockIdx.x) k(__VA_ARGS__); } while (0)
 #define ROSENNA_LAUNCH_STATUS() 0
+#define ROSENNA_MAX_DEVICES 16
+#define ROSENNA_GET_DEVICE(p) (*(p) = 0, 0)
 /* infer_one's cross-stream ordering: inert here, since the stub launcher runs
    every kernel synchronously on the host. */
 typedef int ROSENNA_EVENT_T_;
@@ -721,3 +728,47 @@ def test_a_fused_kernel_barriers_between_ops_and_launches_one_block(golden_model
     # And infer_one is now one launch, not eleven.
     one = _function_body(cu, 'extern "C" int batchnet_infer_one(')
     assert one.count("ROSENNA_LAUNCH(") == 1, one
+
+
+def test_device_state_is_per_device(golden_model):
+    """A multi-GPU host holds weights on several devices at once.
+
+    One set of <sym>_dev pointers meant the second init replaced the first
+    device's addresses, and the first device's __constant__ table then pointed
+    at memory belonging to another device -- a kernel reading a valid-looking
+    address on the wrong one. Verified on two A100s: both devices' infer_batch
+    matched a host reference to 1.11e-16.
+    """
+    plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64", embed=False)
+    source, header = emit_c(plan)
+    cu = emit_kernel(plan)
+    assert "extern double *gemm_small_w0_dev[ROSENNA_MAX_DEVICES];" in header
+    # The per-translation-unit bind reads the CURRENT device's slot.
+    bind = _function_body(header, "static inline int gemm_small_device_bind_here(")
+    assert "ROSENNA_GET_DEVICE(&rosenna_dev)" in bind
+    assert "gemm_small_w0_dev[rosenna_dev]," in bind
+    assert "rosenna_dev >= ROSENNA_MAX_DEVICES) return 13;" in bind
+    # infer_one's ordering state is host-side and had to follow the buffers,
+    # which are __device__ and so already per device.
+    one = _function_body(cu, 'extern "C" int gemm_small_infer_one(')
+    assert "gemm_small_one_done[rdev]" in one and "gemm_small_one_stream[rdev]" in one
+    # And the null check is per device, so initializing device 0 and launching
+    # on device 1 is status 10 rather than a wrong answer.
+    batch = _function_body(cu, 'extern "C" int gemm_small_infer_batch(')
+    assert "gemm_small_w0_dev[rdev] == 0) return 10;" in batch
+
+
+def test_the_omp_fallback_explains_why_it_has_no_launch_status(golden_model):
+    """The asymmetry with the cuda/hip form's status 11 is reasoned, not missing.
+
+    OpenMP has no launch-status API; omp_target_is_present takes a host
+    pointer while ruling R5 says x and y are device pointers; and a deviceless
+    run is a documented configuration (--backend omp --host-fallback), so it
+    cannot be an error either.
+    """
+    import inspect
+    from rosenna import emit_c as ec
+    # Whitespace-normalised: the phrases wrap across lines in the source.
+    doc = " ".join((inspect.getdoc(ec._emit_fallback_infer_batch) or "").split())
+    assert "no launch-status API" in doc
+    assert "omp_target_is_present" in doc and "host-fallback" in doc
