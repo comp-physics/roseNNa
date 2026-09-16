@@ -80,10 +80,14 @@ def test_loop_path_never_transfers(golden_model):
         rest_c = source
         if not embed:
             init = _function_body(source, f"int {name}_init(")
-            upload = _function_body(source, f"static int {name}_upload(")
-            assert f"return {name}_upload();" in init and "ROSENNA_MALLOC" in upload
-            rest_c = rest_c.replace(init, "").replace(upload, "")
-            # <name>_release (called by upload) only frees: no transfer token.
+            # The allocation and copies now live in the KERNEL translation
+            # unit, because every line of them is a CUDA/HIP runtime call and
+            # <name>.c is built by the host compiler. init still drives them.
+            upload = _function_body(cu, f'extern "C" int {name}_upload_device(')
+            assert f"return {name}_upload_device();" in init and "ROSENNA_MALLOC" in upload
+            rest_c = rest_c.replace(init, "")
+            cu = cu.replace(upload, "")
+            # <name>_release_device (called by upload) only frees: no transfer.
         for forbidden in _LOOP_PATH_FORBIDDEN:
             assert forbidden not in rest_c, (embed, forbidden)
             assert forbidden not in cu, (embed, forbidden)
@@ -113,13 +117,16 @@ def test_header_declares_infer_batch_with_c_linkage_on_both_forms(golden_model):
                 "double *ROSENNA_RESTRICT y, void *stream);") in header
         assert 'extern "C" {' in header and "__cplusplus" in header
         assert "x and y must already be on\n   the device; init is the only routine that transfers." in header
-        # The OpenMP fallback lives in the .c under the negation of the CUDA/HIP
-        # guard, over device pointers (ruling R5), each pragma under its own guard.
+        # The OpenMP fallback lives in the .c under the negation of the ROLE
+        # guard -- set by the recipe, not sniffed from the compiler -- over
+        # device pointers (ruling R5), each pragma under its own guard.
         assert ("int gemm_small_infer_batch(int n, const double *ROSENNA_RESTRICT x, "
                 "double *ROSENNA_RESTRICT y, void *stream) {") in source
         assert ('extern "C" int gemm_small_infer_batch(int n, const double *__restrict__ x, '
                 "double *__restrict__ y, void *stream) {") in emit_kernel(plan)
-        assert "#if !defined(__CUDACC__) && !defined(__HIPCC__)" in source
+        assert "#ifndef ROSENNA_NATIVE_KERNEL" in source
+        assert "#if !defined(__CUDACC__) && !defined(__HIPCC__)" not in source, \
+            "the .c is built by the host compiler now; nothing in it may sniff for nvcc"
         # distribute parallel for, not teams loop: teams loop maps one point per
         # TEAM under nvc (the ~30x cliff the README describes) and under
         # amdclang (3.5 us per point on an MI210, measured on the reaction-
@@ -130,27 +137,38 @@ def test_header_declares_infer_batch_with_c_linkage_on_both_forms(golden_model):
         assert "#elif defined(_OPENACC)\n#pragma acc parallel loop deviceptr(x, y)\n#endif" in source
 
 
-def test_file_loaded_source_copies_to_the_device_under_the_cuda_guard(golden_model):
+def test_file_loaded_kernel_owns_the_device_copies(golden_model):
+    """The cuda/hip half of init lives in the kernel TU, not in <name>.c.
+
+    That is the whole of the one-archive change: <name>.c is built by the host
+    compiler so its declare-target weights actually reach the device, and
+    every CUDA/HIP runtime call sits beside the kernel that needs it.
+    """
     plan = build_plan(load_graph(golden_model("gemm_small")), dtype="f64", embed=False)
     source, header = emit_c(plan)
-    assert "double *gemm_small_w0_dev = 0;" in source
-    assert "ROSENNA_MALLOC(&gemm_small_w0_dev, sizeof gemm_small_w0)" in source
-    assert "ROSENNA_MEMCPY_H2D(gemm_small_w0_dev, gemm_small_w0, sizeof gemm_small_w0)" in source
-    assert "return 10;" in source and '#include "rosenna_rt.h"' not in source   # the header includes it
+    cu = emit_kernel(plan)
+    assert 'extern "C" double *gemm_small_w0_dev = 0;' in cu
+    assert "ROSENNA_MALLOC(&gemm_small_w0_dev, sizeof gemm_small_w0)" in cu
+    assert "ROSENNA_MEMCPY_H2D(gemm_small_w0_dev, gemm_small_w0, sizeof gemm_small_w0)" in cu
+    # And none of it is left in the .c, which no host compiler could build.
+    for token in ("ROSENNA_MALLOC", "ROSENNA_MEMCPY_H2D", "ROSENNA_FREE", "_dev = 0"):
+        assert token not in source, token
+    assert '#include "rosenna_rt.h"' not in source   # the header includes it, guarded
     # init ends by publishing the copies to the kernel's translation unit,
     # through the header's per-translation-unit bind (ruling R8), which any
     # user kernel's translation unit must call as well.
-    assert "if (gemm_small_device_bind() != 0) { gemm_small_release(); return 10; }" in source
+    assert ("if (gemm_small_device_bind() != 0) "
+            "{ gemm_small_release_device(); return 10; }") in cu
     # A failed bind (like a failed allocation or copy) frees and nulls every
     # copy -- the same release a repeated init starts with -- so infer_batch
     # then returns 10 instead of launching over a table that still holds the
     # previous addresses.
-    release = _function_body(source, "static void gemm_small_release(void) {")
+    release = _function_body(cu, "static void gemm_small_release_device(void) {")
     for sym in ("w0", "b0", "w1", "b1"):
         assert f"(void)ROSENNA_FREE(gemm_small_{sym}_dev);\n    gemm_small_{sym}_dev = 0;" in release
-    upload = _function_body(source, "static int gemm_small_upload(void) {")
-    assert upload.count("{ gemm_small_release(); return 10; }") == 2 * 4 + 1
-    assert "    gemm_small_release();\n" in upload
+    upload = _function_body(cu, 'extern "C" int gemm_small_upload_device(void) {')
+    assert upload.count("{ gemm_small_release_device(); return 10; }") == 2 * 4 + 1
+    assert "    gemm_small_release_device();\n" in upload
     assert "int gemm_small_device_bind(void);" in header
     assert "static inline int gemm_small_device_bind_here(void) {" in header
     assert ("call gemm_small_device_bind_here() after EVERY call to gemm_small_init()\n"
@@ -371,8 +389,8 @@ def test_generated_c_is_warning_free_under_a_plain_compiler(tmp_path, golden_mod
 
 
 def test_generated_c_compiles_as_cpp_with_the_rt_header_stubbed(tmp_path, golden_model):
-    # nvcc and hipcc compile <name>.c as C++ (-x cu / -x hip). No such compiler
-    # runs here, so this is the nearest local check: a host C++ compiler with
+    # nvcc and hipcc compile <name>_kernel.cu as C++. No such compiler runs
+    # here, so this is the nearest local check: a host C++ compiler with
     # __CUDACC__ forced on and the CUDA keywords and runtime replaced by inert
     # stand-ins. It catches C-only constructs in the .c, linkage mismatches
     # between the header's extern "C" block and the definitions, and any use
@@ -449,7 +467,15 @@ static inline int rosenna_stub_wait(void *s, int e) { (void)s; (void)e; return 0
                       "-D__CUDACC__=1", "-D__host__=", "-D__device__=", "-D__constant__=", "-D__global__=",
                       "-D__shared__=",
                       "-include", "builtins.h"]
-            r = subprocess.run(common + [f"{name}.c", "-o", f"{name}.o"], cwd=d, capture_output=True, text=True)
+            cc = shutil.which("clang") or shutil.which("cc") or shutil.which("gcc")
+            # <name>.c is built by the HOST compiler as plain C, with the role
+            # macro that yields the batched entry points to the kernel -- which
+            # is what the recipe now does, and the reason one archive can serve
+            # both call paths. Compiling it as CUDA C++ here (as this test used
+            # to, mirroring the old recipe) would also define <name>_sync twice.
+            r = subprocess.run([cc, "-std=c11", "-ffp-contract=off", "-Wall", "-Wextra", "-c",
+                                "-DROSENNA_NATIVE_KERNEL", f"{name}.c", "-o", f"{name}.o"],
+                               cwd=d, capture_output=True, text=True)
             assert r.returncode == 0, r.stderr
             arch_flag = [f"-D__CUDA_ARCH__={arch}"] if arch else []
             r = subprocess.run(common + arch_flag + [f"{name}_kernel.cu", "-o", f"{name}_kernel.o"], cwd=d, capture_output=True, text=True)
@@ -473,7 +499,6 @@ int main(void) {{ double x[4 * {n_in}], y[4 * {n_out}], yb[4 * {n_out}];
   for (int c = 0; c < {n_out}; ++c) if (y[2 * {n_out} + c] != yb[c]) return 8;
   return {name}_infer_batch(0, x, yb, 0); }}
 """)
-            cc = shutil.which("clang") or shutil.which("cc") or shutil.which("gcc")
             r = subprocess.run([cc, "-std=c11", "-ffp-contract=off", "-c", "host.c", "-o", "host.o"], cwd=d, capture_output=True, text=True)
             assert r.returncode == 0, r.stderr
             r = subprocess.run([cxx, "host.o", f"{name}.o", f"{name}_kernel.o", "-lm", "-o", "host"], cwd=d, capture_output=True, text=True)
@@ -490,9 +515,16 @@ def test_recipe_selects_the_backend(golden_model):
     assert "ROSENNA_BACKEND ?= omp" in mk
     assert "ifeq ($(ROSENNA_BACKEND),cuda)" in mk and "else ifeq ($(ROSENNA_BACKEND),hip)" in mk
     assert "DEVCC ?= nvcc" in mk and "DEVCC ?= hipcc" in mk
-    assert "-x cu -c $< -o $@" in mk and "-x hip -c $< -o $@" in mk
+    # Only the KERNEL goes to the device compiler. <name>.c is built by the
+    # host compiler under every backend -- it owns the declare-target weights,
+    # which only that compiler can act on -- with the role macro telling it to
+    # yield the batched entry points to the kernel.
+    assert "-x hip -c $< -o $@" in mk, "the hip kernel is still compiled as HIP"
+    assert "-x cu -c $< -o $@" not in mk, "nothing is handed to nvcc as CUDA source any more"
     assert "gemm_small_kernel.o: gemm_small_kernel.cu gemm_small.h rosenna_rt.h" in mk
-    assert "$(CC) $(CFLAGS) $(ROSENNA_OFFLOAD_FLAGS) -c $< -o $@" in mk
+    assert mk.count("$(CC) $(CFLAGS) $(ROSENNA_OFFLOAD_FLAGS) -DROSENNA_NATIVE_KERNEL "
+                    "-c $< -o $@") == 2, "cuda and hip both build the .c with the host compiler"
+    assert "$(CC) $(CFLAGS) $(ROSENNA_OFFLOAD_FLAGS) -c $< -o $@" in mk   # the omp backend
 
 
 def test_generate_writes_the_kernel_and_rt_header(tmp_path, golden_model):

@@ -24,6 +24,53 @@ from .emit_c import (KERNEL_TILE, _CTYPE, _c_weight_symbol, _device_bind, elem_c
 from .plan import Plan
 
 
+def _emit_upload_device(plan: Plan, ctype: str) -> list:
+    """The cuda/hip half of init: the device copies of a file-loaded model's weights.
+
+    This lives here rather than in <name>.c because every line is a CUDA/HIP
+    runtime call. <name>.c owns the host arrays and the OpenMP declare-target
+    that puts them on the device for a per-point host; this owns the separate
+    copies the native kernel reads. Both are filled from the same host arrays
+    by the same init, so one archive now serves both call paths -- which is
+    the whole point of the split.
+
+    A repeated init frees the previous copies first (freeing a null pointer is
+    a no-op in both runtimes). A failed allocation, copy or bind releases
+    everything again and returns 10, so a later infer_batch refuses to launch
+    (its null check) rather than reading an unfilled buffer or launching over
+    a table that still holds the previous addresses. The bind is last: it
+    publishes the new addresses to this translation unit's table.
+    """
+    m = plan.model
+    syms = [_c_weight_symbol(m, w.symbol) for w in plan.weights]
+    lines = [
+        "/* The device copies of the weights. Declared extern in the header, so",
+        "   any translation unit's device_bind_here can read them; defined here,",
+        "   beside the runtime calls that fill them. */",
+    ]
+    lines += [f'extern "C" {ctype} *{s}_dev = 0;' for s in syms]
+    lines += [
+        "",
+        f"static void {m}_release_device(void) {{",
+    ]
+    for s in syms:
+        lines += [f"    (void)ROSENNA_FREE({s}_dev);", f"    {s}_dev = 0;"]
+    lines += ["}", "", f'extern "C" int {m}_upload_device(void) {{', f"    {m}_release_device();"]
+    fail = f"{{ {m}_release_device(); return 10; }}"
+    for s in syms:
+        lines += [
+            f"    if (ROSENNA_MALLOC(&{s}_dev, sizeof {s}) != ROSENNA_OK) {fail}",
+            f"    if (ROSENNA_MEMCPY_H2D({s}_dev, {s}, sizeof {s}) != ROSENNA_OK) {fail}",
+        ]
+    lines += [
+        f"    if ({_device_bind(m)}() != 0) {fail}",
+        "    return 0;",
+        "}",
+        "",
+    ]
+    return lines
+
+
 def emit_kernel(plan: Plan) -> str:
     m = plan.model
     ctype = _CTYPE[plan.dtype]
@@ -41,6 +88,7 @@ def emit_kernel(plan: Plan) -> str:
         "",
     ]
     if not plan.embed and plan.weights:
+        lines += _emit_upload_device(plan, ctype)
         lines += [
             "/* Plan step (controller ruling R5), called by init after it has made",
             "   the device copies: binds this translation unit's __constant__ table,",
