@@ -501,11 +501,15 @@ def _emit_weight_declarations(plan: Plan, ctype: str) -> list:
         f"   the kernel's translation unit ({m}_kernel.cu, where it is defined).",
         "   Part of the plan step, not of the host API. */",
         f"int {_device_bind(m)}(void);",
+        "#endif",
         f"/* The cuda/hip half of init, defined in {m}_kernel.cu: allocates the",
         "   device copies of the weights and binds them. Called by",
-        f"   {m}_init when {m}.c is built with -DROSENNA_NATIVE_KERNEL. */",
+        f"   {m}_init when {m}.c is built with -DROSENNA_NATIVE_KERNEL.",
+        "   Declared unguarded on purpose: the caller is a HOST compilation of",
+        f"   {m}.c, which does not take the CUDA/HIP branch above, so declaring",
+        "   it there left the call implicit -- an error under any compiler that",
+        "   enforces C99. A declaration nothing calls costs nothing. */",
         f"int {m}_upload_device(void);",
-        "#endif",
         "",
     ]
     return lines

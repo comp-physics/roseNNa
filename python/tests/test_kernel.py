@@ -473,7 +473,11 @@ static inline int rosenna_stub_wait(void *s, int e) { (void)s; (void)e; return 0
             # is what the recipe now does, and the reason one archive can serve
             # both call paths. Compiling it as CUDA C++ here (as this test used
             # to, mirroring the old recipe) would also define <name>_sync twice.
+            # -Werror=implicit-function-declaration, explicitly: gcc still warns
+            # where clang errors, and the difference is exactly what let a
+            # declaration guarded behind __CUDACC__ pass here and fail CI.
             r = subprocess.run([cc, "-std=c11", "-ffp-contract=off", "-Wall", "-Wextra", "-c",
+                                "-Werror=implicit-function-declaration",
                                 "-DROSENNA_NATIVE_KERNEL", f"{name}.c", "-o", f"{name}.o"],
                                cwd=d, capture_output=True, text=True)
             assert r.returncode == 0, r.stderr
