@@ -63,7 +63,7 @@ A model under a million parameters embeds its weights into the generated source 
 
 ## Supported ONNX operators and limits
 
-roseNNa generates code for: `Gemm`, `MatMul`, `Conv` (including grouped and depthwise), `MaxPool`, `AveragePool`, `LSTM`, `Add`, `Concat`, `Pad`,
+roseNNa generates code for: `Gemm`, `MatMul`, `Conv` (1-D and 2-D, including grouped and depthwise), `MaxPool`, `AveragePool`, `LSTM`, `GRU`, `Add`, `Concat`, `Pad`,
 `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`, `Identity`, `Relu`, `Sigmoid`, `Tanh`, `Softmax`.
 `Pad` takes the opset-18 `axes` operand as well as the older whole-rank `pads`.
 An inference `BatchNormalization` is folded into the `Conv` or `Gemm` that feeds it, so it costs nothing at runtime.
@@ -79,7 +79,7 @@ A model using something the generator cannot lower is **refused by name at gener
 - `Pad` supports `constant`, `edge` and `reflect` with constant pads (crops included); `reflect` is limited to one reflection, so a pad must be narrower than its axis
 - a `BatchNormalization` that cannot be folded (training mode, non-constant parameters, or an intermediate read elsewhere) is refused
 - `Gemm` `alpha` and `beta` must be 1, `transA` must be 0, and weights must be constant
-- `LSTM` must be forward-direction with the default activations, no `clip`, `input_forget`, `sequence_lens` or peepholes
+- `LSTM` and `GRU` must be forward-direction with the default activations, no `clip`, `sequence_lens` (nor `input_forget`/peepholes for `LSTM`). `GRU` implements BOTH values of `linear_before_reset`: the ONNX default is 0 and PyTorch exports 1, and they compute different things
 - several inputs and several outputs are fine; they arrive concatenated in `x` and leave concatenated in `y` (see below)
 - every weight must be a constant initializer, not computed at runtime
 

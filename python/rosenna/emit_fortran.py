@@ -7,7 +7,7 @@ preprocessor that every Fortran compiler honours without a flag.
 """
 from .abi import name_capacity, rank_capacity, status_code_comment
 from .emit_c import GEMM_BLOCK, gemm_block, has_infer_one
-from .plan import Plan, lstm_initial_state
+from .plan import Plan, gru_initial_state, lstm_initial_state
 
 _KIND = {"f32": "real32", "f64": "real64"}
 # relu is written as merge, not max: max(v, 0) returns 0 for a NaN input, and
@@ -471,6 +471,7 @@ def _emit_infer(plan: Plan) -> list:
         ("seen", "maxpool" in kinds),
         ("cnt", any(_avgpool_needs_count(op) for op in plan.ops)),
         ("lt, lb, lk", "lstm" in kinds),
+        ("gt, gb, gk, gj, gm, gi", "gru" in kinds),
         (", ".join(f"c{k}" for k in range(_max_counter_rank(plan))),
          bool(kinds & {"add", "transpose", "pad"}))) if used]
     if loop_vars:
@@ -478,13 +479,16 @@ def _emit_infer(plan: Plan) -> list:
     gemms = [op for op in plan.ops if op.kind == "gemm"]
     blocked = any(gemm_block(op) > 1 and op.n_out >= GEMM_BLOCK for op in gemms)
     remainder = any(gemm_block(op) == 1 or op.n_out % GEMM_BLOCK for op in gemms)
-    reals = ["acc"] if (spatial or "lstm" in kinds or remainder) else []
+    reals = ["acc"] if (spatial or "lstm" in kinds or "gru" in kinds or remainder) else []
     if "maxpool" in kinds:
         reals.append("v")
     if "softmax" in kinds:
         reals += ["smx", "ssum", "sexp"]
     if "lstm" in kinds:
         reals += ["lgi", "lgo", "lgf", "lgc", "lcn"]
+    if "gru" in kinds:
+        reals += ["ghn"] + (["grh"] if any(
+            op.kind == "gru" and op.gru.linear_before_reset for op in plan.ops) else [])
     if blocked:
         reals += ["sj"] + [f"a{k}" for k in range(GEMM_BLOCK)]
     if reals:
@@ -525,6 +529,12 @@ def _emit_infer(plan: Plan) -> list:
             continue
         elif op.kind == "transpose":
             lines += _emit_transpose_f(op, plan.assignment[op.out], plan.assignment[op.inp])
+        elif op.kind == "gru":
+            h0 = gru_initial_state(op, lambda sym: sym, plan.assignment)
+            lines += _emit_gru_f(
+                op, plan.assignment.get(op.out), plan.assignment[op.inp], h0,
+                op.weight, op.weight2, op.bias,
+                [plan.assignment[o] if o else "" for o in op.outs])
         elif op.kind == "lstm":
             h0, c0 = lstm_initial_state(op, lambda sym: sym, plan.assignment)
             lines += _emit_lstm_f(
@@ -608,6 +618,77 @@ def _emit_pad_f(op, dst: str, src: str) -> list:
     else:
         L.append(f"            {dst}({out_idx}) = {src}({in_idx})")
     L += ["        end do"] * len(names)
+    return L
+
+
+def _emit_gru_f(op, dst, src, h0, wsym, rsym, bsym, outs) -> list:
+    """The Fortran twin of _emit_gru_c, line for line.
+
+    Counters stay 0-based so the index arithmetic reads the same as C's; only
+    the subscript gains the `+ 1`. See _emit_gru_c for why the h gate needs its
+    own pass and why linear_before_reset changes the arithmetic rather than the
+    spelling.
+    """
+    sp = op.gru
+    H, I, B, T = sp.hidden, sp.input_size, sp.batch, sp.seq
+    h, g = sp.h_sym, sp.g_sym
+    src0 = f"{h0}(gi + 1)" if h0 else "0.0_wp"
+    L = [f"        do gi = 0, {B * H - 1}",
+         f"            {h}(gi + 1) = {src0}",
+         "        end do",
+         f"        do gt = 0, {T - 1}",
+         f"        do gb = 0, {B - 1}",
+         f"            do gk = 0, {2 * H - 1}",
+         "                acc = 0.0_wp",
+         f"                do gj = 0, {I - 1}",
+         f"                    acc = acc + {src}((gt * {B} + gb) * {I} + gj + 1) * "
+         f"{wsym}(gk * {I} + gj + 1)",
+         "                end do",
+         f"                do gj = 0, {H - 1}",
+         f"                    acc = acc + {h}(gb * {H} + gj + 1) * {rsym}(gk * {H} + gj + 1)",
+         "                end do"]
+    if bsym:
+        L.append(f"                acc = acc + {bsym}(gk + 1) + {bsym}({3 * H} + gk + 1)")
+    L += [f"                {g}(gk + 1) = {_ACT['sigmoid'].format(v='acc')}",
+          "            end do",
+          f"            do gj = 0, {H - 1}",
+          "                acc = 0.0_wp",
+          f"                do gm = 0, {I - 1}",
+          f"                    acc = acc + {src}((gt * {B} + gb) * {I} + gm + 1) * "
+          f"{wsym}(({2 * H} + gj) * {I} + gm + 1)",
+          "                end do"]
+    if bsym:
+        L.append(f"                acc = acc + {bsym}({2 * H} + gj + 1)")
+    if sp.linear_before_reset:
+        L += ["                grh = 0.0_wp",
+              f"                do gm = 0, {H - 1}",
+              f"                    grh = grh + {h}(gb * {H} + gm + 1) * "
+              f"{rsym}(({2 * H} + gj) * {H} + gm + 1)",
+              "                end do"]
+        if bsym:
+            L.append(f"                grh = grh + {bsym}({5 * H} + gj + 1)")
+        L.append(f"                acc = acc + {g}({H} + gj + 1) * grh")
+    else:
+        L += [f"                do gm = 0, {H - 1}",
+              f"                    acc = acc + {g}({H} + gm + 1) * {h}(gb * {H} + gm + 1) * "
+              f"{rsym}(({2 * H} + gj) * {H} + gm + 1)",
+              "                end do"]
+        if bsym:
+            L.append(f"                acc = acc + {bsym}({5 * H} + gj + 1)")
+    L += [f"                {g}({2 * H} + gj + 1) = {_ACT['tanh'].format(v='acc')}",
+          "            end do",
+          f"            do gj = 0, {H - 1}",
+          f"                ghn = (1.0_wp - {g}(gj + 1)) * {g}({2 * H} + gj + 1) + "
+          f"{g}(gj + 1) * {h}(gb * {H} + gj + 1)",
+          f"                {h}(gb * {H} + gj + 1) = ghn",
+          *([f"                {dst}((gt * {B} + gb) * {H} + gj + 1) = ghn"] if sp.emit_y else []),
+          "            end do",
+          "        end do",
+          "        end do"]
+    if outs and outs[0]:
+        L += [f"        do gi = 0, {B * H - 1}",
+              f"            {outs[0]}(gi + 1) = {h}(gi + 1)",
+              "        end do"]
     return L
 
 

@@ -518,7 +518,7 @@ Navier-Stokes solver with a learned per-cell closure.
   so it scales with cores rather than having any one hot test. Golden-model
   generation takes a lock, so a cold tree is safe too.
 - Supported ops: `Gemm`, `MatMul`, `Conv` (grouped/depthwise too), `Pad`, `Softmax`,
-  `BatchNormalization` (folded into the preceding `Conv`/`Gemm`), `MaxPool`, `AveragePool`, `LSTM`,
+  `BatchNormalization` (folded into the preceding `Conv`/`Gemm`), `MaxPool`, `AveragePool`, `LSTM`, `GRU`,
   `Add`, `Concat`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`,
   `Identity`, `Relu`, `Tanh`, `Sigmoid`. Values may be rank 1 to 4; the
   spatial ops are 2-D (rank-4 NCHW) only, `Conv` must be ungrouped, and

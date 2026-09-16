@@ -206,6 +206,35 @@ class Lstm:
 
 
 @dataclass(frozen=True)
+class Gru:
+    """A forward GRU with the ONNX default activations, resolved to extents.
+
+    Three gates, ordered z (update), r (reset), h (new) in W, R and B, and no
+    cell state -- so it carries only H. B is 6*hidden: the three W biases then
+    the three R biases.
+
+    `linear_before_reset` changes the arithmetic of the h gate, not just its
+    spelling, so it is carried rather than assumed:
+
+        0 (the ONNX default): h~ = g(Xt.Wh + (r . Ht-1).Rh + Rbh + Wbh)
+        1 (what PyTorch exports): h~ = g(Xt.Wh + r . (Ht-1.Rh + Rbh) + Wbh)
+
+    The reset gate multiplies the state before the recurrent matmul in the
+    first and the matmul's result in the second; they agree only when r is 1.
+    """
+    seq: int
+    batch: int
+    input_size: int
+    hidden: int
+    has_bias: bool
+    has_initial: bool
+    linear_before_reset: bool = False
+    emit_y: bool = True
+    h_sym: str = ""
+    g_sym: str = ""
+
+
+@dataclass(frozen=True)
 class Op:
     kind: str
     out: str
@@ -237,6 +266,8 @@ class Op:
     # kind == "lstm": the recurrent shape, and the names of the extra operands
     # and results an LSTM has beyond the single in/out every other op uses.
     lstm: "Lstm | None" = None
+    # kind == "gru".
+    gru: "Gru | None" = None
     extra_in: tuple = ()
     outs: tuple = ()
     # kind == "lstm": weight symbols holding a constant (initializer) initial
@@ -438,6 +469,24 @@ def _lstm_spec(graph: Graph, node) -> Lstm:
                 has_bias=has_bias, has_initial=has_initial)
 
 
+def _gru_spec(graph: Graph, node) -> Gru:
+    x = graph.values[node.inputs[0]]
+    seq, batch, input_size = (int(d) for d in x.shape)
+    hidden = int(node.attrs["hidden_size"]) if "hidden_size" in node.attrs else \
+        int(graph.initializers[node.inputs[2]].shape[2])
+    return Gru(seq=seq, batch=batch, input_size=input_size, hidden=hidden,
+               has_bias=len(node.inputs) > 3 and bool(node.inputs[3]),
+               has_initial=len(node.inputs) > 5 and bool(node.inputs[5]),
+               linear_before_reset=bool(int(node.attrs.get("linear_before_reset", 0))))
+
+
+def gru_initial_state(op, weight_ref, assignment):
+    """The GRU's initial H: a weight symbol, a mapped buffer, or None for zeros."""
+    if op.init_syms:
+        return weight_ref(op.init_syms[0])
+    return assignment[op.extra_in[0]] if op.extra_in else None
+
+
 def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None) -> Plan:
     validate(graph)
     if len(graph.inputs) < 1 or len(graph.outputs) < 1:
@@ -524,6 +573,33 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
                           perm_strides=_transpose_strides(
                               tuple(int(d) for d in in_t.shape), tuple(int(p) for p in perm)),
                           out_shape=tuple(int(d) for d in out_t.shape)))
+            continue
+        if node.op == "GRU":
+            spec = _gru_spec(graph, node)
+            syms = {}
+            for role, idx in (("weight", 1), ("weight2", 2), ("bias", 3)):
+                if idx < len(node.inputs) and node.inputs[idx]:
+                    a = graph.initializers[node.inputs[idx]]
+                    sym = f"{'w' if role != 'bias' else 'b'}{widx}{'r' if role == 'weight2' else ''}"
+                    syms[role] = weight(node.inputs[idx], sym, (int(a.size),))
+            states = (node.inputs[5],) if len(node.inputs) > 5 and node.inputs[5] else ()
+            if states and states[0] in graph.initializers:
+                init_syms = (weight(states[0], f"h{widx}",
+                                    (int(graph.initializers[states[0]].size),)),)
+                extra = ()
+            else:
+                init_syms, extra = (), states
+            # Positional like the LSTM's, but a GRU has only Y_h beyond Y.
+            tail = tuple(node.outputs[1:2]) + ("",) * (1 - len(node.outputs[1:2]))
+            outs = tuple(o if (o and o in consumed) else "" for o in tail)
+            spec = replace(spec, emit_y=node.outputs[0] in consumed)
+            ops.append(Op("gru", node.outputs[0], node.inputs[0],
+                          syms.get("weight"), syms.get("bias"),
+                          _length(graph.values[node.inputs[0]]),
+                          _length(graph.values[node.outputs[0]]),
+                          weight2=syms.get("weight2"), gru=spec,
+                          extra_in=extra, outs=outs, init_syms=init_syms))
+            widx += 1
             continue
         if node.op == "LSTM":
             spec = _lstm_spec(graph, node)
@@ -750,6 +826,13 @@ def _assign_buffers(graph: Graph, ops, flat_in: Tensor, flat_out: Tensor):
                 assignment[out] = sym
             length = _length(graph.values[out])
             buffers[assignment[out]] = max(buffers.get(assignment[out], 0), length)
+        if op.kind == "gru":
+            sp = op.gru
+            for role, size in (("h_sym", sp.batch * sp.hidden), ("g_sym", 3 * sp.hidden)):
+                sym = f"t{pool}"
+                pool += 1
+                buffers[sym] = size
+                object.__setattr__(sp, role, sym)
         if op.kind == "lstm":
             # Carried state and the per-step gate vector: internal to the op,
             # so they get their own buffers rather than sharing the pool (they

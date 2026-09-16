@@ -2,7 +2,7 @@
 from .abi import name_capacity, rank_capacity, status_code_comment
 import re
 
-from .plan import Plan, lstm_initial_state
+from .plan import Plan, gru_initial_state, lstm_initial_state
 
 _CTYPE = {"f32": "float", "f64": "double"}
 _DTYPE_CODE = {"f32": 0, "f64": 1}
@@ -1001,6 +1001,70 @@ def _emit_lstm_c(op, ctype, act, dst, src, h0, c0, wsym, rsym, bsym, outs, zero)
     return L
 
 
+def _emit_gru_c(op, ctype, act, dst, src, h0, wsym, rsym, bsym, outs, zero):
+    """One forward GRU, ONNX default activations, as a plain sequential loop.
+
+    Gate order in W/R/B is z, r, h. B is 6*hidden: the three W biases at 0H,
+    1H, 2H and the three R biases at 3H, 4H, 5H.
+
+    The z and r gates are the ordinary form -- X.W + H.R + Wb + Rb -- but the h
+    gate cannot join their loop, because it needs r, which is only known once
+    that loop has finished. It gets its own pass, and which pass depends on
+    `linear_before_reset`: the reset gate multiplies the STATE before the
+    recurrent matmul when it is 0, and the matmul's RESULT when it is 1. The
+    two agree only where r is 1, so both are emitted rather than one assumed.
+    """
+    sp = op.gru
+    H, I, B, T = sp.hidden, sp.input_size, sp.batch, sp.seq
+    h, g = sp.h_sym, sp.g_sym
+    L = [f"    for (int i = 0; i < {B * H}; ++i) {h}[i] = {h0 + '[i]' if h0 else zero};",
+         f"    for (int t = 0; t < {T}; ++t)",
+         f"    for (int b = 0; b < {B}; ++b) {{",
+         f"        for (int k = 0; k < {2 * H}; ++k) {{",
+         f"            {ctype} acc = {zero};",
+         f"            for (int j = 0; j < {I}; ++j) "
+         f"acc += {src}[(t * {B} + b) * {I} + j] * {wsym}[k * {I} + j];",
+         f"            for (int j = 0; j < {H}; ++j) "
+         f"acc += {h}[b * {H} + j] * {rsym}[k * {H} + j];"]
+    if bsym:
+        L.append(f"            acc += {bsym}[k] + {bsym}[{3 * H} + k];")
+    L += [f"            {g}[k] = {act['sigmoid'].format(v='acc')};",
+          "        }",
+          f"        for (int j = 0; j < {H}; ++j) {{",
+          f"            {ctype} acc = {zero};",
+          f"            for (int m = 0; m < {I}; ++m) "
+          f"acc += {src}[(t * {B} + b) * {I} + m] * {wsym}[({2 * H} + j) * {I} + m];"]
+    if bsym:
+        L.append(f"            acc += {bsym}[{2 * H} + j];")
+    if sp.linear_before_reset:
+        L += [f"            {ctype} rh = {zero};",
+              f"            for (int m = 0; m < {H}; ++m) "
+              f"rh += {h}[b * {H} + m] * {rsym}[({2 * H} + j) * {H} + m];"]
+        if bsym:
+            L.append(f"            rh += {bsym}[{5 * H} + j];")
+        L.append(f"            acc += {g}[{H} + j] * rh;")
+    else:
+        L.append(f"            for (int m = 0; m < {H}; ++m) "
+                 f"acc += {g}[{H} + m] * {h}[b * {H} + m] * {rsym}[({2 * H} + j) * {H} + m];")
+        if bsym:
+            L.append(f"            acc += {bsym}[{5 * H} + j];")
+    L += [f"            {g}[{2 * H} + j] = {act['tanh'].format(v='acc')};",
+          "        }",
+          # A separate pass: the gates above read the PREVIOUS state for every
+          # j, so updating it inside that loop would feed j's new value to the
+          # gates of every j after it.
+          f"        for (int j = 0; j < {H}; ++j) {{",
+          f"            const {ctype} hn = (1 - {g}[j]) * {g}[{2 * H} + j] "
+          f"+ {g}[j] * {h}[b * {H} + j];",
+          f"            {h}[b * {H} + j] = hn;",
+          *([f"            {dst}[(t * {B} + b) * {H} + j] = hn;"] if sp.emit_y else []),
+          "        }",
+          "    }"]
+    if outs and outs[0]:
+        L.append(f"    for (int i = 0; i < {B * H}; ++i) {outs[0]}[i] = {h}[i];")
+    return L
+
+
 def _concat_sources(op, runtime_names, const_names) -> list:
     """The operands in ONNX order, each as (array name, block length)."""
     rt, ct, out = iter(runtime_names), iter(const_names), []
@@ -1310,7 +1374,7 @@ def _op_pieces(plan: Plan, ctype: str, op, dst, src, extra_srcs=None):
                                _weight_ref(plan, m, op.bias) if op.bias else None, zero)
     if op.kind in act:
         return [("i", op.n_out)], [f"{dst}[i] = {act[op.kind].format(v=f'{src}[i]')};"]
-    if op.kind in ("alias", "lstm"):
+    if op.kind in ("alias", "lstm", "gru"):
         return None
     raise AssertionError(f"unhandled op kind {op.kind!r}")
 
@@ -1324,6 +1388,14 @@ def _emit_op_sequence(plan: Plan, ctype: str) -> list:
         if op.kind == "alias":
             continue
         dst, src = plan.assignment.get(op.out), plan.assignment[op.inp]
+        if op.kind == "gru":
+            h0 = gru_initial_state(op, lambda sym: _weight_ref(plan, m, sym), plan.assignment)
+            lines += _emit_gru_c(
+                op, ctype, act, dst, src, h0,
+                _weight_ref(plan, m, op.weight), _weight_ref(plan, m, op.weight2),
+                _weight_ref(plan, m, op.bias) if op.bias else None,
+                [plan.assignment[o] if o else "" for o in op.outs], _ZERO[plan.dtype])
+            continue
         if op.kind == "lstm":
             h0, c0 = lstm_initial_state(op, lambda sym: _weight_ref(plan, m, sym), plan.assignment)
             lines += _emit_lstm_c(
@@ -1346,7 +1418,7 @@ def _emit_op_sequence(plan: Plan, ctype: str) -> list:
 
 def has_infer_one(plan: Plan) -> bool:
     """infer_one runs one op per launch; an LSTM is a sequence, so a plan with one has no infer_one."""
-    return not any(op.kind == "lstm" for op in plan.ops)
+    return not any(op.kind in ("lstm", "gru") for op in plan.ops)
 
 
 def _elem_fn(model: str, k: int) -> str:

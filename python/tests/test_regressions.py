@@ -995,3 +995,96 @@ def test_a_1d_op_refuses_attributes_of_the_wrong_arity(tmp_path, attrs, fragment
     _onnx.save(model, str(path))
     with pytest.raises(UnsupportedModel, match=fragment):
         validate(load_graph(path))
+
+
+# --- GRU -------------------------------------------------------------------
+
+def _gru_model(path, lbr, bias, init, T=5, B=1, I=4, H=6, seed=31):
+    rng = np.random.default_rng(seed)
+    ini = [numpy_helper.from_array(rng.uniform(-1, 1, (1, 3 * H, I)).astype(np.float32), "W"),
+           numpy_helper.from_array(rng.uniform(-1, 1, (1, 3 * H, H)).astype(np.float32), "R")]
+    inputs = ["x", "W", "R"]
+    if bias:
+        ini.append(numpy_helper.from_array(
+            rng.uniform(-1, 1, (1, 6 * H)).astype(np.float32), "B"))
+        inputs.append("B")
+    else:
+        inputs.append("")
+    if init:
+        inputs += ["", "h0"]
+        ini.append(numpy_helper.from_array(
+            rng.uniform(-1, 1, (1, B, H)).astype(np.float32), "h0"))
+    graph = helper.make_graph(
+        [helper.make_node("GRU", inputs, ["Y", "Yh"], name="g0",
+                          hidden_size=H, linear_before_reset=lbr)], "gru",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [T, B, I])],
+        [helper.make_tensor_value_info("Y", TensorProto.FLOAT, [T, 1, B, H]),
+         helper.make_tensor_value_info("Yh", TensorProto.FLOAT, [1, B, H])], ini)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+    import onnx as _onnx
+    _onnx.save(model, str(path))
+    return path, (T, B, I)
+
+
+@pytest.mark.parametrize("lbr", [0, 1])
+@pytest.mark.parametrize("bias", [True, False])
+@pytest.mark.parametrize("init", [True, False])
+def test_gru_matches_onnxruntime_on_both_backends(tmp_path, lbr, bias, init):
+    """Both readings of linear_before_reset, with and without B and initial_h.
+
+    linear_before_reset changes the ARITHMETIC of the h gate, not its spelling:
+    the reset gate multiplies the state before the recurrent matmul when it is
+    0 and the matmul's result when it is 1, and the two agree only where r is
+    1. PyTorch exports 1 while the ONNX default is 0, so picking one would
+    have been wrong half the time -- hence both, and hence this matrix.
+    """
+    path, (T, B, I) = _gru_model(tmp_path / f"gru{lbr}{int(bias)}{int(init)}.onnx",
+                                 lbr, bias, init)
+    rng = np.random.default_rng(77)
+    x = rng.uniform(-1.5, 1.5, (T, B, I)).astype(np.float32)
+    f, c = _both_backends(tmp_path, path, path.stem, x.reshape(1, -1), dtype="f32")
+    want = np.concatenate([a.ravel() for a in
+                           ort.InferenceSession(str(path)).run(None, {"x": x})])
+    for got, lang in ((f, "fortran"), (c, "c")):
+        assert np.allclose(np.asarray(got).ravel(), want, rtol=1e-4, atol=1e-5), \
+            f"lbr={lbr} bias={bias} init={init} {lang}: " \
+            f"max |diff| {np.max(np.abs(np.asarray(got).ravel() - want)):.3e}"
+
+
+def test_the_two_linear_before_reset_readings_actually_differ(tmp_path):
+    """Guards the matrix above: if they agreed, it would be testing one thing twice."""
+    rng = np.random.default_rng(78)
+    x = rng.uniform(-1.5, 1.5, (5, 1, 4)).astype(np.float32)
+    outs = []
+    for lbr in (0, 1):
+        path, _ = _gru_model(tmp_path / f"d{lbr}.onnx", lbr, True, True)
+        outs.append(ort.InferenceSession(str(path)).run(None, {"x": x})[0].ravel())
+    assert not np.allclose(outs[0], outs[1], rtol=1e-3), \
+        "the two readings gave the same answer; this model does not distinguish them"
+
+
+@pytest.mark.parametrize("attrs,fragment", [
+    (dict(direction="reverse"), "only 'forward'"),
+    (dict(clip=1.0), "clip"),
+    (dict(activations=["Sigmoid", "Tanh", "Tanh"]), "custom activations"),
+])
+def test_gru_refuses_what_changes_the_recurrence(tmp_path, attrs, fragment):
+    from rosenna.validate import validate
+    T, B, I, H = 3, 1, 4, 5
+    rng = np.random.default_rng(79)
+    ini = [numpy_helper.from_array(rng.uniform(-1, 1, (1, 3 * H, I)).astype(np.float32), "W"),
+           numpy_helper.from_array(rng.uniform(-1, 1, (1, 3 * H, H)).astype(np.float32), "R")]
+    graph = helper.make_graph(
+        [helper.make_node("GRU", ["x", "W", "R"], ["Y", "Yh"], name="g0",
+                          hidden_size=H, **attrs)], "bad",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, [T, B, I])],
+        [helper.make_tensor_value_info("Y", TensorProto.FLOAT, [T, 1, B, H]),
+         helper.make_tensor_value_info("Yh", TensorProto.FLOAT, [1, B, H])], ini)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+    import onnx as _onnx
+    path = tmp_path / "bad.onnx"
+    _onnx.save(model, str(path))
+    with pytest.raises(UnsupportedModel, match=fragment):
+        validate(load_graph(path))

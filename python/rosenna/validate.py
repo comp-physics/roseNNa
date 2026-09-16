@@ -6,7 +6,7 @@ from .frontend import Graph, UnsupportedModel
 # relabelling ops plan.py turns into buffer aliases. Everything here is
 # lowered by plan.py into explicit loop nests over flat buffers; an op that is
 # not here is refused by name rather than silently mis-lowered.
-SUPPORTED = {"Gemm", "MatMul", "Relu", "Tanh", "Sigmoid", "Softmax", "Pad",
+SUPPORTED = {"Gemm", "MatMul", "Relu", "Tanh", "Sigmoid", "Softmax", "Pad", "GRU",
              "Conv", "MaxPool", "AveragePool", "Add", "Transpose", "LSTM", "Concat",
              # Relabelling ops: fold.resolve_shape_ops deletes these outright
              # unless one produces the graph output, where it becomes a copy.
@@ -60,6 +60,8 @@ def validate(graph: Graph) -> None:
             _validate_concat(graph, node)
         if node.op == "LSTM":
             _validate_lstm(graph, node)
+        if node.op == "GRU":
+            _validate_gru(graph, node)
         if node.op in _SPATIAL:
             _validate_spatial(graph, node)
     for name, t in graph.values.items():
@@ -344,6 +346,63 @@ def _validate_add(graph: Graph, node) -> None:
             raise UnsupportedModel(
                 f"{where}: Add constant axis {axis} has extent {c}, which neither "
                 f"matches the output's {o} nor broadcasts")
+
+
+def _validate_gru(graph: Graph, node) -> None:
+    """Forward GRU, ONNX default activations, no clipping.
+
+    Everything refused here changes the recurrence itself, so a model using it
+    would run and return confident nonsense. `linear_before_reset` is NOT
+    refused: both readings are implemented, because PyTorch exports 1 and the
+    ONNX default is 0, and picking one would have been wrong half the time.
+    """
+    where = f"node '{node.name}'"
+    if not node.outputs or not node.outputs[0]:
+        raise UnsupportedModel(
+            f"{where}: GRU must produce its Y output (the sequence); a graph that asks "
+            f"only for Y_h is not supported")
+    direction = node.attrs.get("direction", "forward")
+    if direction != "forward":
+        raise UnsupportedModel(f"{where}: direction='{direction}'; only 'forward' is supported")
+    if "activations" in node.attrs:
+        raise UnsupportedModel(
+            f"{where}: custom activations are not supported; only the defaults "
+            f"(sigmoid on the gates, tanh on the new-state candidate)")
+    for attr in ("clip", "layout"):
+        if node.attrs.get(attr):
+            raise UnsupportedModel(f"{where}: {attr}={node.attrs[attr]} is not supported")
+    if len(node.inputs) > 4 and node.inputs[4]:
+        raise UnsupportedModel(f"{where}: a sequence_lens input is not supported")
+    x = graph.values.get(node.inputs[0])
+    if x is None or len(x.shape) != 3:
+        raise UnsupportedModel(
+            f"{where}: GRU input must be a rank-3 (seq, batch, input_size) value")
+    for idx, role, mult in ((1, "W", 3), (2, "R", 3)):
+        if idx >= len(node.inputs) or node.inputs[idx] not in graph.initializers:
+            raise UnsupportedModel(f"{where}: GRU {role} must be a constant initializer")
+        a = graph.initializers[node.inputs[idx]]
+        if a.ndim != 3 or a.shape[0] != 1:
+            raise UnsupportedModel(
+                f"{where}: GRU {role} must have shape (1, {mult}*hidden, k); got {tuple(a.shape)}")
+    hidden = int(graph.initializers[node.inputs[2]].shape[2])
+    if int(graph.initializers[node.inputs[1]].shape[1]) != 3 * hidden:
+        raise UnsupportedModel(
+            f"{where}: GRU W has {graph.initializers[node.inputs[1]].shape[1]} rows for "
+            f"hidden {hidden}; a GRU has three gates, so it needs {3 * hidden}")
+    if len(node.inputs) > 3 and node.inputs[3]:
+        b = graph.initializers.get(node.inputs[3])
+        if b is None or b.ndim != 2 or b.shape[0] != 1 or int(b.shape[1]) != 6 * hidden:
+            raise UnsupportedModel(
+                f"{where}: GRU B must be a constant of shape (1, 6*hidden) -- the three W "
+                f"biases then the three R biases")
+    if len(node.inputs) > 5 and node.inputs[5]:
+        name = node.inputs[5]
+        shape = (graph.initializers[name].shape if name in graph.initializers
+                 else (graph.values[name].shape if name in graph.values else ()))
+        if len(shape) != 3:
+            raise UnsupportedModel(
+                f"{where}: initial_h must be a rank-3 (num_directions, batch, hidden) "
+                f"value or initializer")
 
 
 def _validate_lstm(graph: Graph, node) -> None:
