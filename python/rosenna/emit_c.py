@@ -1042,7 +1042,7 @@ def _emit_pad_c(op, ctype: str, dst: str, src: str):
     """
     pd = op.pad
     names = [f"c{k}" for k in range(len(pd.out_shape))]
-    shifted, checks = [], []
+    shifted, checks, pre = [], [], []
     for k, (nm, b) in enumerate(zip(names, pd.begins)):
         if b == 0 and pd.in_shape[k] == pd.out_shape[k]:
             shifted.append(nm)
@@ -1052,18 +1052,32 @@ def _emit_pad_c(op, ctype: str, dst: str, src: str):
         # error in Fortran, which is what made this worth spelling out rather
         # than letting the sign fall out of the arithmetic.
         expr = f"({nm} - {b})" if b > 0 else f"({nm} + {-b})" if b < 0 else nm
-        shifted.append(expr)
-        # Only a positive begin can put the read before the input; a crop
-        # cannot, so that half of the test would always pass.
-        if b > 0:
-            checks.append(f"{expr} >= 0")
-        checks.append(f"{expr} < {pd.in_shape[k]}")
+        n_in = pd.in_shape[k]
+        if pd.mode in ("edge", "reflect"):
+            # Into a named local, not inlined: the expression appears three
+            # times in the ternary, and four of them in one subscript ran past
+            # Fortran's 132-column limit in the twin emitter. One name per
+            # padded axis keeps both readable and evaluates it once.
+            m = (f"{expr} < 0 ? 0 : ({expr} >= {n_in} ? {n_in - 1} : {expr})"
+                 if pd.mode == "edge" else
+                 f"{expr} < 0 ? -{expr} : ({expr} >= {n_in} ? {2 * (n_in - 1)} - {expr} : {expr})")
+            pre.append(f"const int pi{k} = {m};")
+            shifted.append(f"pi{k}")
+        else:
+            shifted.append(expr)
+            # Only a positive begin can put the read before the input; a crop
+            # cannot, so that half of the test would always pass.
+            if b > 0:
+                checks.append(f"{expr} >= 0")
+            checks.append(f"{expr} < {n_in}")
     out_idx = _flat_index(names, pd.out_shape)
     in_idx = _flat_index(shifted, pd.in_shape)
     val = _literal_c(pd.value, ctype)
     if not checks:
-        return list(zip(names, pd.out_shape)), [f"{dst}[{out_idx}] = {src}[{in_idx}];"]
-    return list(zip(names, pd.out_shape)), [
+        # edge and reflect always land on a real element, so there is no test
+        # and no pad value -- the index map is the whole of the operator.
+        return list(zip(names, pd.out_shape)), pre + [f"{dst}[{out_idx}] = {src}[{in_idx}];"]
+    return list(zip(names, pd.out_shape)), pre + [
         f"{dst}[{out_idx}] = ({' && '.join(checks)}) ? {src}[{in_idx}] : {val};"]
 
 
@@ -1074,7 +1088,7 @@ def _emit_softmax_c(op, ctype: str, dtype: str, dst: str, src: str, zero: str):
     +800 from overflowing to inf; it cancels exactly in the ratio, so it costs
     only the extra pass.
 
-    The maximum uses `v > mx`, which the NaN rule in doc/opensource.md tells
+    The maximum uses `v > mx`, which the NaN rule in doc/adding-an-operator.md tells
     you not to write -- deliberately, and this is the one op where it is
     right. A NaN must LOSE the maximum here: a NaN-sticky maximum would make
     every exponent NaN - NaN, whereas letting the NaN lose keeps `mx` a real

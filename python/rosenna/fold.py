@@ -275,18 +275,36 @@ def absorb_pad_inputs(graph):
             nodes.append(n)
             continue
         attrs = dict(n.attrs)
-        attrs["pads"] = tuple(int(v) for v in np.asarray(inits[n.inputs[1]]).ravel())
+        pads = [int(v) for v in np.asarray(inits[n.inputs[1]]).ravel()]
         if len(n.inputs) > 2 and n.inputs[2]:
             if n.inputs[2] not in inits:
                 nodes.append(n)
                 continue
             attrs["value"] = float(np.asarray(inits[n.inputs[2]]).ravel()[0])
-        # A third operand (axes, opset 18) is deliberately not absorbed: it
-        # would change which axes `pads` counts, so leaving it makes
-        # validate.py refuse the node rather than mis-read it.
+        # `axes` (opset 18) says which axes `pads` counts, and the rest are
+        # unpadded. Expanding it to a full-rank pads here is the whole of its
+        # meaning, so nothing downstream has to know the operand existed.
         if len(n.inputs) > 3 and n.inputs[3]:
-            nodes.append(n)
-            continue
+            if n.inputs[3] not in inits:
+                nodes.append(n)
+                continue
+            shape = graph.values.get(n.inputs[0])
+            if shape is None:
+                nodes.append(n)
+                continue
+            rank = len(shape.shape)
+            axes = [int(a) for a in np.asarray(inits[n.inputs[3]]).ravel()]
+            axes = [a + rank if a < 0 else a for a in axes]
+            if len(pads) != 2 * len(axes) or any(not 0 <= a < rank for a in axes) \
+                    or len(set(axes)) != len(axes):
+                nodes.append(n)
+                continue
+            full = [0] * (2 * rank)
+            for k, a in enumerate(axes):
+                full[a] = pads[k]
+                full[a + rank] = pads[k + len(axes)]
+            pads = full
+        attrs["pads"] = tuple(pads)
         nodes.append(Node(n.op, n.name, n.inputs[:1], n.outputs, attrs))
         changed = True
     if not changed:

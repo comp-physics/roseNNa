@@ -465,6 +465,7 @@ def _emit_infer(plan: Plan) -> list:
         ("j", "gemm" in kinds),
         ("r", any(op.kind == "gemm" and op.rows > 1 for op in plan.ops)),
         ("n, oc, oh, ow, ic, kh, kw, ih, iw", bool(spatial)),
+        (", ".join(f"pi{k}" for k in range(_max_pad_rank(plan))), _max_pad_rank(plan) > 0),
         ("icg", any(op.kind == "conv" and op.spatial.grouped for op in plan.ops)),
         ("smn, smj", "softmax" in kinds),
         ("seen", "maxpool" in kinds),
@@ -565,25 +566,37 @@ def _emit_pad_f(op, dst: str, src: str) -> list:
     """The Fortran twin of _emit_pad_c: same nest, same bounds, 1-based subscripts."""
     pd = op.pad
     names = [f"c{k}" for k in range(len(pd.out_shape))]
-    shifted, checks = [], []
+    shifted, checks, pre = [], [], []
     for k, (nm, b) in enumerate(zip(names, pd.begins)):
         if b == 0 and pd.in_shape[k] == pd.out_shape[k]:
             shifted.append(nm)
             continue
-        # A negative begin is a crop: the output reads FURTHER into the input,
-        # so it is spelled as an addition. `(c - -1)` is legal C and a syntax
-        # error in Fortran, which is what made this worth spelling out rather
-        # than letting the sign fall out of the arithmetic.
+        # See _emit_pad_c: a negative begin is a crop and is spelled as an
+        # addition, because `(c - -1)` is a Fortran syntax error.
         expr = f"({nm} - {b})" if b > 0 else f"({nm} + {-b})" if b < 0 else nm
-        shifted.append(expr)
-        # Only a positive begin can put the read before the input; a crop
-        # cannot, so that half of the test would always pass.
-        if b > 0:
-            checks.append(f"{expr} >= 0")
-        checks.append(f"{expr} < {pd.in_shape[k]}")
+        n_in = pd.in_shape[k]
+        # merge(tsource, fsource, mask) is Fortran's ternary. Both arms are
+        # evaluated, which is free here: integer index arithmetic with no side
+        # effects, and only the selected one indexes the array. Assigned to a
+        # named local per padded axis -- inlined, four of these in one
+        # subscript ran past Fortran's 132-column line limit.
+        if pd.mode == "edge":
+            pre.append(f"            pi{k} = merge(0, merge({n_in - 1}, {expr}, "
+                       f"{expr} >= {n_in}), {expr} < 0)")
+            shifted.append(f"pi{k}")
+        elif pd.mode == "reflect":
+            pre.append(f"            pi{k} = merge(-{expr}, merge({2 * (n_in - 1)} - {expr}, "
+                       f"{expr}, {expr} >= {n_in}), {expr} < 0)")
+            shifted.append(f"pi{k}")
+        else:
+            shifted.append(expr)
+            if b > 0:
+                checks.append(f"{expr} >= 0")
+            checks.append(f"{expr} < {n_in}")
     L = []
     for nm, extent in zip(names, pd.out_shape):
         L.append(f"        do {nm} = 0, {extent - 1}")
+    L += pre
     out_idx = _flat_index_f(names, pd.out_shape)
     in_idx = _flat_index_f(shifted, pd.in_shape)
     if checks:
@@ -634,6 +647,15 @@ def _flat_index_f(names, shape):
     for k in range(1, len(shape)):
         expr = f"({expr} * {shape[k]} + {names[k]})"
     return f"{expr} + 1"
+
+
+def _max_pad_rank(plan) -> int:
+    """How many pad index temporaries the module needs: one per padded axis.
+
+    Only edge/reflect use them; a constant Pad tests the bounds inline.
+    """
+    return max((len(op.pad.out_shape) for op in plan.ops
+                if op.kind == "pad" and op.pad.mode != "constant"), default=0)
 
 
 def _max_counter_rank(plan) -> int:

@@ -62,6 +62,7 @@ A model under a million parameters embeds its weights into the generated source 
 
 roseNNa generates code for: `Gemm`, `MatMul`, `Conv` (including grouped and depthwise), `MaxPool`, `AveragePool`, `LSTM`, `Add`, `Concat`, `Pad`,
 `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze`, `Flatten`, `Identity`, `Relu`, `Sigmoid`, `Tanh`, `Softmax`.
+`Pad` takes the opset-18 `axes` operand as well as the older whole-rank `pads`.
 An inference `BatchNormalization` is folded into the `Conv` or `Gemm` that feeds it, so it costs nothing at runtime.
 
 Everything statically knowable is resolved at generation time: shapes, buffer sizes, padding (including `auto_pad`), and every node whose inputs are all constants -- so a `Reshape` of a weight, or an int64 shape tensor, never reaches the emitted code.
@@ -70,7 +71,8 @@ A model using something the generator cannot lower is **refused by name at gener
 
 - 2-D spatial ops only (rank-4 NCHW); `ceil_mode` must be 0
 - `Conv` `group` must divide both channel counts, and the weight's channel axis must be `C_in / group`
-- `Softmax` normalises the last axis only; `Pad` is constant-mode with constant pads (negative pads, i.e. crops, are fine)
+- `Softmax` normalises the last axis only
+- `Pad` supports `constant`, `edge` and `reflect` with constant pads (crops included); `reflect` is limited to one reflection, so a pad must be narrower than its axis
 - a `BatchNormalization` that cannot be folded (training mode, non-constant parameters, or an intermediate read elsewhere) is refused
 - `Gemm` `alpha` and `beta` must be 1, `transA` must be 0, and weights must be constant
 - `LSTM` must be forward-direction with the default activations, no `clip`, `input_forget`, `sequence_lens` or peepholes
@@ -101,7 +103,7 @@ The generated code is callable from a device loop, and `rosenna gpu-gate` valida
 
 - [python/README.md](python/README.md) -- install, generate, build, and call from C or Fortran
 - [doc/methodology.md](doc/methodology.md) -- the roseNNa pipeline
-- [doc/opensource.md](doc/opensource.md) -- extending roseNNa to new operators
+- [doc/adding-an-operator.md](doc/adding-an-operator.md) -- extending roseNNa to new operators
 
 ## History
 

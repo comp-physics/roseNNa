@@ -146,6 +146,10 @@ class Pad:
     out_shape: tuple
     begins: tuple
     value: float
+    # "constant", "edge" or "reflect". constant tests the bounds and writes
+    # `value` outside them; the other two transform the index instead, so
+    # every output element reads some input element and there is no test.
+    mode: str = "constant"
 
 
 @dataclass(frozen=True)
@@ -343,6 +347,11 @@ def _spatial(graph: Graph, node) -> Spatial:
                    c_in_per_group=c_in // group, c_out_per_group=c_out // group)
 
 
+def _pad_mode(node) -> str:
+    mode = node.attrs.get("mode", "constant")
+    return mode.decode() if isinstance(mode, bytes) else str(mode)
+
+
 def _broadcast(out_shape, const_shape) -> Broadcast:
     """Right-align the constant against the output and give each axis a stride."""
     out_shape = tuple(int(d) for d in out_shape)
@@ -458,7 +467,8 @@ def build_plan(graph: Graph, dtype: str | None = None, embed: bool | None = None
                           _length(graph.values[node.inputs[0]]),
                           _length(graph.values[node.outputs[0]]),
                           pad=Pad(in_shape, out_shape, pads[:len(in_shape)],
-                                  float(node.attrs.get("value", 0.0)))))
+                                  float(node.attrs.get("value", 0.0)),
+                                  _pad_mode(node))))
             continue
         if node.op == "Softmax":
             shape = tuple(int(d) for d in graph.values[node.outputs[0]].shape)

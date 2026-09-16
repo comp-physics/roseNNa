@@ -163,9 +163,10 @@ def _validate_pad(graph: Graph, node) -> None:
     mode = node.attrs.get("mode", "constant")
     if isinstance(mode, bytes):
         mode = mode.decode()
-    if mode != "constant":
+    if mode not in ("constant", "edge", "reflect"):
         raise UnsupportedModel(
-            f"{where}: Pad mode='{mode}' is not supported; only 'constant'")
+            f"{where}: Pad mode='{mode}' is not supported; only 'constant', 'edge' "
+            f"and 'reflect'")
     pads = node.attrs.get("pads")
     if pads is None:
         raise UnsupportedModel(f"{where}: Pad needs pads")
@@ -173,6 +174,18 @@ def _validate_pad(graph: Graph, node) -> None:
     if len(pads) != 2 * rank:
         raise UnsupportedModel(
             f"{where}: pads has {len(pads)} entries for a rank-{rank} input; expected {2 * rank}")
+    if mode == "reflect":
+        # One reflection only: the index map is (IN-1) - |(IN-1) - |e||, which
+        # covers e in [-(IN-1), 2*(IN-1)] and no further. A pad at least as
+        # wide as the axis would need repeated reflection, and the formula
+        # would quietly fold to the wrong element instead of failing.
+        for axis, extent in enumerate(x.shape):
+            reach = max(int(pads[axis]), int(pads[axis + rank]))
+            if reach > int(extent) - 1:
+                raise UnsupportedModel(
+                    f"{where}: reflect pad of {reach} on axis {axis} of extent {extent} "
+                    f"needs more than one reflection; only pads up to {int(extent) - 1} "
+                    f"are supported")
     for axis, (i, o) in enumerate(zip(x.shape, out.shape)):
         if int(i) + int(pads[axis]) + int(pads[axis + rank]) != int(o):
             raise UnsupportedModel(

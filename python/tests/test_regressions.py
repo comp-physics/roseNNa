@@ -776,21 +776,34 @@ def test_grouped_conv_reads_only_its_own_group(tmp_path, c_in, c_out, group, lab
 
 # --- Pad -------------------------------------------------------------------
 
-def _pad_model(path, in_shape, pads, value=0.0, mode="constant", runtime_pads=False):
+def _pad_model(path, in_shape, pads, value=0.0, mode="constant", runtime_pads=False, axes=None):
     rank = len(in_shape)
-    out = tuple(int(d) + pads[k] + pads[k + rank] for k, d in enumerate(in_shape))
+    if axes is None:
+        out = tuple(int(d) + pads[k] + pads[k + rank] for k, d in enumerate(in_shape))
+    else:
+        norm = [a + rank if a < 0 else a for a in axes]
+        out = list(int(d) for d in in_shape)
+        for k, a in enumerate(norm):
+            out[a] += pads[k] + pads[k + len(axes)]
+        out = tuple(out)
     ini = [] if runtime_pads else [
         numpy_helper.from_array(np.array(pads, np.int64), "p"),
         numpy_helper.from_array(np.array(value, np.float64), "v")]
+    if axes is not None:
+        ini.append(numpy_helper.from_array(np.array(axes, np.int64), "a"))
     ins = [helper.make_tensor_value_info("x", TensorProto.DOUBLE, list(in_shape))]
     if runtime_pads:
         ins.append(helper.make_tensor_value_info("p", TensorProto.INT64, [2 * rank]))
     graph = helper.make_graph(
-        [helper.make_node("Pad", ["x", "p"] + ([] if runtime_pads else ["v"]),
+        [helper.make_node("Pad", ["x", "p"] + ([] if runtime_pads else ["v"])
+                          + ([] if axes is None else ["a"]),
                           ["y"], name="p0", mode=mode)], "pad", ins,
         [helper.make_tensor_value_info("y", TensorProto.DOUBLE, list(out))], ini)
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-    model.ir_version = 8
+    # `axes` only exists from opset 18; onnxruntime rejects a 4-input Pad
+    # against the opset-13 schema, so the reference could not even be built.
+    opset = 18 if axes is not None else 13
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", opset)])
+    model.ir_version = 9 if axes is not None else 8
     import onnx as _onnx
     _onnx.save(model, str(path))
     return path, out
@@ -859,7 +872,10 @@ def test_pad_with_negative_pads_crops(tmp_path):
 
 
 @pytest.mark.parametrize("kwargs,fragment", [
-    (dict(pads=[0, 0, 1, 1, 0, 0, 1, 1], mode="reflect"), "only 'constant'"),
+    (dict(pads=[0, 0, 1, 1, 0, 0, 1, 1], mode="wrap"), "only 'constant', 'edge' and 'reflect'"),
+    # One reflection only: a pad as wide as the axis would need repeated
+    # reflection, and the index map would fold to the wrong element.
+    (dict(pads=[0, 0, 4, 0, 0, 0, 0, 0], mode="reflect"), "more than one reflection"),
     # A runtime `pads` is an int64 graph input, which the frontend refuses on
     # dtype before validate sees the node at all. Still named, still refused,
     # just earlier -- pinning the message that actually fires rather than the
@@ -874,3 +890,43 @@ def test_pad_refuses_what_its_loop_does_not_compute(tmp_path, kwargs, fragment):
     path, _ = _pad_model(tmp_path / "bad.onnx", (1, 2, 4, 5), pads, **kwargs)
     with pytest.raises(UnsupportedModel, match=fragment):
         validate(load_graph(path))
+
+
+@pytest.mark.parametrize("mode", ["edge", "reflect"])
+def test_pad_edge_and_reflect_land_on_real_elements(tmp_path, mode):
+    """Neither mode ever writes a pad value: both are index maps.
+
+    Asymmetric pads on both spatial axes, so an edge/reflect mix-up or an
+    off-by-one in the mirror shows up as a mismatch rather than cancelling.
+    """
+    path, out = _pad_model(tmp_path / f"{mode}.onnx", (1, 2, 5, 6),
+                           [0, 0, 2, 3, 0, 0, 1, 2], mode=mode)
+    rng = np.random.default_rng(51)
+    x = rng.uniform(-2, 2, (1, 2, 5, 6))
+    f, c = _both_backends(tmp_path, path, mode, x.reshape(1, -1))
+    want = ort.InferenceSession(str(path)).run(None, {"x": x})[0].ravel()
+    assert np.allclose(c, want) and np.allclose(f, want)
+    got = np.asarray(c).reshape(out)
+    if mode == "edge":
+        # The first two rows are copies of the input's first row.
+        assert np.allclose(got[0, :, 0, 3:9], x[0, :, 0, :])
+        assert np.allclose(got[0, :, 1, 3:9], x[0, :, 0, :])
+    else:
+        # Mirrored without repeating the edge: row 2 is the input's row 0,
+        # so rows 1 and 0 are its rows 1 and 2.
+        assert np.allclose(got[0, :, 1, 3:9], x[0, :, 1, :])
+        assert np.allclose(got[0, :, 0, 3:9], x[0, :, 2, :])
+
+
+def test_pad_axes_operand_expands_to_a_full_rank_pads(tmp_path):
+    """opset-18 `axes` names which axes `pads` counts; a negative axis counts back."""
+    path, out = _pad_model(tmp_path / "axes.onnx", (1, 2, 4, 5),
+                           [1, 2, 3, 1], value=-3.0, axes=[2, -1])
+    assert out == (1, 2, 8, 8), out
+    rng = np.random.default_rng(52)
+    x = rng.uniform(-2, 2, (1, 2, 4, 5))
+    f, c = _both_backends(tmp_path, path, "axes", x.reshape(1, -1))
+    want = ort.InferenceSession(str(path)).run(None, {"x": x})[0].ravel()
+    assert np.allclose(c, want) and np.allclose(f, want)
+    # Axes 0 and 1 were not named, so they are unpadded.
+    assert np.asarray(c).reshape(out).shape[:2] == (1, 2)
