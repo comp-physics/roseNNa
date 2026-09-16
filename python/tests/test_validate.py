@@ -91,15 +91,17 @@ def _spatial_vals(in_shape=(1, 2, 8, 8), out_shape=(1, 2, 6, 6)):
 def test_spatial_shape_rejections():
     _reject(_graph(Node("MaxPool", "p", ("x",), ("y",), {"kernel_shape": (2, 2)}),
                    {"x": _t("x", (1, 8)), "y": _t("y", (1, 4))}),
-            "has rank 2; only rank-4 NCHW")
+            "has rank 2; only rank-3 NCW \\(1-D\\) and rank-4 NCHW")
     _reject(_graph(Node("MaxPool", "p", ("x",), ("y",), {"kernel_shape": (2, 2)}),
                    {"x": _t("x", (1, 2, 8, 8)), "y": _t("y", (1, 4))}),
             "must be a rank-4 value")
     _reject(_graph(Node("MaxPool", "p", ("x",), ("y",), {}), _spatial_vals()),
             "needs kernel_shape")
+    # The arity now comes from the input's rank, so a 3-axis kernel_shape on a
+    # rank-4 (2-D) input is refused for disagreeing rather than for not being 2-D.
     _reject(_graph(Node("MaxPool", "p", ("x",), ("y",), {"kernel_shape": (2, 2, 2)}),
                    _spatial_vals()),
-            "only 2-D is supported")
+            "has 3 spatial axes but the input has 2")
 
 
 def test_spatial_attribute_rejections():
