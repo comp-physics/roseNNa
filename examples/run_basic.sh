@@ -27,7 +27,17 @@ trap 'rm -rf "$work"' EXIT
 #    it is run from a scratch directory holding a link to the real tree.
 ln -sfn "$golden" "$work/goldenFiles"
 mkdir -p "$work/run"
-(cd "$work/run" && "$py" ../goldenFiles/gemm_small/gemm_small.py >/dev/null)
+#    Seeded through rosenna.golden's own GOLDEN_SEED, the way the test suite
+#    and the gpu-gate run these generators. gemm_small is 2 -> 2 -> ReLU ->
+#    3 -> ReLU, and a fresh unseeded draw is sometimes DEAD -- every
+#    pre-activation negative into the last ReLU, so the model outputs zeros and
+#    step 5's verify refuses to compare against it. Taking the seed from the
+#    package rather than repeating the number keeps one source of truth.
+(cd "$work/run" && "$py" -c 'import runpy, sys, torch
+from rosenna.golden import GOLDEN_SEED
+torch.manual_seed(GOLDEN_SEED)
+sys.argv = [sys.argv[1]]
+runpy.run_path(sys.argv[0], run_name="__main__")' ../goldenFiles/gemm_small/gemm_small.py >/dev/null)
 
 # 2. Generate Fortran and C for it.
 $rosenna generate "$golden/gemm_small/gemm_small.onnx" --lang both --out "$work"
