@@ -262,5 +262,11 @@ jobs:
       - name: Set up Python and dependencies
         uses: ./.github/actions/setup
 
+      # The badge in the README states the floor, which is a guarantee CI
+      # enforces rather than a snapshot that rots. The exact number goes in
+      # this run's summary, where it costs no service and no write access.
       - name: Coverage is above the floor
-        run: cd python && python3 -m pytest tests --cov -q -n auto
+        run: |
+          cd python && python3 -m pytest tests --cov -q -n auto
+          echo "## Coverage: $(python3 -m coverage report --format=total)% (floor: 97%)" \
+            >> "$GITHUB_STEP_SUMMARY"

@@ -72,3 +72,21 @@ def test_fortran_example_in_the_readme_compiles_and_runs(tmp_path, golden_model)
     r = subprocess.run([fc, "-O2", "-std=f2008", "-fopenmp", "-I.", "host.f90", "-L.", "-lmodel_f", "-o", "host"], cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert subprocess.run(["./host"], cwd=tmp_path, capture_output=True, text=True).returncode == 0
+
+
+def test_the_coverage_badge_states_the_floor_ci_actually_enforces(repo_root):
+    """A badge that drifts from the floor is worse than no badge.
+
+    The README advertises a lower bound rather than a snapshot, because the
+    bound is what CI guarantees -- so it only has to change when the floor
+    does, and this test is what makes sure it does change then.
+    """
+    import re
+    floor = re.search(r"^fail_under = (\d+)", (repo_root / "python" / "pyproject.toml").read_text(),
+                      re.M)
+    assert floor, "pyproject.toml no longer sets a coverage floor"
+    readme = (repo_root / "README.md").read_text()
+    badge = re.search(r"img\.shields\.io/badge/coverage-%E2%89%A5(\d+)%25", readme)
+    assert badge, "README has no coverage badge"
+    assert badge.group(1) == floor.group(1), (
+        f"the badge says >={badge.group(1)}% but pyproject enforces {floor.group(1)}%")

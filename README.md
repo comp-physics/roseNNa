@@ -5,6 +5,9 @@
 <a href="https://github.com/comp-physics/roseNNa/actions/workflows/CI.yml">
   <img src="https://github.com/comp-physics/roseNNa/actions/workflows/CI.yml/badge.svg" />
 </a>
+<a href="https://github.com/comp-physics/roseNNa/actions/workflows/CI.yml">
+  <img src="https://img.shields.io/badge/coverage-%E2%89%A597%25-brightgreen" alt="coverage at least 97 percent" />
+</a>
 <a href="https://lbesson.mit-license.org/">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" />
 </a>
