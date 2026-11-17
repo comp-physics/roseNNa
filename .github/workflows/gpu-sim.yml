@@ -1,0 +1,152 @@
+name: GPU Simulator
+
+# Optional, non-required check. The hosted runners have no GPU, so this runs
+# the generated CUDA kernel (<name>_kernel.cu) on a simulated NVIDIA H100
+# (https://github.com/pantheongpu/pantheonsim). A simulator has no timing
+# model and cannot reproduce hardware-specific behavior, so it complements
+# real-GPU testing (rosenna gpu-gate) and does not replace it.
+#
+# Only the CUDA backend is exercised. The OpenMP target offload paths
+# (test_device_c.py, test_device_fortran.py, gpu-gate harnesses 1 and 2) need
+# nvhpc or AMD flang and are not simulated here.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "python/rosenna/**"
+      - "goldenFiles/**"
+      - "requirements.txt"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cuda-kernel:
+    name: CUDA kernel (CUDA 13.0 and simulated H100)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up the simulated GPU and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@a1b9d4237411f9b2b0e0bb895b4d83377f336a7b # v0.1.9
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # CPU torch only exports the golden models, as in CI.yml.
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install -r requirements.txt
+          pip install -e python
+
+      - name: Write the simulator driver
+        run: |
+          cat > "$RUNNER_TEMP/sim_kernel.py" <<'PY'
+          # Builds the CUDA-backend archive for each golden model (embedded and
+          # file-loaded) with nvcc, links the gate's infer_batch driver against
+          # it and runs that driver under `vgpu run`. The driver copies the
+          # inputs to the device, calls <name>_infer_batch (the generated
+          # kernel) and the result is compared against onnxruntime. Reuses the
+          # helpers behind `rosenna gpu-gate`, with the 1M-point timing run
+          # cut down to 64 points.
+          import sys
+          from pathlib import Path
+
+          import numpy as np
+          import onnxruntime as ort
+
+          import rosenna.gate as g
+          from rosenna.verify import _live_reference
+
+          g._TIMED_ITERS = 64
+          g._NSTEPS = 1
+
+          seen = []
+          real_sh = g._sh
+
+
+          def sh(report, label, args, **kw):
+              if str(args[0]) == "./gate_harness3_dev":
+                  args = ["vgpu", "run", *args]
+              proc = real_sh(report, label, args, **kw)
+              if "gate_harness3_dev" in str(args[:3]):
+                  seen.append(proc.stdout + proc.stderr)
+              return proc
+
+
+          g._sh = sh
+
+          # PTX only (compute_90) and a shared cudart, as the simulator needs.
+          DEVFLAGS = "-O2 -arch=compute_90 -cudart shared"
+          MODELS = ["gemm_small", "gemm_big", "gemm_nobias", "batchnet", "droplet"]
+
+          out = Path(sys.argv[1])
+          failed = []
+          for model in MODELS:
+              g._MODEL = model
+              for embed in (True, False):
+                  tag = f"{model}-{'embedded' if embed else 'file-loaded'}"
+                  report = g._Report()
+                  report.h(tag)
+                  onnx_path = g._ensure_model(report)
+                  session = ort.InferenceSession(str(onnx_path))
+                  inputs, expected = _live_reference(
+                      session, session.get_inputs()[0].shape, np.float64, seed=42, batch=8)
+                  if inputs is None:
+                      print(f"FAIL {tag}: dead onnxruntime reference", flush=True)
+                      failed.append(tag)
+                      continue
+                  cfg = out / tag
+                  plan = g._generate(cfg, onnx_path, embed)
+                  libs = g._build_c_libs(report, cfg, plan, "gcc", "-fopenmp", "cuda", "nvcc", DEVFLAGS)
+                  ok = libs.dev is not None and g._run_dev_harness3(
+                      report, cfg, plan, "nvcc", DEVFLAGS, "cuda", libs.dev, inputs, expected)
+                  print(report.text(), flush=True)
+                  if not ok:
+                      failed.append(tag)
+                      print(f"FAIL {tag}", flush=True)
+                  else:
+                      print(f"PASS {tag}", flush=True)
+
+          if failed:
+              sys.exit(f"failed: {failed}")
+          # Every device run must have gone through the simulator and reported no error.
+          joined = "\n".join(seen)
+          assert len(seen) == 2 * len(MODELS), len(seen)
+          assert joined.count("virtual GPU platform initialized") == len(seen), "no simulated device"
+          for bad in ("VirtualGPU error", "CUDA error", "no CUDA-capable device"):
+              assert bad not in joined, bad
+          print(f"{len(seen)} device runs matched onnxruntime on the simulated H100")
+          PY
+
+      # Each case fails unless nvcc built the kernel archive, the driver ran
+      # on the simulated device with exit code 0 and every output row matched
+      # onnxruntime (rtol 1e-5, atol 1e-6).
+      - name: Generated CUDA kernel matches onnxruntime on the simulated H100
+        shell: bash
+        run: |
+          set -o pipefail
+          python "$RUNNER_TEMP/sim_kernel.py" "$RUNNER_TEMP/sim" 2>&1 | tee sim.log
+          grep -q "^PASS gemm_big-embedded" sim.log
+          grep -q "^PASS gemm_big-file-loaded" sim.log
+          grep -q "device runs matched onnxruntime on the simulated H100" sim.log
+          if grep -E -q "^FAIL|VirtualGPU error|CUDA error|SKIPPED" sim.log; then
+            echo "::error::a case failed or was skipped"
+            exit 1
+          fi
