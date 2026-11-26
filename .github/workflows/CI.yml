@@ -182,8 +182,10 @@ jobs:
   #
   # Both were verified on all 21 models before this job was written; what is
   # unverified here is the install step, not the test.
+  # ubuntu-24.04 on purpose: apt.llvm.org has no LLVM 20 repository for 26.04,
+  # which ubuntu-latest now resolves to, and 20 is the version this job pins.
   flang_fortran:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Clone roseNNa
