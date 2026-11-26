@@ -17,6 +17,7 @@ on:
       - "python/rosenna/**"
       - "goldenFiles/**"
       - "requirements.txt"
+      - "python/pyproject.toml"
       - ".github/workflows/gpu-sim.yml"
 
 concurrency:
@@ -38,12 +39,18 @@ jobs:
           persist-credentials: false
 
       - name: Set up the simulated GPU and CUDA toolkit
-        uses: pantheongpu/setup-pantheonsim@a1b9d4237411f9b2b0e0bb895b4d83377f336a7b # v0.1.9
+        # The simulator's own action, not the setup-pantheonsim wrapper: the
+        # wrapper does not forward `prebuilt`, which defaults to true and runs
+        # a release tarball that this commit pin does not cover. With false the
+        # simulator is built from the pinned source (or restored from the cache
+        # of an earlier such build).
+        uses: pantheongpu/pantheonsim@c7af104dd3815e38bde001cf713ae13099137c62
         with:
           gpu: nvidia/h100
           cuda-toolkit: "13.0"
+          prebuilt: "false"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -66,6 +73,7 @@ jobs:
           # helpers behind `rosenna gpu-gate`, with the 1M-point timing run
           # cut down to 64 points.
           import sys
+          import traceback
           from pathlib import Path
 
           import numpy as np
@@ -97,6 +105,22 @@ jobs:
           MODELS = ["gemm_small", "gemm_big", "gemm_nobias", "batchnet", "droplet"]
 
           out = Path(sys.argv[1])
+
+
+          def run_case(report, cfg, embed):
+              onnx_path = g._ensure_model(report)
+              session = ort.InferenceSession(str(onnx_path))
+              inputs, expected = _live_reference(
+                  session, session.get_inputs()[0].shape, np.float64, seed=42, batch=8)
+              if inputs is None:
+                  print("dead onnxruntime reference", flush=True)
+                  return False
+              plan = g._generate(cfg, onnx_path, embed)
+              libs = g._build_c_libs(report, cfg, plan, "gcc", "-fopenmp", "cuda", "nvcc", DEVFLAGS)
+              return libs.dev is not None and g._run_dev_harness3(
+                  report, cfg, plan, "nvcc", DEVFLAGS, "cuda", libs.dev, inputs, expected)
+
+
           failed = []
           for model in MODELS:
               g._MODEL = model
@@ -104,25 +128,19 @@ jobs:
                   tag = f"{model}-{'embedded' if embed else 'file-loaded'}"
                   report = g._Report()
                   report.h(tag)
-                  onnx_path = g._ensure_model(report)
-                  session = ort.InferenceSession(str(onnx_path))
-                  inputs, expected = _live_reference(
-                      session, session.get_inputs()[0].shape, np.float64, seed=42, batch=8)
-                  if inputs is None:
-                      print(f"FAIL {tag}: dead onnxruntime reference", flush=True)
-                      failed.append(tag)
-                      continue
-                  cfg = out / tag
-                  plan = g._generate(cfg, onnx_path, embed)
-                  libs = g._build_c_libs(report, cfg, plan, "gcc", "-fopenmp", "cuda", "nvcc", DEVFLAGS)
-                  ok = libs.dev is not None and g._run_dev_harness3(
-                      report, cfg, plan, "nvcc", DEVFLAGS, "cuda", libs.dev, inputs, expected)
+                  # One broken case must neither hide its log (a failed model
+                  # generator reports only there) nor stop the other cases.
+                  try:
+                      ok = run_case(report, out / tag, embed)
+                  except Exception:
+                      traceback.print_exc(file=sys.stdout)
+                      ok = False
                   print(report.text(), flush=True)
-                  if not ok:
+                  if ok:
+                      print(f"PASS {tag}", flush=True)
+                  else:
                       failed.append(tag)
                       print(f"FAIL {tag}", flush=True)
-                  else:
-                      print(f"PASS {tag}", flush=True)
 
           if failed:
               sys.exit(f"failed: {failed}")
